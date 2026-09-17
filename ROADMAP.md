@@ -1,7 +1,6 @@
 # Research server roadmap
 
-The first release deliberately establishes a reliable CPU research baseline
-before adding more retrieval backends.
+The current release establishes a local CPU hybrid-retrieval baseline.
 
 ## Implemented baseline
 
@@ -12,21 +11,25 @@ before adding more retrieval backends.
 - reviewed bibliographic/category/keyword metadata;
 - UltraRAG token chunking;
 - UltraRAG CPU BM25 indexing and retrieval;
+- pinned FastEmbed CPU embeddings;
+- project-local embedded Qdrant indexes and metadata filtering;
+- independently selectable BM25, dense, and hybrid retrieval;
+- reciprocal-rank fusion with visible component ranks;
+- opt-in bounded CPU cross-encoder reranking;
 - structured evidence results and context retrieval;
 - staleness reporting; and
 - real stdio integration coverage.
 
-## Next: semantic and hybrid retrieval
+## Next: retrieval quality and efficiency
 
-- pin a CPU sentence-transformer model;
-- store embeddings and metadata payloads in project-local Qdrant;
-- search BM25 and Qdrant independently;
-- combine rankings with reciprocal-rank fusion;
-- optionally rerank a bounded candidate set; and
-- expose retrieval methods and component ranks in every result.
-
-This belongs here rather than in `vanilla-ultra-rag-mcp-server` because it adds
-new orchestration and result semantics.
+- create representative project-specific evaluation queries and relevance
+  judgments;
+- measure BM25, dense, hybrid, and reranked recall/precision;
+- make fusion weights or rank constants configurable only if evaluation shows a
+  repeatable benefit;
+- reuse unchanged embeddings across immutable generations;
+- add a multilingual embedding profile alongside multilingual BM25; and
+- investigate GPU profiles without changing the CPU default.
 
 ## Next: ingestion lifecycle
 
@@ -49,8 +52,6 @@ new orchestration and result semantics.
 ## Later
 
 - research-focused UI;
-- configurable multilingual BM25 tokenization;
-- GPU embedding/reranking profiles;
 - import/export and backup tooling;
 - retrieval-quality evaluation sets; and
 - optional cross-project federated search that preserves explicit boundaries.

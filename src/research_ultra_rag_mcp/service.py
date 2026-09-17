@@ -11,6 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from .config import ResearchConfig, resolve_source_reference
+from .dense import (
+    EMBEDDING_MODEL,
+    EMBEDDING_MODEL_REVISION,
+    RERANKER_MODEL,
+    RERANKER_MODEL_REVISION,
+    DenseBackend,
+    DenseSearchHit,
+    LocalQdrantDenseBackend,
+)
 from .extraction import extract_sources
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
@@ -30,7 +39,13 @@ from .storage import (
 )
 from .ultrarag import VanillaUltraRAG
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+DEFAULT_RETRIEVAL_METHOD = "hybrid"
+RETRIEVAL_METHODS = frozenset({"bm25", "dense", "hybrid"})
+RRF_K = 60
+MINIMUM_CANDIDATES = 20
+MAXIMUM_CANDIDATES = 200
+RERANK_MAX_CANDIDATES = 50
 
 
 class ResearchError(RuntimeError):
@@ -90,6 +105,19 @@ def _index_text(
     return "\n".join(metadata_lines) + f"\n\nContent:\n{text}"
 
 
+def _embedding_text(document: dict[str, Any], text: str) -> str:
+    """Build semantic input without injecting locators or internal identifiers."""
+
+    metadata_lines = [f"Title: {document['title']}"]
+    if document.get("authors"):
+        metadata_lines.append(f"Authors: {'; '.join(document['authors'])}")
+    if document.get("categories"):
+        metadata_lines.append(f"Categories: {'; '.join(document['categories'])}")
+    if document.get("keywords"):
+        metadata_lines.append(f"Keywords: {'; '.join(document['keywords'])}")
+    return "\n".join(metadata_lines) + f"\n\nContent:\n{text}"
+
+
 def _enrich_chunks(
     raw_chunks: list[dict[str, Any]],
     units: list[dict[str, Any]],
@@ -138,6 +166,7 @@ def _enrich_chunks(
                 "citation": _citation(document, locator),
                 "text": text,
                 "contents": _index_text(document, locator, chunk_id, text),
+                "embedding_text": _embedding_text(document, text),
             }
         )
 
@@ -164,9 +193,18 @@ def _enrich_chunks(
 
 
 class ResearchService:
-    def __init__(self, config: ResearchConfig, ultrarag: VanillaUltraRAG) -> None:
+    def __init__(
+        self,
+        config: ResearchConfig,
+        ultrarag: VanillaUltraRAG,
+        dense: DenseBackend | None = None,
+    ) -> None:
         self.config = config
         self.ultrarag = ultrarag
+        self.dense = dense or LocalQdrantDenseBackend(
+            config.models_root,
+            offline=config.offline,
+        )
         self._lock = asyncio.Lock()
         self._loaded_generation: str | None = None
 
@@ -201,6 +239,8 @@ class ResearchService:
                 "selected_source_count": len(scan.selected),
                 "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
                 "ignored_extensions": scan.ignored_extensions,
+                "default_retrieval_method": DEFAULT_RETRIEVAL_METHOD,
+                "available_retrieval_methods": [],
                 "message": "No knowledge-base generation exists; call ingest.",
             }
 
@@ -222,6 +262,9 @@ class ResearchService:
             "metadata_revision"
         )
         stale = bool(added or removed or modified or metadata_changed)
+        retrieval = manifest.get("retrieval", {})
+        available_methods = retrieval.get("available_methods") or ["bm25"]
+        hybrid_ready = "hybrid" in available_methods
         return {
             "ready": True,
             "stale": stale,
@@ -235,6 +278,13 @@ class ResearchService:
             "chunk_count": manifest["chunk_count"],
             "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
             "ignored_extensions": scan.ignored_extensions,
+            "default_retrieval_method": (
+                retrieval.get("default_method", "bm25") if hybrid_ready else "bm25"
+            ),
+            "available_retrieval_methods": available_methods,
+            "hybrid_ready": hybrid_ready,
+            "hybrid_upgrade_required": not hybrid_ready,
+            "retrieval": retrieval,
             "changes": {
                 "added": added,
                 "removed": removed,
@@ -242,6 +292,12 @@ class ResearchService:
                 "metadata_changed": metadata_changed,
             },
             "generation_root": str(generation_root),
+            "message": (
+                "Current generation supports hybrid retrieval."
+                if hybrid_ready
+                else "Current generation is BM25-only; run ingest to build its "
+                "project-local dense index."
+            ),
         }
 
     async def status(self) -> dict[str, Any]:
@@ -282,11 +338,11 @@ class ResearchService:
     async def ingest(
         self,
         *,
-        chunk_size: int = 500,
+        chunk_size: int = 384,
         chunk_overlap: int = 64,
     ) -> dict[str, Any]:
-        if not 50 <= chunk_size <= 4000:
-            raise ResearchError("chunk_size must be between 50 and 4000 words")
+        if not 50 <= chunk_size <= 384:
+            raise ResearchError("chunk_size must be between 50 and 384 GPT-2 tokens")
         if not 0 <= chunk_overlap < chunk_size:
             raise ResearchError(
                 "chunk_overlap must be non-negative and below chunk_size"
@@ -314,7 +370,8 @@ class ResearchService:
             extracted_path = generation_root / "corpus" / "extracted-units.jsonl"
             raw_chunks_path = generation_root / "chunks" / "ultrarag-chunks.jsonl"
             chunks_path = generation_root / "chunks" / "chunks.jsonl"
-            index_path = generation_root / "indexes" / "bm25"
+            bm25_index_path = generation_root / "indexes" / "bm25"
+            dense_index_path = generation_root / "indexes" / "qdrant"
 
             try:
                 write_jsonl(extracted_path, units)
@@ -332,7 +389,12 @@ class ResearchService:
                 )
                 write_jsonl(chunks_path, chunks)
 
-                await self.ultrarag.build_bm25(chunks_path, index_path)
+                await self.ultrarag.build_bm25(chunks_path, bm25_index_path)
+                dense_metadata = await asyncio.to_thread(
+                    self.dense.build,
+                    chunks,
+                    dense_index_path,
+                )
                 manifest = {
                     "schema_version": SCHEMA_VERSION,
                     "generation_id": generation_id,
@@ -349,14 +411,33 @@ class ResearchService:
                     "discarded_empty_chunk_count": discarded_empty_chunks,
                     "chunking": {
                         "backend": "UltraRAG token chunker",
-                        "counter": "word",
+                        "tokenizer": "gpt2",
+                        "unit": "tokens",
                         "chunk_size": chunk_size,
                         "chunk_overlap": chunk_overlap,
                     },
                     "retrieval": {
-                        "backend": "UltraRAG BM25",
-                        "language": "en",
-                        "tokenizer": "default",
+                        "default_method": DEFAULT_RETRIEVAL_METHOD,
+                        "available_methods": sorted(RETRIEVAL_METHODS),
+                        "bm25": {
+                            "backend": "UltraRAG BM25",
+                            "language": "en",
+                            "tokenizer": "default",
+                        },
+                        "dense": dense_metadata,
+                        "fusion": {
+                            "method": "reciprocal_rank_fusion",
+                            "rrf_k": RRF_K,
+                            "minimum_candidates": MINIMUM_CANDIDATES,
+                            "maximum_candidates": MAXIMUM_CANDIDATES,
+                        },
+                        "reranker": {
+                            "optional": True,
+                            "runtime": "FastEmbed ONNX Runtime (CPU)",
+                            "model": RERANKER_MODEL,
+                            "model_revision": RERANKER_MODEL_REVISION,
+                            "maximum_candidates": RERANK_MAX_CANDIDATES,
+                        },
                     },
                     "documents": documents,
                     "files": {
@@ -364,13 +445,15 @@ class ResearchService:
                         "raw_ultrarag_chunks": "chunks/ultrarag-chunks.jsonl",
                         "chunks": "chunks/chunks.jsonl",
                         "bm25_index": "indexes/bm25",
+                        "dense_index": "indexes/qdrant",
                     },
                 }
                 atomic_write_json(generation_root / "manifest.json", manifest)
                 atomic_write_json(
                     self.config.current_path,
                     {
-                        "schema_version": SCHEMA_VERSION,
+                        # Pointer format is unchanged; manifest schema is version 2.
+                        "schema_version": 1,
                         "generation_id": generation_id,
                     },
                 )
@@ -399,6 +482,10 @@ class ResearchService:
                 "discarded_empty_chunk_count": discarded_empty_chunks,
                 "ignored_extensions": scan.ignored_extensions,
                 "empty_units": sum(int(item["empty_units"]) for item in documents),
+                "default_retrieval_method": DEFAULT_RETRIEVAL_METHOD,
+                "available_retrieval_methods": sorted(RETRIEVAL_METHODS),
+                "embedding_model": EMBEDDING_MODEL,
+                "embedding_model_revision": EMBEDDING_MODEL_REVISION,
             }
 
     async def _ensure_loaded(
@@ -415,6 +502,84 @@ class ResearchService:
         )
         self._loaded_generation = generation_id
 
+    @staticmethod
+    def _matches_filters(
+        chunk: dict[str, Any],
+        *,
+        categories: set[str],
+        keywords: set[str],
+        document_ids: set[str],
+    ) -> bool:
+        chunk_categories = {
+            str(item).casefold() for item in chunk.get("categories", [])
+        }
+        chunk_keywords = {str(item).casefold() for item in chunk.get("keywords", [])}
+        return not (
+            (categories and not categories.issubset(chunk_categories))
+            or (keywords and not keywords.issubset(chunk_keywords))
+            or (document_ids and chunk["document_id"] not in document_ids)
+        )
+
+    async def _bm25_ranking(
+        self,
+        query: str,
+        chunks: list[dict[str, Any]],
+        limit: int,
+        *,
+        categories: set[str],
+        keywords: set[str],
+        document_ids: set[str],
+    ) -> list[str]:
+        filtered = bool(categories or keywords or document_ids)
+        requested = len(chunks) if filtered else limit
+        passages = await self.ultrarag.search_bm25(query, requested)
+        by_contents = {str(item["contents"]): item for item in chunks}
+        ranking: list[str] = []
+        for passage in passages:
+            chunk = by_contents.get(passage)
+            if chunk is None:
+                raise ResearchError(
+                    "UltraRAG returned a passage absent from the current chunk store"
+                )
+            if not self._matches_filters(
+                chunk,
+                categories=categories,
+                keywords=keywords,
+                document_ids=document_ids,
+            ):
+                continue
+            ranking.append(str(chunk["chunk_id"]))
+            if len(ranking) == limit:
+                break
+        return ranking
+
+    @staticmethod
+    def _fuse_rankings(
+        bm25_ranking: list[str],
+        dense_ranking: list[str],
+    ) -> tuple[list[str], dict[str, float]]:
+        scores: defaultdict[str, float] = defaultdict(float)
+        component_ranks = (
+            {chunk_id: rank for rank, chunk_id in enumerate(ranking, 1)}
+            for ranking in (bm25_ranking, dense_ranking)
+        )
+        bm25_ranks, dense_ranks = component_ranks
+        for ranks in (bm25_ranks, dense_ranks):
+            for chunk_id, rank in ranks.items():
+                scores[chunk_id] += 1.0 / (RRF_K + rank)
+        ordered = sorted(
+            scores,
+            key=lambda chunk_id: (
+                -scores[chunk_id],
+                min(
+                    bm25_ranks.get(chunk_id, MAXIMUM_CANDIDATES + 1),
+                    dense_ranks.get(chunk_id, MAXIMUM_CANDIDATES + 1),
+                ),
+                chunk_id,
+            ),
+        )
+        return ordered, dict(scores)
+
     async def search(
         self,
         query: str,
@@ -423,54 +588,172 @@ class ResearchService:
         categories: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
+        retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
+        rerank: bool = False,
     ) -> dict[str, Any]:
         query = query.strip()
         if not query:
             raise ResearchError("query must not be empty")
         if not 1 <= top_k <= 50:
             raise ResearchError("top_k must be between 1 and 50")
+        retrieval_method = retrieval_method.casefold().strip()
+        if retrieval_method not in RETRIEVAL_METHODS:
+            raise ResearchError("retrieval_method must be one of: bm25, dense, hybrid")
 
         async with self._lock:
             current = self._load_current_optional()
             if current is None:
                 raise ResearchError("No knowledge base exists; call ingest first")
             generation_root, manifest = current
-            await self._ensure_loaded(generation_root, manifest)
             chunks = read_jsonl(generation_root / manifest["files"]["chunks"])
             if not chunks:
                 raise ResearchError("The current generation has no chunks")
 
-            category_filter = {item.casefold() for item in categories or []}
-            keyword_filter = {item.casefold() for item in keywords or []}
-            document_filter = set(document_ids or [])
-            filtered = bool(category_filter or keyword_filter or document_filter)
-            candidate_k = len(chunks) if filtered else min(top_k, len(chunks))
-            passages = await self.ultrarag.search_bm25(query, candidate_k)
-            by_contents = {str(item["contents"]): item for item in chunks}
+            retrieval = manifest.get("retrieval", {})
+            available_methods = set(retrieval.get("available_methods") or ["bm25"])
+            if retrieval_method not in available_methods:
+                raise ResearchError(
+                    f"Current generation does not support {retrieval_method!r}; "
+                    f"available methods: {', '.join(sorted(available_methods))}. "
+                    "Run ingest to build a hybrid generation."
+                )
+
+            normalized_categories = [
+                item.strip() for item in categories or [] if item.strip()
+            ]
+            normalized_keywords = [
+                item.strip() for item in keywords or [] if item.strip()
+            ]
+            normalized_document_ids = [
+                item.strip() for item in document_ids or [] if item.strip()
+            ]
+            category_filter = {item.casefold() for item in normalized_categories}
+            keyword_filter = {item.casefold() for item in normalized_keywords}
+            document_filter = set(normalized_document_ids)
+            candidate_depth = min(
+                len(chunks),
+                MAXIMUM_CANDIDATES,
+                max(MINIMUM_CANDIDATES, top_k * 4),
+            )
+
+            use_bm25 = retrieval_method in {"bm25", "hybrid"}
+            use_dense = retrieval_method in {"dense", "hybrid"}
+            if use_bm25:
+                await self._ensure_loaded(generation_root, manifest)
+
+            bm25_ranking: list[str] = []
+            dense_hits: list[DenseSearchHit] = []
+            if use_bm25 and use_dense:
+                bm25_ranking, dense_hits = await asyncio.gather(
+                    self._bm25_ranking(
+                        query,
+                        chunks,
+                        candidate_depth,
+                        categories=category_filter,
+                        keywords=keyword_filter,
+                        document_ids=document_filter,
+                    ),
+                    asyncio.to_thread(
+                        self.dense.search,
+                        generation_root / manifest["files"]["dense_index"],
+                        query,
+                        candidate_depth,
+                        categories=normalized_categories,
+                        keywords=normalized_keywords,
+                        document_ids=normalized_document_ids,
+                    ),
+                )
+            elif use_bm25:
+                bm25_ranking = await self._bm25_ranking(
+                    query,
+                    chunks,
+                    candidate_depth,
+                    categories=category_filter,
+                    keywords=keyword_filter,
+                    document_ids=document_filter,
+                )
+            else:
+                dense_hits = await asyncio.to_thread(
+                    self.dense.search,
+                    generation_root / manifest["files"]["dense_index"],
+                    query,
+                    candidate_depth,
+                    categories=normalized_categories,
+                    keywords=normalized_keywords,
+                    document_ids=normalized_document_ids,
+                )
+
+            dense_ranking = [hit.chunk_id for hit in dense_hits]
+            dense_scores = {hit.chunk_id: hit.score for hit in dense_hits}
+            bm25_ranks = {
+                chunk_id: rank for rank, chunk_id in enumerate(bm25_ranking, 1)
+            }
+            dense_ranks = {
+                chunk_id: rank for rank, chunk_id in enumerate(dense_ranking, 1)
+            }
+            if retrieval_method == "hybrid":
+                ordered_ids, fusion_scores = self._fuse_rankings(
+                    bm25_ranking,
+                    dense_ranking,
+                )
+            elif retrieval_method == "bm25":
+                ordered_ids = bm25_ranking
+                fusion_scores = {}
+            else:
+                ordered_ids = dense_ranking
+                fusion_scores = {}
+
+            chunks_by_id = {str(item["chunk_id"]): item for item in chunks}
+            unknown_ids = [item for item in ordered_ids if item not in chunks_by_id]
+            if unknown_ids:
+                raise ResearchError(
+                    "The retrieval index returned chunk IDs absent from the current "
+                    f"chunk store: {unknown_ids[:3]}"
+                )
+
+            base_ranks = {
+                chunk_id: rank for rank, chunk_id in enumerate(ordered_ids, 1)
+            }
+            rerank_scores: dict[str, float] = {}
+            if rerank and ordered_ids:
+                rerank_count = min(
+                    len(ordered_ids),
+                    RERANK_MAX_CANDIDATES,
+                    max(top_k * 2, 10),
+                )
+                rerank_ids = ordered_ids[:rerank_count]
+                scores = await asyncio.to_thread(
+                    self.dense.rerank,
+                    query,
+                    [
+                        str(
+                            chunks_by_id[item].get("embedding_text")
+                            or chunks_by_id[item]["text"]
+                        )
+                        for item in rerank_ids
+                    ],
+                )
+                rerank_scores = dict(zip(rerank_ids, scores, strict=True))
+                ordered_ids = sorted(
+                    rerank_ids,
+                    key=lambda chunk_id: (
+                        -rerank_scores[chunk_id],
+                        base_ranks[chunk_id],
+                        chunk_id,
+                    ),
+                )
 
             hits: list[dict[str, Any]] = []
-            for retrieval_rank, passage in enumerate(passages, 1):
-                chunk = by_contents.get(passage)
-                if chunk is None:
-                    raise ResearchError(
-                        "UltraRAG returned a passage absent from the current chunk store"
-                    )
-                chunk_categories = {
-                    str(item).casefold() for item in chunk.get("categories", [])
+            for rank, chunk_id in enumerate(ordered_ids[:top_k], 1):
+                chunk = chunks_by_id[chunk_id]
+                component_ranks = {
+                    "bm25": bm25_ranks.get(chunk_id),
+                    "dense": dense_ranks.get(chunk_id),
                 }
-                chunk_keywords = {
-                    str(item).casefold() for item in chunk.get("keywords", [])
-                }
-                if category_filter and not category_filter.issubset(chunk_categories):
-                    continue
-                if keyword_filter and not keyword_filter.issubset(chunk_keywords):
-                    continue
-                if document_filter and chunk["document_id"] not in document_filter:
-                    continue
                 hits.append(
                     {
-                        "rank": len(hits) + 1,
-                        "retrieval_rank": retrieval_rank,
+                        "rank": rank,
+                        "retrieval_rank": base_ranks[chunk_id],
                         "chunk_id": chunk["chunk_id"],
                         "document_id": chunk["document_id"],
                         "title": chunk["title"],
@@ -483,18 +766,38 @@ class ResearchService:
                         "locator": chunk["locator"],
                         "citation": chunk["citation"],
                         "text": chunk["text"],
-                        "retrieval_method": "bm25",
+                        "retrieval_method": retrieval_method,
+                        "component_ranks": component_ranks,
+                        "component_scores": {
+                            "dense_cosine_similarity": dense_scores.get(chunk_id),
+                            "bm25": None,
+                        },
+                        "fusion_score": fusion_scores.get(chunk_id),
+                        "rerank_score": rerank_scores.get(chunk_id),
                     }
                 )
-                if len(hits) == top_k:
-                    break
 
             status = await asyncio.to_thread(self._status)
             return {
                 "query": query,
                 "generation_id": manifest["generation_id"],
                 "stale": status["stale"],
-                "retrieval_method": "bm25",
+                "retrieval_method": retrieval_method,
+                "reranked": rerank,
+                "candidate_depth": candidate_depth,
+                "fusion": (
+                    {"method": "reciprocal_rank_fusion", "rrf_k": RRF_K}
+                    if retrieval_method == "hybrid"
+                    else None
+                ),
+                "embedding_model": EMBEDDING_MODEL if use_dense else None,
+                "embedding_model_revision": (
+                    EMBEDDING_MODEL_REVISION if use_dense else None
+                ),
+                "reranker_model": RERANKER_MODEL if rerank else None,
+                "reranker_model_revision": (
+                    RERANKER_MODEL_REVISION if rerank else None
+                ),
                 "result_count": len(hits),
                 "hits": hits,
                 "notice": (

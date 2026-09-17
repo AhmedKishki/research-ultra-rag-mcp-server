@@ -6,7 +6,7 @@ import argparse
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -17,7 +17,7 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.1.2"
+SERVER_VERSION = "0.2.0"
 T = TypeVar("T")
 
 
@@ -82,13 +82,14 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def ingest(
-        chunk_size: int = 500,
+        chunk_size: int = 384,
         chunk_overlap: int = 64,
     ) -> dict[str, Any]:
-        """Extract every project PDF/EPUB and create a new BM25 generation.
+        """Extract PDFs/EPUBs and create a BM25 plus dense generation.
 
-        Markdown and all other formats are ignored. Existing generations are
-        retained; the current pointer changes only after the new index succeeds.
+        Markdown and all other formats are ignored. chunk_size is measured in
+        GPT-2 tokens and is capped at 384 for the embedding model. Existing
+        generations are retained; current changes only after both indexes pass.
         """
 
         return await _tool_call(
@@ -112,11 +113,15 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         categories: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
+        retrieval_method: Literal["hybrid", "bm25", "dense"] = "hybrid",
+        rerank: bool = False,
     ) -> dict[str, Any]:
-        """Search the current BM25 generation and return citable evidence.
+        """Search the current generation and return citable evidence.
 
         Optional filters require every requested category or keyword to be
-        present. Returned passages contain structured provenance and locators.
+        present. Hybrid is the default; BM25 and dense retrieval can be inspected
+        separately. Optional CPU reranking is slower and lazily loads another
+        local model. Returned passages include provenance and component ranks.
         """
 
         return await _tool_call(
@@ -126,6 +131,8 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
                 categories=categories,
                 keywords=keywords,
                 document_ids=document_ids,
+                retrieval_method=retrieval_method,
+                rerank=rerank,
             )
         )
 
@@ -225,7 +232,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Require an already-installed vanilla UltraRAG runtime.",
+        help=(
+            "Require an installed vanilla runtime and already-cached embedding "
+            "or reranker models."
+        ),
     )
     parser.add_argument(
         "--log-level",

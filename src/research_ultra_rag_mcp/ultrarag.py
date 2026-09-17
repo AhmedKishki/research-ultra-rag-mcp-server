@@ -63,7 +63,7 @@ class VanillaUltraRAG:
                 "raw_chunk_path": str(input_path),
                 "chunk_backend_configs": {"token": {"chunk_overlap": chunk_overlap}},
                 "chunk_backend": "token",
-                "tokenizer_or_token_counter": "word",
+                "tokenizer_or_token_counter": "gpt2",
                 "chunk_size": chunk_size,
                 "chunk_path": str(output_path),
                 "use_title": False,

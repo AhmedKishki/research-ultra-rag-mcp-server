@@ -39,6 +39,32 @@ contains the notice "Copyright 2023 OpenBMB":
 The verified UltraRAG source snapshot installed by the vanilla gateway retains
 the upstream LICENSE.txt and all upstream notices.
 
+ADDITIONAL RETRIEVAL COMPONENTS
+
+The hybrid retrieval implementation also depends on:
+
+    Qdrant Python client 1.19.1 (Apache License 2.0)
+    https://github.com/qdrant/qdrant-client
+
+    FastEmbed 0.8.0 (Apache License 2.0)
+    https://github.com/qdrant/fastembed
+
+    BAAI/bge-small-en-v1.5 embedding model (MIT License)
+    https://huggingface.co/BAAI/bge-small-en-v1.5
+
+    Qdrant's FastEmbed ONNX artifact for BAAI/bge-small-en-v1.5
+    artifact revision 52398278842ec682c6f32300af41344b1c0b0bb2
+    https://huggingface.co/qdrant/bge-small-en-v1.5-onnx-q
+
+    Xenova/ms-marco-MiniLM-L-6-v2 reranker model (Apache License 2.0)
+    artifact revision a09144355adeed5f58c8ed011d209bf8ee5a1fec
+    https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2
+
+These dependencies and model files retain their respective authorship and
+licenses. They are not bundled as source files in this repository; the Python
+packages are installed by the package manager and model files are downloaded
+to a project-local cache on first use.
+
 SUGGESTED SOFTWARE CITATION
 
 The pinned UltraRAG revision does not include a dedicated UltraRAG BibTeX entry.

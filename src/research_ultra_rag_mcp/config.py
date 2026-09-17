@@ -34,6 +34,10 @@ class ResearchConfig:
         return self.state_root / "ultrarag-runtime"
 
     @property
+    def models_root(self) -> Path:
+        return self.state_root / "models"
+
+    @property
     def metadata_path(self) -> Path:
         return self.state_root / "source-metadata.json"
 
@@ -100,6 +104,7 @@ def resolve_config(
     state.mkdir(parents=True, exist_ok=True)
     (state / "generations").mkdir(exist_ok=True)
     (state / "logs").mkdir(exist_ok=True)
+    (state / "models").mkdir(exist_ok=True)
     (state / "ultrarag-runtime").mkdir(exist_ok=True)
 
     return ResearchConfig(
