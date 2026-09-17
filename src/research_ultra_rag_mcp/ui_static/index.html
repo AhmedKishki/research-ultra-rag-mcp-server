@@ -13,16 +13,10 @@
     <a class="skip-link" href="#workspace">Skip to research workspace</a>
 
     <header class="site-header">
-      <div class="brand-lockup" aria-label="Research UltraRAG">
-        <span class="brand-mark" aria-hidden="true">R</span>
-        <div>
-          <p class="brand-name">Research UltraRAG</p>
-          <p class="brand-subtitle">Evidence workspace</p>
-        </div>
-      </div>
+      <div class="brand-name">Research UltraRAG</div>
 
       <div class="project-identity">
-        <span class="eyebrow">Active project</span>
+        <span class="project-label">Project</span>
         <span id="project-name" class="project-name">Connecting…</span>
         <span id="project-path" class="project-path"></span>
       </div>
@@ -42,17 +36,110 @@
     </header>
 
     <main id="workspace" class="workspace">
-      <section class="overview" aria-labelledby="overview-title">
-        <div class="section-heading overview-heading">
-          <div>
-            <p class="eyebrow">Knowledge base</p>
-            <h1 id="overview-title">Evidence, with its provenance intact.</h1>
+      <nav class="section-tabs" aria-label="Research views">
+        <button class="tab-button is-active" type="button" data-view="search" aria-selected="true">
+          Search
+        </button>
+        <button class="tab-button" type="button" data-view="sources" aria-selected="false">
+          Sources <span id="source-tab-count" class="tab-count">0</span>
+        </button>
+      </nav>
+
+      <section id="search-view" class="view-panel is-active" data-panel="search">
+        <form id="search-form" class="search-console">
+          <label class="query-field" for="query">
+            <span class="field-label">Query</span>
+            <textarea
+              id="query"
+              name="query"
+              rows="3"
+              required
+              placeholder="Enter a research question, phrase, name, or concept"
+            ></textarea>
+          </label>
+
+          <div class="search-controls">
+            <fieldset class="method-control">
+              <legend>Retrieval</legend>
+              <label><input type="radio" name="retrieval_method" value="hybrid" checked><span>Hybrid</span></label>
+              <label><input type="radio" name="retrieval_method" value="bm25"><span>BM25</span></label>
+              <label><input type="radio" name="retrieval_method" value="dense"><span>Dense</span></label>
+            </fieldset>
+
+            <label class="compact-field" for="top-k">
+              <span>Results</span>
+              <select id="top-k" name="top_k">
+                <option value="5">5</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+                <option value="20">20</option>
+              </select>
+            </label>
+
+            <label class="check-control" for="rerank">
+              <input id="rerank" name="rerank" type="checkbox">
+              <span>
+                <strong>CPU rerank</strong>
+                <small>Slower, precision-focused</small>
+              </span>
+            </label>
+
+            <button id="search-button" class="button button-primary search-submit" type="submit">
+              Search
+            </button>
           </div>
-          <p class="overview-copy">
-            Search the current immutable generation. Results remain source passages;
-            interpretation and writing stay with you and your agent.
-          </p>
+
+          <details class="filter-drawer">
+            <summary>Limit by reviewed metadata</summary>
+            <div class="filter-fields">
+              <label for="category-filter">
+                <span class="field-label">Categories</span>
+                <input id="category-filter" type="text" placeholder="political economy, technology">
+                <small>Comma separated; every category must match.</small>
+              </label>
+              <label for="keyword-filter">
+                <span class="field-label">Keywords</span>
+                <input id="keyword-filter" type="text" placeholder="labour, AI">
+                <small>Comma separated; every keyword must match.</small>
+              </label>
+            </div>
+          </details>
+        </form>
+
+        <div id="search-summary" class="result-summary" hidden>
+          <h2 id="result-heading">Results</h2>
+          <div id="result-meta" class="result-meta"></div>
         </div>
+
+        <div id="search-empty" class="empty-state">
+          Enter a query to search the current knowledge base.
+        </div>
+
+        <div id="results" class="results-list" aria-live="polite"></div>
+      </section>
+
+      <section id="sources-view" class="view-panel" data-panel="sources" hidden>
+        <div class="sources-toolbar">
+          <h2>Indexed sources</h2>
+          <label class="source-filter" for="source-filter">
+            <span class="visually-hidden">Filter sources</span>
+            <input id="source-filter" type="search" placeholder="Filter by title, author, category…">
+          </label>
+        </div>
+
+        <div id="source-list" class="source-list" aria-live="polite"></div>
+
+        <section id="excluded-section" class="excluded-section" hidden>
+          <div class="section-heading-row">
+            <h3>Excluded sources</h3>
+            <span id="excluded-count" class="count-badge">0</span>
+          </div>
+          <div id="excluded-list" class="excluded-list"></div>
+        </section>
+      </section>
+
+      <section class="system-summary" aria-labelledby="system-summary-title">
+        <h2 id="system-summary-title">Knowledge base status</h2>
 
         <div id="status-cards" class="status-grid" aria-live="polite">
           <article class="stat-card">
@@ -85,138 +172,16 @@
           <button id="notice-action" class="text-button" type="button">Review sources</button>
         </div>
       </section>
-
-      <nav class="section-tabs" aria-label="Research views">
-        <button class="tab-button is-active" type="button" data-view="search" aria-selected="true">
-          Search evidence
-        </button>
-        <button class="tab-button" type="button" data-view="sources" aria-selected="false">
-          Sources <span id="source-tab-count" class="tab-count">0</span>
-        </button>
-      </nav>
-
-      <section id="search-view" class="view-panel is-active" data-panel="search">
-        <form id="search-form" class="search-console">
-          <label class="query-field" for="query">
-            <span class="field-label">Research question or passage</span>
-            <textarea
-              id="query"
-              name="query"
-              rows="3"
-              required
-              placeholder="What evidence connects artificial intelligence to commodity fetishism?"
-            ></textarea>
-          </label>
-
-          <div class="search-controls">
-            <fieldset class="method-control">
-              <legend>Retrieval</legend>
-              <label><input type="radio" name="retrieval_method" value="hybrid" checked><span>Hybrid</span></label>
-              <label><input type="radio" name="retrieval_method" value="bm25"><span>BM25</span></label>
-              <label><input type="radio" name="retrieval_method" value="dense"><span>Dense</span></label>
-            </fieldset>
-
-            <label class="compact-field" for="top-k">
-              <span>Results</span>
-              <select id="top-k" name="top_k">
-                <option value="5">5</option>
-                <option value="8" selected>8</option>
-                <option value="12">12</option>
-                <option value="20">20</option>
-              </select>
-            </label>
-
-            <label class="check-control" for="rerank">
-              <input id="rerank" name="rerank" type="checkbox">
-              <span>
-                <strong>CPU rerank</strong>
-                <small>Slower, precision-focused</small>
-              </span>
-            </label>
-
-            <button id="search-button" class="button button-primary search-submit" type="submit">
-              Search evidence
-            </button>
-          </div>
-
-          <details class="filter-drawer">
-            <summary>Limit by reviewed metadata</summary>
-            <div class="filter-fields">
-              <label for="category-filter">
-                <span class="field-label">Categories</span>
-                <input id="category-filter" type="text" placeholder="political economy, technology">
-                <small>Comma separated; every category must match.</small>
-              </label>
-              <label for="keyword-filter">
-                <span class="field-label">Keywords</span>
-                <input id="keyword-filter" type="text" placeholder="labour, AI">
-                <small>Comma separated; every keyword must match.</small>
-              </label>
-            </div>
-          </details>
-        </form>
-
-        <div id="search-summary" class="result-summary" hidden>
-          <div>
-            <p class="eyebrow">Retrieved evidence</p>
-            <h2 id="result-heading">Results</h2>
-          </div>
-          <div id="result-meta" class="result-meta"></div>
-        </div>
-
-        <div id="search-empty" class="empty-state">
-          <span class="empty-index">01</span>
-          <div>
-            <h2>Start with a substantive question.</h2>
-            <p>
-              Hybrid search balances exact language with conceptual similarity.
-              Retrieved passages include enough provenance to verify every quotation.
-            </p>
-          </div>
-        </div>
-
-        <div id="results" class="results-list" aria-live="polite"></div>
-      </section>
-
-      <section id="sources-view" class="view-panel" data-panel="sources" hidden>
-        <div class="sources-toolbar">
-          <div>
-            <p class="eyebrow">Collection</p>
-            <h2>Indexed sources</h2>
-          </div>
-          <label class="source-filter" for="source-filter">
-            <span class="visually-hidden">Filter sources</span>
-            <input id="source-filter" type="search" placeholder="Filter by title, author, category…">
-          </label>
-        </div>
-
-        <div id="source-list" class="source-list" aria-live="polite"></div>
-
-        <section id="excluded-section" class="excluded-section" hidden>
-          <div class="section-heading-row">
-            <div>
-              <p class="eyebrow">Not searched</p>
-              <h3>Excluded sources</h3>
-            </div>
-            <span id="excluded-count" class="count-badge">0</span>
-          </div>
-          <div id="excluded-list" class="excluded-list"></div>
-        </section>
-      </section>
     </main>
 
     <footer class="site-footer">
-      <span>Research UltraRAG · local project workspace</span>
-      <span>Verify important quotations in the original PDF or EPUB.</span>
+      Verify important quotations in the original PDF or EPUB.
     </footer>
 
     <dialog id="ingest-dialog" class="dialog">
       <form id="ingest-form" method="dialog">
         <div class="dialog-header">
-          <div>
-            <p class="eyebrow">Immutable build</p>
-            <h2>Create a new generation</h2>
-          </div>
+          <h2>Create a new generation</h2>
           <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
         </div>
         <p class="dialog-intro">
@@ -245,10 +210,7 @@
     <dialog id="metadata-dialog" class="dialog dialog-wide">
       <form id="metadata-form" method="dialog">
         <div class="dialog-header">
-          <div>
-            <p class="eyebrow">Reviewed record</p>
-            <h2>Edit source metadata</h2>
-          </div>
+          <h2>Edit source metadata</h2>
           <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
         </div>
         <input id="metadata-source-path" type="hidden">
@@ -289,10 +251,7 @@
     <dialog id="exclusion-dialog" class="dialog">
       <form id="exclusion-form" method="dialog">
         <div class="dialog-header">
-          <div>
-            <p class="eyebrow">Retrieval decision</p>
-            <h2>Exclude this source?</h2>
-          </div>
+          <h2>Exclude this source?</h2>
           <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
         </div>
         <input id="exclusion-source-path" type="hidden">
@@ -313,10 +272,7 @@
 
     <dialog id="context-dialog" class="dialog dialog-context">
       <div class="dialog-header">
-        <div>
-          <p class="eyebrow">Nearby passages</p>
-          <h2 id="context-title">Passage context</h2>
-        </div>
+        <h2 id="context-title">Passage context</h2>
         <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
       </div>
       <div id="context-content" class="context-content"></div>

@@ -18,10 +18,64 @@ class ExtractionError(RuntimeError):
     """Raised when a source cannot be represented safely in the knowledge base."""
 
 
-def _clean_text(value: str) -> str:
-    text = value.replace("\r\n", "\n").replace("\r", "\n")
-    lines = [line.rstrip() for line in text.splitlines()]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+_HORIZONTAL_SPACE = re.compile(r"[\t\f\v \u00a0]+")
+_LIST_ITEM = re.compile(r"^(?:[-*•]|\d+[.)]|[A-Za-z][.)])\s+")
+
+
+def _starts_with_lowercase(value: str) -> bool:
+    for character in value:
+        if character.isalpha():
+            return character.islower()
+        if character.isdigit():
+            return False
+    return False
+
+
+def _ends_sentence(value: str) -> bool:
+    return value.rstrip("\"'”’)]}").endswith((".", "!", "?", "…", ":"))
+
+
+def normalize_reading_text(value: str) -> str:
+    """Remove layout line wrapping while retaining useful paragraph breaks."""
+
+    text = value.replace("\r\n", "\n").replace("\r", "\n").replace("\u00ad", "")
+    paragraphs: list[str] = []
+    current = ""
+    separated = False
+    for raw_line in text.splitlines():
+        line = _HORIZONTAL_SPACE.sub(" ", raw_line).strip()
+        if not line:
+            separated = bool(current)
+            continue
+        if not current:
+            current = line
+        elif _LIST_ITEM.match(line) or (separated and _ends_sentence(current)):
+            paragraphs.append(current)
+            current = line
+        elif current.endswith("-") and _starts_with_lowercase(line):
+            current = current[:-1] + line
+        else:
+            current = f"{current} {line}"
+        separated = False
+    if current:
+        paragraphs.append(current)
+    return "\n\n".join(paragraphs)
+
+
+def normalize_inline_text(value: str) -> str:
+    """Normalize extracted metadata to one display-safe line."""
+
+    return _HORIZONTAL_SPACE.sub(
+        " ", normalize_reading_text(value).replace("\n", " ")
+    ).strip()
+
+
+def _normalize_text_list(values: list[Any]) -> list[str]:
+    return [
+        normalized
+        for value in values
+        if (normalized := normalize_inline_text(str(value)))
+    ]
 
 
 def _document_id(source: SourceFile, digest: str) -> str:
@@ -46,12 +100,14 @@ def _base_metadata(
         "sha256": digest,
         "size": source.size,
         "mtime_ns": source.mtime_ns,
-        "title": override.get("title") or title or source.path.stem,
-        "authors": override.get("authors", authors),
+        "title": normalize_inline_text(
+            str(override.get("title") or title or source.path.stem)
+        ),
+        "authors": _normalize_text_list(override.get("authors", authors)),
         "year": override.get("year"),
-        "doi": override.get("doi", ""),
-        "categories": override.get("categories", []),
-        "keywords": override.get("keywords", []),
+        "doi": normalize_inline_text(str(override.get("doi") or "")),
+        "categories": _normalize_text_list(override.get("categories", [])),
+        "keywords": _normalize_text_list(override.get("keywords", [])),
     }
 
 
@@ -92,7 +148,13 @@ def _extract_pdf(
         units: list[dict[str, Any]] = []
         empty_pages = 0
         for page_index, page in enumerate(document):
-            text = _clean_text(page.get_text("text", sort=True))
+            text = normalize_reading_text(
+                page.get_text(
+                    "text",
+                    sort=True,
+                    flags=pymupdf.TEXTFLAGS_TEXT | pymupdf.TEXT_DEHYPHENATE,
+                )
+            )
             if not text:
                 empty_pages += 1
                 continue
@@ -174,11 +236,11 @@ def _extract_epub(
             unwanted.decompose()
         heading = soup.find(re.compile(r"^h[1-6]$"))
         section_title = (
-            _clean_text(heading.get_text(" ", strip=True))
+            normalize_inline_text(heading.get_text(" ", strip=True))
             if heading is not None
             else ""
         )
-        text = _clean_text(soup.get_text("\n"))
+        text = normalize_reading_text(soup.get_text("\n"))
         if not text:
             empty_sections += 1
             continue

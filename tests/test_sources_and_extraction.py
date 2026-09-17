@@ -7,7 +7,11 @@ import pytest
 from conftest import write_epub, write_pdf
 
 from research_ultra_rag_mcp.config import ConfigurationError, resolve_config
-from research_ultra_rag_mcp.extraction import extract_sources
+from research_ultra_rag_mcp.extraction import (
+    extract_sources,
+    normalize_inline_text,
+    normalize_reading_text,
+)
 from research_ultra_rag_mcp.sources import SourcePolicyError, scan_sources
 
 
@@ -44,6 +48,22 @@ def test_pdf_pages_and_epub_sections_preserve_locators(project: Path) -> None:
     assert [item["locator"]["page"] for item in pdf_units] == [1, 2]
     assert any("quartz" in item["contents"] for item in epub_units)
     assert all("section_index" in item["locator"] for item in epub_units)
+
+
+def test_extracted_text_removes_layout_wrapping() -> None:
+    raw = (
+        "A sentence wraps in the\nmiddle of a line.\n\n"
+        "A com-\nmodity remains readable.\r\n\r\nFinal paragraph."
+    )
+
+    assert normalize_reading_text(raw) == (
+        "A sentence wraps in the middle of a line.\n\n"
+        "A commodity remains readable.\n\nFinal paragraph."
+    )
+    assert normalize_inline_text(raw) == (
+        "A sentence wraps in the middle of a line. "
+        "A commodity remains readable. Final paragraph."
+    )
 
 
 def test_source_directory_cannot_escape_project(project: Path) -> None:

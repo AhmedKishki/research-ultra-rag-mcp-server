@@ -31,6 +31,21 @@ function listValue(value) {
     .filter(Boolean);
 }
 
+function readableText(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00ad/g, "")
+    .replace(/([A-Za-z])-\s*\n\s*([a-z])/g, "$1$2")
+    .split(/\n\s*\n+/)
+    .map((paragraph) => paragraph.replace(/\s*\n\s*/g, " ").replace(/[\t ]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function inlineText(value) {
+  return readableText(value).replace(/\s+/g, " ").trim();
+}
+
 function formatNumber(value) {
   return new Intl.NumberFormat().format(Number(value || 0));
 }
@@ -52,7 +67,9 @@ function compactId(value) {
 }
 
 function authorLine(source) {
-  const authors = Array.isArray(source.authors) ? source.authors.filter(Boolean) : [];
+  const authors = Array.isArray(source.authors)
+    ? source.authors.map(inlineText).filter(Boolean)
+    : [];
   const parts = [];
   if (authors.length) parts.push(authors.join("; "));
   if (source.year) parts.push(String(source.year));
@@ -199,7 +216,7 @@ function tagList(values, className = "tag") {
 function sourceCard(source) {
   const card = node("article", "source-card");
   card.dataset.searchText = [
-    source.title,
+    inlineText(source.title),
     ...(source.authors || []),
     ...(source.categories || []),
     ...(source.keywords || []),
@@ -209,7 +226,7 @@ function sourceCard(source) {
   const body = node("div", "source-card-body");
   const titleRow = node("div", "source-title-row");
   titleRow.append(node("span", "format-badge", source.format || "source"));
-  titleRow.append(node("span", "source-title", source.title || source.source_relative_path));
+  titleRow.append(node("span", "source-title", inlineText(source.title) || source.source_relative_path));
   body.append(titleRow);
   body.append(node("p", "source-byline", authorLine(source)));
   const path = node("p", "source-path", source.source_relative_path);
@@ -234,7 +251,7 @@ function excludedCard(source) {
   const card = node("article", "excluded-item");
   const body = node("div");
   body.append(node("strong", "", source.source_relative_path));
-  body.append(node("p", "excluded-reason", source.reason || "No reason recorded"));
+  body.append(node("p", "excluded-reason", inlineText(source.reason) || "No reason recorded"));
   const status = source.exists === false
     ? "File missing"
     : source.indexed_in_current_generation
@@ -309,12 +326,12 @@ function resultCard(hit) {
   const content = node("div", "result-content");
 
   const header = node("div", "result-card-header");
-  header.append(node("h3", "result-title", hit.title || hit.source_path));
+  header.append(node("h3", "result-title", inlineText(hit.title) || hit.source_path));
   header.append(node("span", "locator-badge", locatorLabel(hit.locator)));
   content.append(header);
   content.append(node("div", "result-byline", `${authorLine(hit)} · ${hit.source_path}`));
-  content.append(node("p", "result-citation", hit.citation || "Citation unavailable"));
-  content.append(node("p", "passage-text", hit.text || ""));
+  content.append(node("p", "result-citation", inlineText(hit.citation) || "Citation unavailable"));
+  content.append(node("p", "passage-text", readableText(hit.text)));
 
   if ((hit.categories || []).length || (hit.keywords || []).length) {
     const tags = node("div", "tag-row");
@@ -425,9 +442,9 @@ async function showContext(chunkId) {
     (payload.context || []).forEach((passage) => {
       const item = node("article", `context-passage${passage.chunk_id === payload.requested_chunk_id ? " is-requested" : ""}`);
       const citation = node("div", "context-citation");
-      citation.append(node("span", "", passage.citation));
+      citation.append(node("span", "", inlineText(passage.citation)));
       citation.append(node("span", "locator-badge", locatorLabel(passage.locator)));
-      item.append(citation, node("p", "", passage.text));
+      item.append(citation, node("p", "", readableText(passage.text)));
       container.append(item);
     });
     if (!container.children.length) container.append(node("div", "no-records", "No context was returned."));
@@ -568,10 +585,10 @@ function handleAction(event) {
   else if (action === "show-context") showContext(value);
   else if (action === "copy-passage") {
     const hit = state.hits.get(value);
-    if (hit) copyText(hit.text, "Passage copied.");
+    if (hit) copyText(readableText(hit.text), "Passage copied.");
   } else if (action === "copy-citation") {
     const hit = state.hits.get(value);
-    if (hit) copyText(hit.citation, "Citation copied.");
+    if (hit) copyText(inlineText(hit.citation), "Citation copied.");
   } else if (action === "ingest") byId("ingest-dialog").showModal();
 }
 

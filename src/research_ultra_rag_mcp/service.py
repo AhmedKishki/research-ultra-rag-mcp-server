@@ -26,7 +26,11 @@ from .dense import (
     DenseSearchHit,
     LocalQdrantDenseBackend,
 )
-from .extraction import extract_sources
+from .extraction import (
+    extract_sources,
+    normalize_inline_text,
+    normalize_reading_text,
+)
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
     SourcePolicyError,
@@ -48,7 +52,7 @@ from .storage import (
 )
 from .ultrarag import VanillaUltraRAG
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_RETRIEVAL_METHOD = "hybrid"
 RETRIEVAL_METHODS = frozenset({"bm25", "dense", "hybrid"})
 RRF_K = 60
@@ -139,6 +143,21 @@ def _embedding_text(document: dict[str, Any], text: str) -> str:
     return "\n".join(metadata_lines) + f"\n\nContent:\n{text}"
 
 
+def _public_document(document: dict[str, Any]) -> dict[str, Any]:
+    """Return document metadata without extraction-related line wrapping."""
+
+    result = dict(document)
+    for field in ("title", "doi"):
+        result[field] = normalize_inline_text(str(result.get(field) or ""))
+    for field in ("authors", "categories", "keywords"):
+        result[field] = [
+            normalized
+            for value in result.get(field) or []
+            if (normalized := normalize_inline_text(str(value)))
+        ]
+    return result
+
+
 def _enrich_chunks(
     raw_chunks: list[dict[str, Any]],
     units: list[dict[str, Any]],
@@ -159,7 +178,7 @@ def _enrich_chunks(
             )
         document_id = str(unit["document_id"])
         document = documents_by_id[document_id]
-        text = str(raw.get("contents") or "").strip()
+        text = normalize_reading_text(str(raw.get("contents") or ""))
         if not text:
             discarded_empty_chunks += 1
             continue
@@ -1043,6 +1062,7 @@ class ResearchService:
             hits: list[dict[str, Any]] = []
             for rank, chunk_id in enumerate(ordered_ids[:top_k], 1):
                 chunk = chunks_by_id[chunk_id]
+                public_document = _public_document(chunk)
                 component_ranks = {
                     "bm25": bm25_ranks.get(chunk_id),
                     "dense": dense_ranks.get(chunk_id),
@@ -1053,16 +1073,16 @@ class ResearchService:
                         "retrieval_rank": base_ranks[chunk_id],
                         "chunk_id": chunk["chunk_id"],
                         "document_id": chunk["document_id"],
-                        "title": chunk["title"],
-                        "authors": chunk["authors"],
+                        "title": public_document["title"],
+                        "authors": public_document["authors"],
                         "year": chunk["year"],
-                        "doi": chunk["doi"],
+                        "doi": public_document["doi"],
                         "source_path": chunk["source_path"],
-                        "categories": chunk["categories"],
-                        "keywords": chunk["keywords"],
+                        "categories": public_document["categories"],
+                        "keywords": public_document["keywords"],
                         "locator": chunk["locator"],
-                        "citation": chunk["citation"],
-                        "text": chunk["text"],
+                        "citation": normalize_inline_text(str(chunk["citation"])),
+                        "text": normalize_reading_text(str(chunk["text"])),
                         "retrieval_method": retrieval_method,
                         "component_ranks": component_ranks,
                         "component_scores": {
@@ -1145,7 +1165,7 @@ class ResearchService:
                     continue
                 if keyword_filter and not keyword_filter.issubset(document_keywords):
                     continue
-                sources.append(document)
+                sources.append(_public_document(document))
             return {
                 "ready": True,
                 "generation_id": manifest["generation_id"],
@@ -1208,16 +1228,13 @@ class ResearchService:
             end = min(len(same_document), target_position + context_chunks + 1)
             context = [
                 {
-                    key: item[key]
-                    for key in (
-                        "chunk_id",
-                        "document_id",
-                        "source_path",
-                        "title",
-                        "locator",
-                        "citation",
-                        "text",
-                    )
+                    "chunk_id": item["chunk_id"],
+                    "document_id": item["document_id"],
+                    "source_path": item["source_path"],
+                    "title": _public_document(item)["title"],
+                    "locator": item["locator"],
+                    "citation": normalize_inline_text(str(item["citation"])),
+                    "text": normalize_reading_text(str(item["text"])),
                 }
                 for item in same_document[start:end]
             ]

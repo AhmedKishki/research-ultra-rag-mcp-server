@@ -33,7 +33,7 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and
   `research-ultra-rag-verify`
-- Version: `0.4.0`
+- Version: `0.5.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
@@ -212,6 +212,9 @@ Update tests and documentation when changing them.
 - `text` is the only quote-safe passage field returned to clients.
   `embedding_text` is internal retrieval input and must not be exposed as a
   quotation.
+- Normalize extraction-related line wrapping before chunking and again at the
+  public response boundary so older generations remain readable. Preserve
+  meaningful paragraph breaks; do not rewrite wording or silently correct OCR.
 - Schema-1 generations are BM25-only. Keep them usable when a caller explicitly
   requests `bm25`; require a new ingestion before dense or hybrid search.
 - Exclusions are path-based, stored outside generations, and applied to BM25,

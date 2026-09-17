@@ -141,6 +141,10 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
         page = client.get("/")
         assert page.status_code == 200
         assert "Research UltraRAG" in page.text
+        assert "Evidence, with its provenance intact" not in page.text
+        assert page.text.index('id="search-view"') < page.text.index(
+            'id="status-cards"'
+        )
         assert "default-src 'self'" in page.headers["content-security-policy"]
 
         css = client.get("/assets/app.css")

@@ -25,6 +25,7 @@ This is an independent project and is not an official UltraRAG release. See
 - one isolated knowledge base per configured project root;
 - enforced PDF and EPUB ingestion—Markdown and other formats are ignored;
 - PDF page locators and EPUB section locators;
+- readable passage text with extraction-related line wrapping removed;
 - reviewed title, author, year, DOI, category, and keyword metadata;
 - reversible, agent-reviewed source exclusion without deleting original files;
 - immutable knowledge-base generations with stable source provenance;
@@ -259,6 +260,12 @@ truth probabilities and should not be compared across different queries.
 PDF locators use physical PDF pages and available page labels. Reflowable EPUBs
 use section titles, file references, and spine positions because they do not
 have stable page numbers.
+
+Layout line breaks introduced by PDF or EPUB extraction are removed from
+returned passages. Existing generations benefit at response time. A new
+ingestion stores the normalized text in the generation itself. This does not
+perform OCR or rewrite source wording, so important quotations still need to be
+checked against the original document.
 
 ## Choose a retrieval mode
 

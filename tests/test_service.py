@@ -228,6 +228,14 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     assert sources["source_count"] == 1
     assert sources["sources"][0]["source_path"] == "sources/article.pdf"
 
+    generation_root = Path(result["generation_root"])
+    chunks_path = generation_root / "chunks" / "chunks.jsonl"
+    stored_chunks = read_jsonl(chunks_path)
+    stored_chunks[0]["text"] = (
+        "Cobalt evidence about\nlabour and artificial\nintelligence."
+    )
+    write_jsonl(chunks_path, stored_chunks)
+
     search = await service.search(
         "cobalt labour",
         top_k=1,
@@ -238,6 +246,7 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     assert hit["locator"]["type"] == "pdf_page"
     assert hit["locator"]["page"] == 1
     assert "Cobalt evidence" in hit["text"]
+    assert hit["text"] == ("Cobalt evidence about labour and artificial intelligence.")
     assert "p. 1" in hit["citation"]
     assert search["retrieval_method"] == "hybrid"
     assert hit["component_ranks"]["bm25"] == 1
@@ -259,8 +268,8 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     passage = await service.get_passage(hit["chunk_id"], context_chunks=1)
     assert passage["requested_chunk_id"] == hit["chunk_id"]
     assert len(passage["context"]) == 2
+    assert passage["context"][0]["text"] == hit["text"]
 
-    generation_root = Path(result["generation_root"])
     manifest_path = generation_root / "manifest.json"
     legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     legacy_manifest["schema_version"] = 1
