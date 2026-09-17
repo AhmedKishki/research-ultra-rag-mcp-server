@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-ultra-rag-mcp"
+version = "0.1.0"
+description = "A project-scoped research knowledge-base MCP server built on vanilla UltraRAG"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "beautifulsoup4>=4.13,<5",
+    "ebooklib>=0.20,<1",
+    "fastmcp==3.4.0",
+    "pymupdf>=1.26,<2",
+    "vanilla-ultra-rag-mcp @ git+https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git@404839c10aef254a49380695fa3b2bb9c2b1c95f",
+]
+
+[project.scripts]
+research-ultra-rag-mcp = "research_ultra_rag_mcp.server:main"
+research-ultra-rag-verify = "research_ultra_rag_mcp.verify:main"
+
+[project.urls]
+Repository = "https://github.com/AhmedKishki/research-ultra-rag-mcp-server"
+Issues = "https://github.com/AhmedKishki/research-ultra-rag-mcp-server/issues"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff>=0.7.3",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: starts the real vanilla UltraRAG stdio gateway",
+]
