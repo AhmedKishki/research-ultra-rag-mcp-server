@@ -17,6 +17,7 @@ The current release establishes a local CPU hybrid-retrieval baseline.
 - reciprocal-rank fusion with visible component ranks;
 - opt-in bounded CPU cross-encoder reranking;
 - structured evidence results and context retrieval;
+- reversible agent-reviewed source exclusion without source-file deletion;
 - staleness reporting; and
 - real stdio integration coverage.
 
@@ -35,7 +36,7 @@ The current release establishes a local CPU hybrid-retrieval baseline.
 
 - detect unchanged files by hash;
 - reuse unchanged extracted units and embeddings;
-- add explicit source removal and generation cleanup tools;
+- add generation cleanup tools;
 - provide generation listing and rollback;
 - validate disk-space requirements before building; and
 - add lock files for multiple server processes targeting one project.

@@ -19,7 +19,7 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.3.0"
 T = TypeVar("T")
 
 
@@ -185,6 +185,25 @@ ReviewedMetadata: TypeAlias = Annotated[
             "Complete reviewed metadata override for the source. Supported fields are "
             "title, authors, year, doi, categories, and keywords; omitted fields remove "
             "their previous overrides."
+        )
+    ),
+]
+InclusionFlag: TypeAlias = Annotated[
+    bool,
+    Field(
+        description=(
+            "Set false to exclude the source from retrieval and future ingestion; "
+            "set true to restore it. The original file is never changed."
+        )
+    ),
+]
+ExclusionReason: TypeAlias = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Human-readable reason for the decision, such as identifying another "
+            "file as the preferred copy. Required when included is false; omit or "
+            "pass null when restoring a source."
         )
     ),
 ]
@@ -365,6 +384,36 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
 
         return await _tool_call(
             lambda: service().set_source_metadata(source_path, metadata)
+        )
+
+    @app.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def set_source_inclusion(
+        source_path: SourcePath,
+        included: InclusionFlag,
+        reason: ExclusionReason = None,
+    ) -> dict[str, Any]:
+        """Include or exclude a PDF/EPUB from the project knowledge base.
+
+        Use this after the agent or user has reviewed a source, including when a
+        duplicate representation was found. Exclusion immediately blocks current
+        search, source listing, and passage lookup, and future ingestion skips the
+        source. The source file is never deleted or modified. Inclusion is
+        reversible; re-ingest if the current generation does not contain it.
+        """
+
+        return await _tool_call(
+            lambda: service().set_source_inclusion(
+                source_path,
+                included=included,
+                reason=reason,
+            )
         )
 
     return app

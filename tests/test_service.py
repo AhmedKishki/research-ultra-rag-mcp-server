@@ -97,11 +97,13 @@ class FakeDenseBackend:
         categories: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
+        excluded_document_ids: list[str] | None = None,
     ) -> list[DenseSearchHit]:
         assert index_path.is_dir()
         category_filter = {item.casefold() for item in categories or []}
         keyword_filter = {item.casefold() for item in keywords or []}
         document_filter = set(document_ids or [])
+        excluded_document_filter = set(excluded_document_ids or [])
         terms = query.casefold().split()
         scored: list[tuple[float, str]] = []
         for chunk in self.chunks:
@@ -116,6 +118,8 @@ class FakeDenseBackend:
             if keyword_filter and not keyword_filter.issubset(chunk_keywords):
                 continue
             if document_filter and chunk["document_id"] not in document_filter:
+                continue
+            if chunk["document_id"] in excluded_document_filter:
                 continue
             text = str(chunk["embedding_text"]).casefold()
             score = float(sum(text.count(term) for term in terms))
@@ -289,6 +293,91 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
 
 def test_research_generation_and_structured_search(project: Path) -> None:
     asyncio.run(_assert_research_generation_and_structured_search(project))
+
+
+async def _assert_agent_reviewed_source_exclusion(project: Path) -> None:
+    preferred = project / "sources" / "preferred.pdf"
+    duplicate = project / "sources" / "duplicate.pdf"
+    write_pdf(preferred, ["Shared cobalt evidence for duplicate review."])
+    write_pdf(duplicate, ["Shared cobalt evidence for duplicate review."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert first["source_file_count"] == 2
+    assert first["document_count"] == 2
+
+    initial = await service.search("shared cobalt evidence", top_k=10)
+    duplicate_hit = next(
+        hit for hit in initial["hits"] if hit["source_path"] == "sources/duplicate.pdf"
+    )
+
+    with pytest.raises(ResearchError, match="reason is required"):
+        await service.set_source_inclusion("duplicate.pdf", included=False)
+    with pytest.raises(ResearchError, match="escapes"):
+        await service.set_source_inclusion(
+            "../outside.pdf",
+            included=False,
+            reason="Invalid path must not be accepted.",
+        )
+
+    excluded = await service.set_source_inclusion(
+        "duplicate.pdf",
+        included=False,
+        reason="Agent-reviewed duplicate; preferred.pdf is the retained copy.",
+    )
+    assert excluded["effective_immediately"] is True
+    assert excluded["source_file_changed"] is False
+    assert duplicate.is_file()
+
+    status = await service.status()
+    assert status["stale"] is True
+    assert status["excluded_source_count"] == 1
+    assert status["searchable_source_count"] == 1
+    assert status["changes"]["source_exclusions_changed"] is True
+    assert status["excluded_sources"][0]["indexed_in_current_generation"] is True
+
+    search = await service.search("shared cobalt evidence", top_k=10)
+    assert search["excluded_source_count"] == 1
+    assert {hit["source_path"] for hit in search["hits"]} == {"sources/preferred.pdf"}
+    sources = await service.list_sources()
+    assert sources["source_count"] == 1
+    assert sources["sources"][0]["source_path"] == "sources/preferred.pdf"
+    with pytest.raises(ResearchError, match="currently excluded"):
+        await service.get_passage(duplicate_hit["chunk_id"])
+
+    rebuilt = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert rebuilt["source_file_count"] == 2
+    assert rebuilt["excluded_source_count"] == 1
+    assert rebuilt["document_count"] == 1
+    rebuilt_status = await service.status()
+    assert rebuilt_status["stale"] is False
+    assert (
+        rebuilt_status["excluded_sources"][0]["indexed_in_current_generation"] is False
+    )
+
+    included = await service.set_source_inclusion(
+        "duplicate.pdf",
+        included=True,
+    )
+    assert included["effective_immediately"] is False
+    assert included["generation_rebuild_recommended"] is True
+    assert duplicate.is_file()
+    assert (await service.status())["stale"] is True
+
+    restored = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert restored["document_count"] == 2
+    assert restored["excluded_source_count"] == 0
+
+
+def test_agent_reviewed_source_exclusion_is_immediate_and_reversible(
+    project: Path,
+) -> None:
+    asyncio.run(_assert_agent_reviewed_source_exclusion(project))
 
 
 def test_reciprocal_rank_fusion_rewards_agreement() -> None:

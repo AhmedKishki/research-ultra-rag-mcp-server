@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -24,6 +25,7 @@ from .extraction import extract_sources
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
     SourcePolicyError,
+    SourceScan,
     metadata_revision,
     normalize_metadata,
     scan_sources,
@@ -33,13 +35,15 @@ from .storage import (
     atomic_write_json,
     load_current_generation,
     load_metadata_overrides,
+    load_source_exclusions,
     read_jsonl,
     write_jsonl,
     write_metadata_overrides,
+    write_source_exclusions,
 )
 from .ultrarag import VanillaUltraRAG
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_RETRIEVAL_METHOD = "hybrid"
 RETRIEVAL_METHODS = frozenset({"bm25", "dense", "hybrid"})
 RRF_K = 60
@@ -59,6 +63,18 @@ def _utc_now() -> str:
 def _generation_id() -> str:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
+def _source_exclusion_revision(
+    exclusions: dict[str, dict[str, str]],
+) -> str:
+    encoded = json.dumps(
+        exclusions,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _citation(document: dict[str, Any], locator: dict[str, Any]) -> str:
@@ -215,6 +231,59 @@ class ResearchService:
         except (StorageError, SourcePolicyError) as exc:
             raise ResearchError(str(exc)) from exc
 
+    def _source_exclusions(self) -> dict[str, dict[str, str]]:
+        try:
+            return load_source_exclusions(self.config.source_exclusions_path)
+        except StorageError as exc:
+            raise ResearchError(str(exc)) from exc
+
+    @staticmethod
+    def _excluded_document_ids(
+        manifest: dict[str, Any],
+        exclusions: dict[str, dict[str, str]],
+    ) -> set[str]:
+        return {
+            str(document["document_id"])
+            for document in manifest.get("documents", [])
+            if str(document.get("source_relative_path")) in exclusions
+        }
+
+    def _exclusion_records(
+        self,
+        scan: SourceScan,
+        exclusions: dict[str, dict[str, str]],
+        manifest: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        scanned = {item.source_relative_path: item for item in scan.selected}
+        indexed_paths = {
+            str(document.get("source_relative_path"))
+            for document in (manifest or {}).get("documents", [])
+        }
+        source_directory = Path(
+            str(
+                (manifest or {}).get("source_directory")
+                or self.config.source_root.relative_to(self.config.project_root)
+            )
+        )
+        records: list[dict[str, Any]] = []
+        for relative, exclusion in exclusions.items():
+            source = scanned.get(relative)
+            records.append(
+                {
+                    "source_relative_path": relative,
+                    "source_path": (
+                        source.project_relative_path
+                        if source is not None
+                        else (source_directory / relative).as_posix()
+                    ),
+                    "reason": exclusion["reason"],
+                    "excluded_at": exclusion["excluded_at"],
+                    "exists": source is not None,
+                    "indexed_in_current_generation": relative in indexed_paths,
+                }
+            )
+        return records
+
     def _load_current_optional(self) -> tuple[Path, dict[str, Any]] | None:
         if not self.config.current_path.exists():
             return None
@@ -228,26 +297,46 @@ class ResearchService:
             scan = scan_sources(self.config)
         except SourcePolicyError as exc:
             raise ResearchError(str(exc)) from exc
+        exclusions = self._source_exclusions()
+        exclusion_revision = _source_exclusion_revision(exclusions)
+        selected = tuple(
+            source
+            for source in scan.selected
+            if source.source_relative_path not in exclusions
+        )
         current = self._load_current_optional()
         if current is None:
+            if scan.selected and not selected:
+                message = (
+                    "No knowledge-base generation exists and all discovered sources "
+                    "are excluded; include at least one source before ingesting."
+                )
+            else:
+                message = "No knowledge-base generation exists; call ingest."
             return {
                 "ready": False,
-                "stale": bool(scan.selected),
+                "stale": bool(selected),
                 "project_root": str(self.config.project_root),
                 "source_root": str(self.config.source_root),
                 "state_root": str(self.config.state_root),
-                "selected_source_count": len(scan.selected),
+                "discovered_source_count": len(scan.selected),
+                "selected_source_count": len(selected),
+                "excluded_source_count": len(exclusions),
+                "excluded_sources": self._exclusion_records(scan, exclusions),
                 "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
                 "ignored_extensions": scan.ignored_extensions,
+                "source_exclusion_revision": exclusion_revision,
                 "default_retrieval_method": DEFAULT_RETRIEVAL_METHOD,
                 "available_retrieval_methods": [],
-                "message": "No knowledge-base generation exists; call ingest.",
+                "message": message,
             }
 
         generation_root, manifest = current
+        manifest_source_files = manifest.get("source_files")
+        if not isinstance(manifest_source_files, list):
+            manifest_source_files = manifest.get("documents", [])
         current_documents = {
-            str(item["source_relative_path"]): item
-            for item in manifest.get("documents", [])
+            str(item["source_relative_path"]): item for item in manifest_source_files
         }
         scanned = {item.source_relative_path: item for item in scan.selected}
         added = sorted(set(scanned) - set(current_documents))
@@ -261,10 +350,24 @@ class ResearchService:
         metadata_changed = metadata_revision(self._metadata()) != manifest.get(
             "metadata_revision"
         )
-        stale = bool(added or removed or modified or metadata_changed)
+        stored_exclusion_revision = manifest.get("source_exclusion_revision")
+        source_exclusions_changed = (
+            stored_exclusion_revision != exclusion_revision
+            if stored_exclusion_revision is not None
+            else bool(exclusions)
+        )
+        stale = bool(
+            added
+            or removed
+            or modified
+            or metadata_changed
+            or source_exclusions_changed
+        )
         retrieval = manifest.get("retrieval", {})
         available_methods = retrieval.get("available_methods") or ["bm25"]
         hybrid_ready = "hybrid" in available_methods
+        excluded_document_ids = self._excluded_document_ids(manifest, exclusions)
+        exclusion_records = self._exclusion_records(scan, exclusions, manifest)
         return {
             "ready": True,
             "stale": stale,
@@ -273,8 +376,15 @@ class ResearchService:
             "state_root": str(self.config.state_root),
             "generation_id": manifest["generation_id"],
             "created_at": manifest["created_at"],
-            "selected_source_count": len(scan.selected),
+            "discovered_source_count": len(scan.selected),
+            "selected_source_count": len(selected),
             "indexed_source_count": manifest["document_count"],
+            "searchable_source_count": sum(
+                str(document["document_id"]) not in excluded_document_ids
+                for document in manifest.get("documents", [])
+            ),
+            "excluded_source_count": len(exclusions),
+            "excluded_sources": exclusion_records,
             "chunk_count": manifest["chunk_count"],
             "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
             "ignored_extensions": scan.ignored_extensions,
@@ -285,18 +395,25 @@ class ResearchService:
             "hybrid_ready": hybrid_ready,
             "hybrid_upgrade_required": not hybrid_ready,
             "retrieval": retrieval,
+            "source_exclusion_revision": exclusion_revision,
             "changes": {
                 "added": added,
                 "removed": removed,
                 "modified": modified,
                 "metadata_changed": metadata_changed,
+                "source_exclusions_changed": source_exclusions_changed,
             },
             "generation_root": str(generation_root),
             "message": (
-                "Current generation supports hybrid retrieval."
-                if hybrid_ready
-                else "Current generation is BM25-only; run ingest to build its "
-                "project-local dense index."
+                "Source exclusions are already enforced by retrieval; run ingest "
+                "to rebuild the stored indexes without excluded sources."
+                if source_exclusions_changed
+                else (
+                    "Current generation supports hybrid retrieval."
+                    if hybrid_ready
+                    else "Current generation is BM25-only; run ingest to build its "
+                    "project-local dense index."
+                )
             ),
         }
 
@@ -335,6 +452,102 @@ class ResearchService:
                 "message": "Metadata saved. Run ingest to create a new generation.",
             }
 
+    async def set_source_inclusion(
+        self,
+        source_path: str,
+        *,
+        included: bool,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Include or exclude one source without changing the source file."""
+
+        async with self._lock:
+            try:
+                source = resolve_source_reference(self.config, source_path)
+                relative = source.relative_to(self.config.source_root).as_posix()
+                if source.suffix.lower() not in ALLOWED_SOURCE_EXTENSIONS:
+                    raise SourcePolicyError(
+                        "Source inclusion can only be changed for a PDF or EPUB: "
+                        f"{source_path}"
+                    )
+
+                exclusions = self._source_exclusions()
+                previous = exclusions.get(relative)
+                if included:
+                    changed = previous is not None
+                    exclusions.pop(relative, None)
+                else:
+                    normalized_reason = (reason or "").strip()
+                    if not normalized_reason:
+                        raise SourcePolicyError(
+                            "A non-empty reason is required when excluding a source"
+                        )
+                    if not source.is_file() or source.is_symlink():
+                        raise SourcePolicyError(
+                            "Only an existing regular PDF or EPUB can be excluded: "
+                            f"{source_path}"
+                        )
+                    changed = (
+                        previous is None or previous.get("reason") != normalized_reason
+                    )
+                    if changed:
+                        exclusions[relative] = {
+                            "reason": normalized_reason,
+                            "excluded_at": _utc_now(),
+                        }
+
+                if changed:
+                    write_source_exclusions(
+                        self.config.source_exclusions_path,
+                        exclusions,
+                    )
+
+                current = self._load_current_optional()
+                indexed = False
+                if current is not None:
+                    _generation_root, manifest = current
+                    indexed = any(
+                        document.get("source_relative_path") == relative
+                        for document in manifest.get("documents", [])
+                    )
+            except (StorageError, SourcePolicyError, ValueError) as exc:
+                raise ResearchError(str(exc)) from exc
+
+            effective_immediately = not included or indexed
+            if not changed:
+                message = (
+                    "Source is already included."
+                    if included
+                    else "Source is already excluded with this reason."
+                )
+            elif included and not indexed:
+                message = (
+                    "Source inclusion saved. Run ingest before it can appear in "
+                    "search because it is absent from the current generation."
+                )
+            elif included:
+                message = (
+                    "Source inclusion saved and restored for current retrieval. "
+                    "Run ingest to record the change in a new generation."
+                )
+            else:
+                message = (
+                    "Source exclusion saved and enforced for current retrieval. "
+                    "The original file was not changed. Run ingest to rebuild the "
+                    "indexes without it."
+                )
+            return {
+                "status": "changed" if changed else "unchanged",
+                "source_relative_path": relative,
+                "source_path": source.relative_to(self.config.project_root).as_posix(),
+                "included": included,
+                "reason": None if included else exclusions[relative]["reason"],
+                "source_file_changed": False,
+                "effective_immediately": effective_immediately,
+                "generation_rebuild_recommended": changed,
+                "message": message,
+            }
+
     async def ingest(
         self,
         *,
@@ -359,9 +572,20 @@ class ResearchService:
                 )
 
             metadata = self._metadata()
+            exclusions = self._source_exclusions()
+            selected = tuple(
+                source
+                for source in scan.selected
+                if source.source_relative_path not in exclusions
+            )
+            if not selected:
+                raise ResearchError(
+                    "All discovered PDF and EPUB sources are excluded; include at "
+                    "least one source before ingesting"
+                )
             documents, units = await asyncio.to_thread(
                 extract_sources,
-                scan.selected,
+                selected,
                 metadata,
             )
             generation_id = _generation_id()
@@ -405,6 +629,12 @@ class ResearchService:
                     "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
                     "ignored_extensions": scan.ignored_extensions,
                     "metadata_revision": metadata_revision(metadata),
+                    "source_exclusion_revision": _source_exclusion_revision(exclusions),
+                    "source_file_count": len(scan.selected),
+                    "excluded_source_count": sum(
+                        source.source_relative_path in exclusions
+                        for source in scan.selected
+                    ),
                     "document_count": len(documents),
                     "extraction_unit_count": len(units),
                     "chunk_count": len(chunks),
@@ -440,6 +670,26 @@ class ResearchService:
                         },
                     },
                     "documents": documents,
+                    "source_files": [
+                        {
+                            "source_path": source.project_relative_path,
+                            "source_relative_path": source.source_relative_path,
+                            "format": source.extension.removeprefix("."),
+                            "size": source.size,
+                            "mtime_ns": source.mtime_ns,
+                            "included": source.source_relative_path not in exclusions,
+                        }
+                        for source in scan.selected
+                    ],
+                    "excluded_sources": [
+                        {
+                            "source_relative_path": source.source_relative_path,
+                            "source_path": source.project_relative_path,
+                            **exclusions[source.source_relative_path],
+                        }
+                        for source in scan.selected
+                        if source.source_relative_path in exclusions
+                    ],
                     "files": {
                         "extracted_units": "corpus/extracted-units.jsonl",
                         "raw_ultrarag_chunks": "chunks/ultrarag-chunks.jsonl",
@@ -452,7 +702,7 @@ class ResearchService:
                 atomic_write_json(
                     self.config.current_path,
                     {
-                        # Pointer format is unchanged; manifest schema is version 2.
+                        # Pointer format is unchanged; manifest schema is version 3.
                         "schema_version": 1,
                         "generation_id": generation_id,
                     },
@@ -474,6 +724,16 @@ class ResearchService:
                 "status": "ready",
                 "generation_id": generation_id,
                 "generation_root": str(generation_root),
+                "source_file_count": len(scan.selected),
+                "excluded_source_count": sum(
+                    source.source_relative_path in exclusions
+                    for source in scan.selected
+                ),
+                "excluded_sources": [
+                    source.source_relative_path
+                    for source in scan.selected
+                    if source.source_relative_path in exclusions
+                ],
                 "document_count": len(documents),
                 "pdf_count": sum(item["format"] == "pdf" for item in documents),
                 "epub_count": sum(item["format"] == "epub" for item in documents),
@@ -509,13 +769,15 @@ class ResearchService:
         categories: set[str],
         keywords: set[str],
         document_ids: set[str],
+        excluded_document_ids: set[str],
     ) -> bool:
         chunk_categories = {
             str(item).casefold() for item in chunk.get("categories", [])
         }
         chunk_keywords = {str(item).casefold() for item in chunk.get("keywords", [])}
         return not (
-            (categories and not categories.issubset(chunk_categories))
+            chunk["document_id"] in excluded_document_ids
+            or (categories and not categories.issubset(chunk_categories))
             or (keywords and not keywords.issubset(chunk_keywords))
             or (document_ids and chunk["document_id"] not in document_ids)
         )
@@ -529,8 +791,11 @@ class ResearchService:
         categories: set[str],
         keywords: set[str],
         document_ids: set[str],
+        excluded_document_ids: set[str],
     ) -> list[str]:
-        filtered = bool(categories or keywords or document_ids)
+        if limit <= 0:
+            return []
+        filtered = bool(categories or keywords or document_ids or excluded_document_ids)
         requested = len(chunks) if filtered else limit
         passages = await self.ultrarag.search_bm25(query, requested)
         by_contents = {str(item["contents"]): item for item in chunks}
@@ -546,6 +811,7 @@ class ResearchService:
                 categories=categories,
                 keywords=keywords,
                 document_ids=document_ids,
+                excluded_document_ids=excluded_document_ids,
             ):
                 continue
             ranking.append(str(chunk["chunk_id"]))
@@ -608,6 +874,11 @@ class ResearchService:
             chunks = read_jsonl(generation_root / manifest["files"]["chunks"])
             if not chunks:
                 raise ResearchError("The current generation has no chunks")
+            exclusions = self._source_exclusions()
+            excluded_document_ids = self._excluded_document_ids(
+                manifest,
+                exclusions,
+            )
 
             retrieval = manifest.get("retrieval", {})
             available_methods = set(retrieval.get("available_methods") or ["bm25"])
@@ -630,8 +901,11 @@ class ResearchService:
             category_filter = {item.casefold() for item in normalized_categories}
             keyword_filter = {item.casefold() for item in normalized_keywords}
             document_filter = set(normalized_document_ids)
+            active_chunk_count = sum(
+                chunk["document_id"] not in excluded_document_ids for chunk in chunks
+            )
             candidate_depth = min(
-                len(chunks),
+                active_chunk_count,
                 MAXIMUM_CANDIDATES,
                 max(MINIMUM_CANDIDATES, top_k * 4),
             )
@@ -643,6 +917,21 @@ class ResearchService:
 
             bm25_ranking: list[str] = []
             dense_hits: list[DenseSearchHit] = []
+
+            async def search_dense() -> list[DenseSearchHit]:
+                if candidate_depth == 0:
+                    return []
+                return await asyncio.to_thread(
+                    self.dense.search,
+                    generation_root / manifest["files"]["dense_index"],
+                    query,
+                    candidate_depth,
+                    categories=normalized_categories,
+                    keywords=normalized_keywords,
+                    document_ids=normalized_document_ids,
+                    excluded_document_ids=sorted(excluded_document_ids),
+                )
+
             if use_bm25 and use_dense:
                 bm25_ranking, dense_hits = await asyncio.gather(
                     self._bm25_ranking(
@@ -652,16 +941,9 @@ class ResearchService:
                         categories=category_filter,
                         keywords=keyword_filter,
                         document_ids=document_filter,
+                        excluded_document_ids=excluded_document_ids,
                     ),
-                    asyncio.to_thread(
-                        self.dense.search,
-                        generation_root / manifest["files"]["dense_index"],
-                        query,
-                        candidate_depth,
-                        categories=normalized_categories,
-                        keywords=normalized_keywords,
-                        document_ids=normalized_document_ids,
-                    ),
+                    search_dense(),
                 )
             elif use_bm25:
                 bm25_ranking = await self._bm25_ranking(
@@ -671,17 +953,10 @@ class ResearchService:
                     categories=category_filter,
                     keywords=keyword_filter,
                     document_ids=document_filter,
+                    excluded_document_ids=excluded_document_ids,
                 )
             else:
-                dense_hits = await asyncio.to_thread(
-                    self.dense.search,
-                    generation_root / manifest["files"]["dense_index"],
-                    query,
-                    candidate_depth,
-                    categories=normalized_categories,
-                    keywords=normalized_keywords,
-                    document_ids=normalized_document_ids,
-                )
+                dense_hits = await search_dense()
 
             dense_ranking = [hit.chunk_id for hit in dense_hits]
             dense_scores = {hit.chunk_id: hit.score for hit in dense_hits}
@@ -782,6 +1057,7 @@ class ResearchService:
                 "query": query,
                 "generation_id": manifest["generation_id"],
                 "stale": status["stale"],
+                "excluded_source_count": len(exclusions),
                 "retrieval_method": retrieval_method,
                 "reranked": rerank,
                 "candidate_depth": candidate_depth,
@@ -815,12 +1091,26 @@ class ResearchService:
         async with self._lock:
             current = self._load_current_optional()
             if current is None:
-                return {"ready": False, "source_count": 0, "sources": []}
+                exclusions = self._source_exclusions()
+                try:
+                    scan = scan_sources(self.config)
+                except SourcePolicyError as exc:
+                    raise ResearchError(str(exc)) from exc
+                return {
+                    "ready": False,
+                    "source_count": 0,
+                    "sources": [],
+                    "excluded_source_count": len(exclusions),
+                    "excluded_sources": self._exclusion_records(scan, exclusions),
+                }
             _generation_root, manifest = current
+            exclusions = self._source_exclusions()
             category_filter = {item.casefold() for item in categories or []}
             keyword_filter = {item.casefold() for item in keywords or []}
             sources = []
             for document in manifest["documents"]:
+                if document.get("source_relative_path") in exclusions:
+                    continue
                 document_categories = {
                     str(item).casefold() for item in document.get("categories", [])
                 }
@@ -839,6 +1129,14 @@ class ResearchService:
                 "generation_id": manifest["generation_id"],
                 "source_count": len(sources),
                 "sources": sources,
+                "excluded_source_count": len(exclusions),
+                "excluded_sources": [
+                    {
+                        "source_relative_path": relative,
+                        **record,
+                    }
+                    for relative, record in exclusions.items()
+                ],
             }
 
     async def get_passage(
@@ -861,6 +1159,16 @@ class ResearchService:
             )
             if target is None:
                 raise ResearchError(f"Unknown chunk_id: {chunk_id}")
+            exclusions = self._source_exclusions()
+            excluded_document_ids = self._excluded_document_ids(
+                manifest,
+                exclusions,
+            )
+            if target["document_id"] in excluded_document_ids:
+                raise ResearchError(
+                    "The source for this chunk is currently excluded from retrieval; "
+                    "include the source before requesting its passage"
+                )
             same_document = sorted(
                 (
                     item

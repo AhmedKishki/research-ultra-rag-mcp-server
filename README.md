@@ -26,11 +26,12 @@ This is an independent project and is not an official UltraRAG release. See
 - enforced PDF and EPUB ingestion—Markdown and other formats are ignored;
 - PDF page locators and EPUB section locators;
 - reviewed title, author, year, DOI, category, and keyword metadata;
+- reversible, agent-reviewed source exclusion without deleting original files;
 - immutable knowledge-base generations with stable source provenance;
 - CPU BM25, dense, and hybrid retrieval;
 - project-local Qdrant storage with no database service to run;
 - optional CPU cross-encoder reranking; and
-- six high-level tools intended for direct use by an AI agent.
+- seven high-level tools intended for direct use by an AI agent.
 
 The server retrieves evidence but does not generate a final answer. The
 connected AI agent compares the returned passages and writes the response.
@@ -40,6 +41,7 @@ connected AI agent compares the returned passages and writes the response.
 ```text
 PDF/EPUB files
     │
+    ├─ omit sources explicitly excluded by the agent/user
     ├─ extract text by PDF page or EPUB section
     ├─ split text into overlapping chunks with UltraRAG
     ├─ build an UltraRAG BM25 lexical index
@@ -146,6 +148,17 @@ To add reviewed metadata:
 
 Metadata changes take effect after the next ingestion.
 
+If search reveals that two files represent the same source, ask the agent to
+retain the preferred copy and exclude the other one:
+
+> Exclude `duplicate-copy.pdf` from the knowledge base because it duplicates
+> `preferred-copy.pdf`. Do not delete either source file.
+
+The exclusion affects `search`, `list_sources`, and `get_passage` immediately.
+It is recorded for future ingestions and can be reversed by setting the source
+back to included. Run `ingest` afterward when you want a new immutable
+generation whose stored indexes no longer contain the excluded source.
+
 ## MCP tools
 
 | Tool | Purpose |
@@ -156,6 +169,7 @@ Metadata changes take effect after the next ingestion.
 | `list_sources` | List indexed sources and reviewed metadata |
 | `get_passage` | Return a passage with neighboring chunks for context |
 | `set_source_metadata` | Save reviewed metadata for the next generation |
+| `set_source_inclusion` | Exclude or restore one source without changing its file |
 
 `search` accepts optional `categories`, `keywords`, and `document_ids` filters.
 Every requested category and keyword must be present. A result must match one
@@ -230,6 +244,7 @@ All derived knowledge-base data is stored beneath the configured project:
 my-research-project/.ultrarag/research/
 ├── current.json
 ├── source-metadata.json
+├── source-exclusions.json
 ├── models/
 ├── logs/
 ├── ultrarag-runtime/
@@ -247,6 +262,8 @@ my-research-project/.ultrarag/research/
 Each successful ingestion creates a new immutable generation. `current.json`
 changes only after extraction and both indexes succeed. Previous and failed
 generations are retained. Original files under `sources/` are never modified.
+`source-exclusions.json` records reversible source-level decisions separately
+from the immutable generations.
 
 Use a separate server configuration for each project. Do not run two server
 processes against the same project root simultaneously.
@@ -281,5 +298,7 @@ arguments or verifier command to prohibit downloads.
   the original source.
 - The embedding and reranker models are English-oriented.
 - Source changes currently require a complete new generation.
+- Duplicate identification is intentionally left to the agent and user; the
+  server does not guess whether similar files are the same source.
 - CPU embedding and reranking are slower than GPU-backed alternatives.
 - There is no graphical interface or automatic generation cleanup yet.

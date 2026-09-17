@@ -42,6 +42,10 @@ class ResearchConfig:
         return self.state_root / "source-metadata.json"
 
     @property
+    def source_exclusions_path(self) -> Path:
+        return self.state_root / "source-exclusions.json"
+
+    @property
     def current_path(self) -> Path:
         return self.state_root / "current.json"
 

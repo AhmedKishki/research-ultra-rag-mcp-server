@@ -32,6 +32,12 @@ For research questions:
 6. Set rerank=true only when the user needs a smaller, precision-focused result
    set or the first hybrid results are weak. It is slower on CPU and downloads a
    second pinned model the first time it is used.
+7. If multiple files appear to represent the same source, do not count them as
+   independent support. The server does not guess duplicates automatically.
+   After agent/user review, set included=false with set_source_inclusion and a
+   clear reason. This immediately excludes the source from retrieval without
+   deleting or modifying its PDF/EPUB. Re-ingest later to rebuild the stored
+   indexes without it. Use included=true to reverse the decision.
 
 PDF hits include physical page numbers and available page labels. EPUBs have
 section locators because reflowable EPUB files do not have stable page numbers.

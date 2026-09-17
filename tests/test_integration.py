@@ -45,6 +45,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "ingest",
             "list_sources",
             "search",
+            "set_source_inclusion",
             "set_source_metadata",
             "status",
         }
@@ -62,6 +63,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "list_sources": {"categories", "keywords"},
             "get_passage": {"chunk_id", "context_chunks"},
             "set_source_metadata": {"source_path", "metadata"},
+            "set_source_inclusion": {"source_path", "included", "reason"},
         }
         for tool_name, parameter_names in expected_parameters.items():
             properties = tools[tool_name].inputSchema["properties"]
@@ -194,6 +196,33 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         )
         assert reranked.data["reranked"] is True
         assert reranked.data["hits"][0]["rerank_score"] is not None
+
+        excluded = await client.call_tool(
+            "set_source_inclusion",
+            {
+                "source_path": "evidence.pdf",
+                "included": False,
+                "reason": "Agent-reviewed duplicate representation test.",
+            },
+        )
+        assert excluded.data["effective_immediately"] is True
+        assert (project / "sources" / "evidence.pdf").is_file()
+        excluded_search = await client.call_tool(
+            "search",
+            {"query": "cobalt heron", "top_k": 1},
+        )
+        assert excluded_search.data["result_count"] == 0
+
+        restored = await client.call_tool(
+            "set_source_inclusion",
+            {"source_path": "evidence.pdf", "included": True},
+        )
+        assert restored.data["effective_immediately"] is True
+        restored_search = await client.call_tool(
+            "search",
+            {"query": "cobalt heron", "top_k": 1},
+        )
+        assert restored_search.data["result_count"] == 1
 
     offline_transport = StdioTransport(
         command=str(executable),

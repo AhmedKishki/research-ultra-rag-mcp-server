@@ -22,6 +22,10 @@ comparison, synthesis, uncertainty, and the final written answer.
    Use `get_passage` when a quotation needs surrounding context.
 6. Quote only the returned `text`. Cite the returned `citation`, `source_path`,
    and `locator`, and advise checking important quotations in the original file.
+7. If multiple files appear to represent the same source, do not count them as
+   independent support. Compare their metadata and passages, explain the issue,
+   and use `set_source_inclusion` when the user asks to retain one copy and
+   exclude another.
 
 ## Choosing retrieval
 
@@ -66,6 +70,13 @@ score, so it reports the BM25 rank and returns its score as `null`.
   user before ingesting a new hybrid generation.
 - Use `set_source_metadata` only for user-reviewed title, author, year, DOI,
   category, and keyword values. A new ingestion is required to apply changes.
+- The server does not automatically identify duplicates. Use
+  `set_source_inclusion(source_path, included=false, reason=...)` only for an
+  agent/user-reviewed decision. It immediately removes that source from search,
+  source listings, and passage lookup; it never deletes or edits the PDF/EPUB.
+  Run ingestion later to rebuild the indexes without it.
+- Restore a source with `included=true`. Restoration is immediate if its chunks
+  remain in the current generation; otherwise a new ingestion is required.
 - Never invent a page, section, author, date, DOI, quotation, or relevance score.
 
 ## Recommended response pattern

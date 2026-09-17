@@ -6,7 +6,7 @@ import json
 import os
 import uuid
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -90,6 +90,67 @@ def write_metadata_overrides(
         {
             "schema_version": 1,
             "sources": overrides,
+        },
+    )
+
+
+def load_source_exclusions(path: Path) -> dict[str, dict[str, str]]:
+    if not path.exists():
+        return {}
+    value = read_json(path)
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise StorageError(f"Unsupported source-exclusion file: {path}")
+    sources = value.get("sources", {})
+    if not isinstance(sources, dict):
+        raise StorageError(f"Invalid source-exclusion mapping: {path}")
+
+    normalized: dict[str, dict[str, str]] = {}
+    for source_path, record in sources.items():
+        if not isinstance(source_path, str) or not source_path.strip():
+            raise StorageError(f"Invalid excluded source path: {path}")
+        relative = PurePosixPath(source_path)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != source_path
+        ):
+            raise StorageError(
+                f"Excluded source path must be normalized and relative: {source_path!r}"
+            )
+        if not isinstance(record, dict):
+            raise StorageError(f"Invalid exclusion record for {source_path!r}: {path}")
+        unknown = set(record) - {"reason", "excluded_at"}
+        if unknown:
+            raise StorageError(
+                f"Unsupported exclusion fields for {source_path!r}: "
+                f"{', '.join(sorted(unknown))}"
+            )
+        reason = record.get("reason")
+        excluded_at = record.get("excluded_at")
+        if not isinstance(reason, str) or not reason.strip():
+            raise StorageError(
+                f"Exclusion for {source_path!r} requires a non-empty reason: {path}"
+            )
+        if not isinstance(excluded_at, str) or not excluded_at.strip():
+            raise StorageError(
+                f"Exclusion for {source_path!r} requires excluded_at: {path}"
+            )
+        normalized[source_path] = {
+            "reason": reason.strip(),
+            "excluded_at": excluded_at.strip(),
+        }
+    return dict(sorted(normalized.items()))
+
+
+def write_source_exclusions(
+    path: Path,
+    exclusions: dict[str, dict[str, str]],
+) -> None:
+    atomic_write_json(
+        path,
+        {
+            "schema_version": 1,
+            "sources": dict(sorted(exclusions.items())),
         },
     )
 

@@ -44,6 +44,7 @@ class DenseBackend(Protocol):
         categories: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
+        excluded_document_ids: list[str] | None = None,
     ) -> list[DenseSearchHit]: ...
 
     def rerank(
@@ -174,6 +175,7 @@ class LocalQdrantDenseBackend:
         categories: list[str] | None,
         keywords: list[str] | None,
         document_ids: list[str] | None,
+        excluded_document_ids: list[str] | None,
     ) -> models.Filter | None:
         conditions: list[models.FieldCondition] = []
         conditions.extend(
@@ -197,7 +199,19 @@ class LocalQdrantDenseBackend:
                     match=models.MatchAny(any=document_ids),
                 )
             )
-        return models.Filter(must=conditions) if conditions else None
+        excluded_conditions: list[models.FieldCondition] = []
+        if excluded_document_ids:
+            excluded_conditions.append(
+                models.FieldCondition(
+                    key="document_id",
+                    match=models.MatchAny(any=excluded_document_ids),
+                )
+            )
+        return (
+            models.Filter(must=conditions, must_not=excluded_conditions)
+            if conditions or excluded_conditions
+            else None
+        )
 
     def search(
         self,
@@ -208,6 +222,7 @@ class LocalQdrantDenseBackend:
         categories: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
+        excluded_document_ids: list[str] | None = None,
     ) -> list[DenseSearchHit]:
         if not index_path.is_dir():
             raise ValueError(f"Dense index is missing: {index_path}")
@@ -226,6 +241,7 @@ class LocalQdrantDenseBackend:
                     categories=categories,
                     keywords=keywords,
                     document_ids=document_ids,
+                    excluded_document_ids=excluded_document_ids,
                 ),
                 limit=top_k,
                 with_payload=["chunk_id"],

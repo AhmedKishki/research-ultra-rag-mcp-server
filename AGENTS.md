@@ -20,7 +20,7 @@ repository to support this project.
   installation, MCP configuration, concrete usage, expected results, storage,
   and user-visible limitations. It must not compare or link to sibling
   MCP-server projects.
-- `AGENT_GUIDE.md` is operational policy for an AI agent using the six research
+- `AGENT_GUIDE.md` is operational policy for an AI agent using the seven research
   tools. Do not put installation or contributor workflows there.
 - `AGENTS.md` is this engineering contract. It may document internal dependency
   boundaries, but must not become a second user manual.
@@ -30,7 +30,7 @@ repository to support this project.
 ## Current compatibility baseline
 
 - Package and command: `research-ultra-rag-mcp`
-- Version: `0.2.1`
+- Version: `0.3.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
@@ -51,6 +51,8 @@ repository to support this project.
 - Reject source symlinks and path traversal.
 - Store all derived state beneath `<project>/.ultrarag/research`.
 - Never edit or write the original source documents.
+- Keep source exclusions explicit, reversible, project-local, and immediately
+  enforced by every retrieval surface. Do not add automatic duplicate guessing.
 - Do not switch `current.json` until a generation is completely indexed.
 - Preserve deterministic document IDs, chunk IDs, source paths, and locators.
   Chunk IDs may change when content or chunking configuration changes; never
@@ -113,7 +115,7 @@ citation contract, tests, and user-visible model configuration.
 
 ## Repository map
 
-- `src/research_ultra_rag_mcp/server.py`: CLI, MCP lifecycle, and six public
+- `src/research_ultra_rag_mcp/server.py`: CLI, MCP lifecycle, and seven public
   tools.
 - `config.py`: project boundary and executable validation.
 - `sources.py`: allowlist, source discovery, hashing, and metadata validation.
@@ -135,6 +137,7 @@ The mutable pointer and reviewed metadata live at:
 ```text
 <project>/.ultrarag/research/current.json
 <project>/.ultrarag/research/source-metadata.json
+<project>/.ultrarag/research/source-exclusions.json
 ```
 
 Each build gets a unique directory under `generations/`. A failed generation
@@ -152,6 +155,8 @@ not treat generated files as source documents.
 - `list_sources`: inspect indexed documents and metadata.
 - `get_passage`: retrieve neighboring chunks from the same document.
 - `set_source_metadata`: update reviewed metadata for the next generation.
+- `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed
+  source without modifying the source file; rebuild later to align the indexes.
 
 Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 Update tests and documentation when changing them.
@@ -192,6 +197,11 @@ Update tests and documentation when changing them.
   quotation.
 - Schema-1 generations are BM25-only. Keep them usable when a caller explicitly
   requests `bm25`; require a new ingestion before dense or hybrid search.
+- Exclusions are path-based, stored outside generations, and applied to BM25,
+  dense, source-list, and passage results immediately. Ingestion snapshots the
+  exclusion revision and omits excluded documents from both indexes. Inclusion
+  can only restore current retrieval immediately if the current generation
+  still contains that source.
 
 Do not move the Qdrant implementation into the vanilla gateway or patch
 UltraRAG for this feature. The research-specific integration deliberately lives
