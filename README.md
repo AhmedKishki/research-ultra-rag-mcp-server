@@ -338,6 +338,4 @@ arguments or verifier command to prohibit downloads.
 - Duplicate identification is intentionally left to the agent and user; the
   server does not guess whether similar files are the same source.
 - CPU embedding and reranking are slower than GPU-backed alternatives.
-- Research memory is not implemented; source evidence is intentionally kept
-  separate from agent or session memory.
 - There is no automatic generation cleanup yet.
