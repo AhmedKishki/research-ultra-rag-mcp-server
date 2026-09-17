@@ -1,0 +1,60 @@
+UPSTREAM ATTRIBUTION
+
+research-ultra-rag-mcp-server is an independent research extension built on
+the UltraRAG project through vanilla-ultra-rag-mcp-server:
+
+    UltraRAG
+    https://github.com/OpenBMB/UltraRAG
+    https://ultrarag.openbmb.cn/
+
+    vanilla-ultra-rag-mcp-server
+    https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server
+
+UltraRAG's upstream README identifies it as a joint project of THUNLP at
+Tsinghua University, NEUIR at Northeastern University, OpenBMB, and AI9stars,
+together with the wider UltraRAG contributor community:
+
+    https://nlp.csai.tsinghua.edu.cn/
+    https://neuir.github.io/
+    https://www.openbmb.cn/home
+    https://github.com/AI9Stars
+    https://github.com/OpenBMB/UltraRAG/graphs/contributors
+
+This server depends on UltraRAG's MCP architecture, corpus chunker, and BM25
+retriever. Its pinned dependency chain currently resolves to:
+
+    vanilla-ultra-rag-mcp-server commit
+    d080b0c2c1172f029024149aee15d295cd8e0d14
+
+    UltraRAG version 0.3.0.2
+    commit 3a709a2aea3fbe46acca59c422621c94b6e86857
+    https://github.com/OpenBMB/UltraRAG/tree/3a709a2aea3fbe46acca59c422621c94b6e86857
+
+UltraRAG is distributed under the Apache License, Version 2.0. Its license file
+contains the notice "Copyright 2023 OpenBMB":
+
+    https://github.com/OpenBMB/UltraRAG/blob/3a709a2aea3fbe46acca59c422621c94b6e86857/LICENSE.txt
+    https://www.apache.org/licenses/LICENSE-2.0
+
+The verified UltraRAG source snapshot installed by the vanilla gateway retains
+the upstream LICENSE.txt and all upstream notices.
+
+SUGGESTED SOFTWARE CITATION
+
+The pinned UltraRAG revision does not include a dedicated UltraRAG BibTeX entry.
+When citing the software, a suitable repository citation is:
+
+    UltraRAG contributors. UltraRAG, version 0.3.0.2, commit
+    3a709a2aea3fbe46acca59c422621c94b6e86857. OpenBMB/UltraRAG.
+    https://github.com/OpenBMB/UltraRAG
+
+For subject-specific academic citations, consult the Publications section in
+UltraRAG's upstream README and cite the relevant original paper rather than
+attributing those papers to this extension.
+
+INDEPENDENT PROJECT NOTICE
+
+This repository is not an official UltraRAG release and is not affiliated with
+or endorsed by OpenBMB, THUNLP, NEUIR, AI9stars, or the UltraRAG contributors.
+The UltraRAG name is used only to identify the upstream software on which this
+research extension depends.

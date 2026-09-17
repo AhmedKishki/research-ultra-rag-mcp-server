@@ -3,6 +3,11 @@ This server manages one project-scoped research knowledge base made only from
 original PDF and EPUB sources. It stores all derived data beneath the configured
 project's .ultrarag/research directory and never ingests Markdown files.
 
+Upstream credit: this server builds on UltraRAG, a joint project of THUNLP,
+NEUIR, OpenBMB, AI9stars, and the UltraRAG contributors. Canonical source:
+https://github.com/OpenBMB/UltraRAG. This extension is independent and
+unofficial.
+
 This is a research-oriented adaptation of UltraRAG's Vanilla RAG architecture.
 The server performs ingestion and retrieval, then returns structured evidence;
 you are the generation stage. It deliberately does not call UltraRAG's

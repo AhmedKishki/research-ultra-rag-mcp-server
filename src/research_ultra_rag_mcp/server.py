@@ -17,7 +17,7 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.1.1"
+SERVER_VERSION = "0.1.2"
 T = TypeVar("T")
 
 

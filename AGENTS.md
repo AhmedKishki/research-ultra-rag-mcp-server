@@ -17,15 +17,20 @@ repository to support this project.
 ## Current compatibility baseline
 
 - Package and command: `research-ultra-rag-mcp`
-- Version: `0.1.1`
+- Version: `0.1.2`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
-- Vanilla gateway commit: `0887b47fcd447a0ea9ae7e0722dd98d5205ce180`
+- Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
 - Upstream UltraRAG: `0.3.0.2` at
   `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
 ## Non-negotiable research contract
 
+- Retain the prominent UltraRAG acknowledgement in `README.md`, the root
+  `NOTICE`, upstream project links, license information, and the independent
+  project disclaimer.
+- Credit THUNLP, NEUIR, OpenBMB, AI9stars, and the upstream contributors using
+  the wording supported by UltraRAG's own README. Do not imply endorsement.
 - One server process serves exactly one configured project root.
 - MCP tools must not accept arbitrary filesystem output paths.
 - Ingestion selects only regular PDF and EPUB files beneath the configured
