@@ -27,6 +27,12 @@ comparison, synthesis, uncertainty, and the final written answer.
    and use `set_source_inclusion` when the user asks to retain one copy and
    exclude another.
 
+The user may inspect or change the same project through the local research UI
+while you are connected. The UI uses these same MCP tools, and project
+operations are serialized across processes. Call `status` again before relying
+on an earlier generation or source list; do not assume that state observed at
+the beginning of a long research session is still current.
+
 ## Choosing retrieval
 
 - `hybrid` (default): use for normal research and broad evidence discovery. It

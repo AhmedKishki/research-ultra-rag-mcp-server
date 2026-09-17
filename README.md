@@ -31,7 +31,8 @@ This is an independent project and is not an official UltraRAG release. See
 - CPU BM25, dense, and hybrid retrieval;
 - project-local Qdrant storage with no database service to run;
 - optional CPU cross-encoder reranking; and
-- seven high-level tools intended for direct use by an AI agent.
+- seven high-level tools intended for direct use by an AI agent; and
+- a local research UI backed by those same MCP tools and project data.
 
 The server retrieves evidence but does not generate a final answer. The
 connected AI agent compares the returned passages and writes the response.
@@ -96,6 +97,39 @@ my-research-project/
 
 Files are discovered recursively. Symbolic links and every extension other
 than `.pdf` and `.epub` are excluded.
+
+## Launch the research UI
+
+From this repository, point the UI at the same project root used by your MCP
+client:
+
+```bash
+uv run research-ultra-rag-ui \
+  --project-root /absolute/path/to/my-research-project
+```
+
+Open [http://127.0.0.1:5051](http://127.0.0.1:5051). The UI immediately reads
+the project's current generation; it does not create a second knowledge base
+and does not require re-ingestion.
+
+The UI can:
+
+- inspect readiness, staleness, generation identity, and source counts;
+- search with hybrid, BM25, or dense retrieval and optional CPU reranking;
+- copy passages and citations, inspect neighboring passages, and open the
+  original PDF or download the original EPUB;
+- browse and filter indexed sources;
+- edit reviewed metadata and explicitly exclude or restore a source; and
+- create a new immutable generation.
+
+It binds to the local machine only. The browser talks to a private stdio
+instance of this MCP server, so the UI and an AI agent use the same seven tools
+and receive the same results. The UI is an evidence workspace, not a chatbot:
+it does not generate an answer or treat retrieval scores as truth.
+
+You may keep the UI open while the configured MCP server is running in Cline.
+Project operations are serialized with a lock; if one process is ingesting,
+searches and writes from the other wait for it to finish.
 
 ## Configure your MCP client
 
@@ -243,6 +277,7 @@ All derived knowledge-base data is stored beneath the configured project:
 ```text
 my-research-project/.ultrarag/research/
 ├── current.json
+├── project.lock
 ├── source-metadata.json
 ├── source-exclusions.json
 ├── models/
@@ -265,8 +300,10 @@ generations are retained. Original files under `sources/` are never modified.
 `source-exclusions.json` records reversible source-level decisions separately
 from the immutable generations.
 
-Use a separate server configuration for each project. Do not run two server
-processes against the same project root simultaneously.
+Use a separate server configuration for each project. Multiple local processes,
+such as Cline and the research UI, may use the same project root because access
+is serialized through `project.lock`. A long ingestion blocks other operations
+for that project until it completes.
 
 Generations created by version 0.1 remain searchable with
 `retrieval_method="bm25"`. When `status` reports
@@ -301,4 +338,6 @@ arguments or verifier command to prohibit downloads.
 - Duplicate identification is intentionally left to the agent and user; the
   server does not guess whether similar files are the same source.
 - CPU embedding and reranking are slower than GPU-backed alternatives.
-- There is no graphical interface or automatic generation cleanup yet.
+- Research memory is not implemented; source evidence is intentionally kept
+  separate from agent or session memory.
+- There is no automatic generation cleanup yet.

@@ -7,9 +7,14 @@ import hashlib
 import json
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from filelock import AsyncFileLock
+from filelock import Timeout as FileLockTimeout
 
 from .config import ResearchConfig, resolve_source_reference
 from .dense import (
@@ -222,7 +227,24 @@ class ResearchService:
             offline=config.offline,
         )
         self._lock = asyncio.Lock()
+        self._project_lock = AsyncFileLock(
+            config.state_root / "project.lock",
+            timeout=1800,
+        )
         self._loaded_generation: str | None = None
+
+    @asynccontextmanager
+    async def _operation(self) -> AsyncIterator[None]:
+        """Serialize project access across MCP and UI server processes."""
+
+        async with self._lock:
+            try:
+                async with self._project_lock:
+                    yield
+            except FileLockTimeout as exc:
+                raise ResearchError(
+                    "Timed out waiting for another research process to finish"
+                ) from exc
 
     def _metadata(self) -> dict[str, dict[str, Any]]:
         try:
@@ -418,7 +440,7 @@ class ResearchService:
         }
 
     async def status(self) -> dict[str, Any]:
-        async with self._lock:
+        async with self._operation():
             return await asyncio.to_thread(self._status)
 
     async def set_source_metadata(
@@ -426,7 +448,7 @@ class ResearchService:
         source_path: str,
         metadata: dict[str, Any],
     ) -> dict[str, Any]:
-        async with self._lock:
+        async with self._operation():
             try:
                 source = resolve_source_reference(self.config, source_path)
                 if (
@@ -461,7 +483,7 @@ class ResearchService:
     ) -> dict[str, Any]:
         """Include or exclude one source without changing the source file."""
 
-        async with self._lock:
+        async with self._operation():
             try:
                 source = resolve_source_reference(self.config, source_path)
                 relative = source.relative_to(self.config.source_root).as_posix()
@@ -561,7 +583,7 @@ class ResearchService:
                 "chunk_overlap must be non-negative and below chunk_size"
             )
 
-        async with self._lock:
+        async with self._operation():
             try:
                 scan = scan_sources(self.config)
             except SourcePolicyError as exc:
@@ -866,7 +888,7 @@ class ResearchService:
         if retrieval_method not in RETRIEVAL_METHODS:
             raise ResearchError("retrieval_method must be one of: bm25, dense, hybrid")
 
-        async with self._lock:
+        async with self._operation():
             current = self._load_current_optional()
             if current is None:
                 raise ResearchError("No knowledge base exists; call ingest first")
@@ -1088,7 +1110,7 @@ class ResearchService:
         categories: list[str] | None = None,
         keywords: list[str] | None = None,
     ) -> dict[str, Any]:
-        async with self._lock:
+        async with self._operation():
             current = self._load_current_optional()
             if current is None:
                 exclusions = self._source_exclusions()
@@ -1147,7 +1169,7 @@ class ResearchService:
     ) -> dict[str, Any]:
         if not 0 <= context_chunks <= 5:
             raise ResearchError("context_chunks must be between 0 and 5")
-        async with self._lock:
+        async with self._operation():
             current = self._load_current_optional()
             if current is None:
                 raise ResearchError("No knowledge base exists; call ingest first")

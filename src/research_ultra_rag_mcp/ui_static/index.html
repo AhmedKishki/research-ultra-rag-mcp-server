@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="Project-local evidence retrieval for research UltraRAG.">
+    <title>Research UltraRAG</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to research workspace</a>
+
+    <header class="site-header">
+      <div class="brand-lockup" aria-label="Research UltraRAG">
+        <span class="brand-mark" aria-hidden="true">R</span>
+        <div>
+          <p class="brand-name">Research UltraRAG</p>
+          <p class="brand-subtitle">Evidence workspace</p>
+        </div>
+      </div>
+
+      <div class="project-identity">
+        <span class="eyebrow">Active project</span>
+        <span id="project-name" class="project-name">Connecting…</span>
+        <span id="project-path" class="project-path"></span>
+      </div>
+
+      <div class="header-actions">
+        <span id="connection-state" class="connection-state" data-state="loading">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Connecting</span>
+        </span>
+        <button id="refresh-button" class="button button-quiet" type="button">
+          Refresh
+        </button>
+        <button id="ingest-button" class="button button-primary" type="button">
+          New generation
+        </button>
+      </div>
+    </header>
+
+    <main id="workspace" class="workspace">
+      <section class="overview" aria-labelledby="overview-title">
+        <div class="section-heading overview-heading">
+          <div>
+            <p class="eyebrow">Knowledge base</p>
+            <h1 id="overview-title">Evidence, with its provenance intact.</h1>
+          </div>
+          <p class="overview-copy">
+            Search the current immutable generation. Results remain source passages;
+            interpretation and writing stay with you and your agent.
+          </p>
+        </div>
+
+        <div id="status-cards" class="status-grid" aria-live="polite">
+          <article class="stat-card">
+            <span class="stat-label">Searchable sources</span>
+            <strong id="searchable-count" class="stat-value">—</strong>
+            <span id="source-detail" class="stat-detail">Waiting for status</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Passage chunks</span>
+            <strong id="chunk-count" class="stat-value">—</strong>
+            <span class="stat-detail">Current generation</span>
+          </article>
+          <article class="stat-card">
+            <span class="stat-label">Generation</span>
+            <strong id="generation-label" class="stat-value stat-value-code">—</strong>
+            <span id="generation-date" class="stat-detail">Not yet created</span>
+          </article>
+          <article class="stat-card stat-card-state">
+            <span class="stat-label">Index state</span>
+            <strong id="index-state" class="stat-value stat-value-state">Checking</strong>
+            <span id="retrieval-detail" class="stat-detail">BM25 + dense</span>
+          </article>
+        </div>
+
+        <div id="status-notice" class="notice" hidden>
+          <div>
+            <strong id="status-notice-title">Attention needed</strong>
+            <p id="status-notice-text"></p>
+          </div>
+          <button id="notice-action" class="text-button" type="button">Review sources</button>
+        </div>
+      </section>
+
+      <nav class="section-tabs" aria-label="Research views">
+        <button class="tab-button is-active" type="button" data-view="search" aria-selected="true">
+          Search evidence
+        </button>
+        <button class="tab-button" type="button" data-view="sources" aria-selected="false">
+          Sources <span id="source-tab-count" class="tab-count">0</span>
+        </button>
+      </nav>
+
+      <section id="search-view" class="view-panel is-active" data-panel="search">
+        <form id="search-form" class="search-console">
+          <label class="query-field" for="query">
+            <span class="field-label">Research question or passage</span>
+            <textarea
+              id="query"
+              name="query"
+              rows="3"
+              required
+              placeholder="What evidence connects artificial intelligence to commodity fetishism?"
+            ></textarea>
+          </label>
+
+          <div class="search-controls">
+            <fieldset class="method-control">
+              <legend>Retrieval</legend>
+              <label><input type="radio" name="retrieval_method" value="hybrid" checked><span>Hybrid</span></label>
+              <label><input type="radio" name="retrieval_method" value="bm25"><span>BM25</span></label>
+              <label><input type="radio" name="retrieval_method" value="dense"><span>Dense</span></label>
+            </fieldset>
+
+            <label class="compact-field" for="top-k">
+              <span>Results</span>
+              <select id="top-k" name="top_k">
+                <option value="5">5</option>
+                <option value="8" selected>8</option>
+                <option value="12">12</option>
+                <option value="20">20</option>
+              </select>
+            </label>
+
+            <label class="check-control" for="rerank">
+              <input id="rerank" name="rerank" type="checkbox">
+              <span>
+                <strong>CPU rerank</strong>
+                <small>Slower, precision-focused</small>
+              </span>
+            </label>
+
+            <button id="search-button" class="button button-primary search-submit" type="submit">
+              Search evidence
+            </button>
+          </div>
+
+          <details class="filter-drawer">
+            <summary>Limit by reviewed metadata</summary>
+            <div class="filter-fields">
+              <label for="category-filter">
+                <span class="field-label">Categories</span>
+                <input id="category-filter" type="text" placeholder="political economy, technology">
+                <small>Comma separated; every category must match.</small>
+              </label>
+              <label for="keyword-filter">
+                <span class="field-label">Keywords</span>
+                <input id="keyword-filter" type="text" placeholder="labour, AI">
+                <small>Comma separated; every keyword must match.</small>
+              </label>
+            </div>
+          </details>
+        </form>
+
+        <div id="search-summary" class="result-summary" hidden>
+          <div>
+            <p class="eyebrow">Retrieved evidence</p>
+            <h2 id="result-heading">Results</h2>
+          </div>
+          <div id="result-meta" class="result-meta"></div>
+        </div>
+
+        <div id="search-empty" class="empty-state">
+          <span class="empty-index">01</span>
+          <div>
+            <h2>Start with a substantive question.</h2>
+            <p>
+              Hybrid search balances exact language with conceptual similarity.
+              Retrieved passages include enough provenance to verify every quotation.
+            </p>
+          </div>
+        </div>
+
+        <div id="results" class="results-list" aria-live="polite"></div>
+      </section>
+
+      <section id="sources-view" class="view-panel" data-panel="sources" hidden>
+        <div class="sources-toolbar">
+          <div>
+            <p class="eyebrow">Collection</p>
+            <h2>Indexed sources</h2>
+          </div>
+          <label class="source-filter" for="source-filter">
+            <span class="visually-hidden">Filter sources</span>
+            <input id="source-filter" type="search" placeholder="Filter by title, author, category…">
+          </label>
+        </div>
+
+        <div id="source-list" class="source-list" aria-live="polite"></div>
+
+        <section id="excluded-section" class="excluded-section" hidden>
+          <div class="section-heading-row">
+            <div>
+              <p class="eyebrow">Not searched</p>
+              <h3>Excluded sources</h3>
+            </div>
+            <span id="excluded-count" class="count-badge">0</span>
+          </div>
+          <div id="excluded-list" class="excluded-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Research UltraRAG · local project workspace</span>
+      <span>Verify important quotations in the original PDF or EPUB.</span>
+    </footer>
+
+    <dialog id="ingest-dialog" class="dialog">
+      <form id="ingest-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Immutable build</p>
+            <h2>Create a new generation</h2>
+          </div>
+          <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="dialog-intro">
+          All included PDFs and EPUBs will be extracted and indexed. The current
+          generation remains active unless the complete build succeeds.
+        </p>
+        <div class="two-column-fields">
+          <label for="chunk-size">
+            <span class="field-label">Chunk size</span>
+            <input id="chunk-size" type="number" min="50" max="384" value="384" required>
+            <small>GPT-2 tokens, maximum 384.</small>
+          </label>
+          <label for="chunk-overlap">
+            <span class="field-label">Overlap</span>
+            <input id="chunk-overlap" type="number" min="0" max="383" value="64" required>
+            <small>Must be smaller than chunk size.</small>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button class="button button-quiet dialog-close" type="button">Cancel</button>
+          <button id="ingest-submit" class="button button-primary" type="submit">Create generation</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="metadata-dialog" class="dialog dialog-wide">
+      <form id="metadata-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Reviewed record</p>
+            <h2>Edit source metadata</h2>
+          </div>
+          <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <input id="metadata-source-path" type="hidden">
+        <div class="metadata-fields">
+          <label class="field-span" for="metadata-title">
+            <span class="field-label">Title</span>
+            <input id="metadata-title" type="text">
+          </label>
+          <label for="metadata-authors">
+            <span class="field-label">Authors</span>
+            <input id="metadata-authors" type="text" placeholder="Author One, Author Two">
+          </label>
+          <label for="metadata-year">
+            <span class="field-label">Year</span>
+            <input id="metadata-year" type="number" min="1" max="9999">
+          </label>
+          <label class="field-span" for="metadata-doi">
+            <span class="field-label">DOI</span>
+            <input id="metadata-doi" type="text" placeholder="10.xxxx/…">
+          </label>
+          <label for="metadata-categories">
+            <span class="field-label">Categories</span>
+            <input id="metadata-categories" type="text" placeholder="political economy, media theory">
+          </label>
+          <label for="metadata-keywords">
+            <span class="field-label">Keywords</span>
+            <input id="metadata-keywords" type="text" placeholder="AI, labour, fetishism">
+          </label>
+        </div>
+        <p class="form-note">Metadata changes become searchable after a new ingestion.</p>
+        <div class="dialog-actions">
+          <button class="button button-quiet dialog-close" type="button">Cancel</button>
+          <button id="metadata-submit" class="button button-primary" type="submit">Save metadata</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="exclusion-dialog" class="dialog">
+      <form id="exclusion-form" method="dialog">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Retrieval decision</p>
+            <h2>Exclude this source?</h2>
+          </div>
+          <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
+        </div>
+        <input id="exclusion-source-path" type="hidden">
+        <p id="exclusion-source-name" class="dialog-source-name"></p>
+        <label for="exclusion-reason">
+          <span class="field-label">Reason</span>
+          <textarea id="exclusion-reason" rows="4" required placeholder="For example: duplicate representation; preferred copy is …"></textarea>
+        </label>
+        <p class="form-note">
+          Retrieval changes immediately. The original file is not deleted or edited.
+        </p>
+        <div class="dialog-actions">
+          <button class="button button-quiet dialog-close" type="button">Cancel</button>
+          <button id="exclusion-submit" class="button button-danger" type="submit">Exclude source</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="context-dialog" class="dialog dialog-context">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">Nearby passages</p>
+          <h2 id="context-title">Passage context</h2>
+        </div>
+        <button class="icon-button dialog-close" type="button" aria-label="Close">×</button>
+      </div>
+      <div id="context-content" class="context-content"></div>
+    </dialog>
+
+    <div id="busy-bar" class="busy-bar" hidden role="status" aria-live="polite">
+      <span class="busy-spinner" aria-hidden="true"></span>
+      <span id="busy-message">Working…</span>
+    </div>
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  </body>
+</html>

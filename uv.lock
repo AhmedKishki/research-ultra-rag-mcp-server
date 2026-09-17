@@ -2144,17 +2144,20 @@ wheels = [
 
 [[package]]
 name = "research-ultra-rag-mcp"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "ebooklib" },
     { name = "fastembed" },
     { name = "fastmcp" },
+    { name = "filelock" },
     { name = "pydantic" },
     { name = "pymupdf" },
     { name = "qdrant-client" },
+    { name = "starlette" },
     { name = "typing-extensions" },
+    { name = "uvicorn" },
     { name = "vanilla-ultra-rag-mcp" },
 ]
 
@@ -2170,10 +2173,13 @@ requires-dist = [
     { name = "ebooklib", specifier = ">=0.20,<1" },
     { name = "fastembed", specifier = "==0.8.0" },
     { name = "fastmcp", specifier = "==3.4.0" },
+    { name = "filelock", specifier = ">=3.16,<5" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pymupdf", specifier = ">=1.26,<2" },
     { name = "qdrant-client", specifier = "==1.19.1" },
+    { name = "starlette", specifier = ">=1.6,<2" },
     { name = "typing-extensions", specifier = ">=4.12,<5" },
+    { name = "uvicorn", specifier = ">=0.53,<1" },
     { name = "vanilla-ultra-rag-mcp", git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=d080b0c2c1172f029024149aee15d295cd8e0d14" },
 ]
 

@@ -8,7 +8,8 @@ This is the engineering guide for AI coding agents working in
 Provide a high-level stdio MCP server for project-scoped research knowledge
 bases built from original PDF and EPUB sources. The server helps an AI agent
 retrieve citable evidence across a collection while preserving document
-identity and source locators.
+identity and source locators. It also provides a loopback-only browser UI over
+the same public MCP tools and project state.
 
 The package builds on the separately versioned
 `vanilla-ultra-rag-mcp-server`. Never add research behavior to the vanilla
@@ -29,8 +30,10 @@ repository to support this project.
 
 ## Current compatibility baseline
 
-- Package and command: `research-ultra-rag-mcp`
-- Version: `0.3.0`
+- Package: `research-ultra-rag-mcp`
+- Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and
+  `research-ultra-rag-verify`
+- Version: `0.4.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
@@ -65,14 +68,22 @@ repository to support this project.
   may be quoted.
 - Never claim that extracted text is a substitute for checking the original.
 - Keep MCP stdout reserved for protocol messages.
+- Keep the UI bound to loopback addresses. Do not add remote exposure or
+  authentication assumptions without an explicit security design.
+- Keep browser write endpoints same-origin, JSON-only, and constrained to the
+  seven public MCP operations.
+- Do not let UI code read or mutate generation artifacts directly. It must use
+  the private stdio MCP client, except for safely serving an allowlisted
+  original PDF or EPUB from the configured source root.
 
 ## Architecture
 
 ```text
-AI agent / MCP client
-        │ stdio
-        ▼
-research-ultra-rag-mcp
+AI agent / MCP client ─────────────┐
+                                  │ stdio
+Local browser ── HTTP ── UI host ─┤ private stdio
+                                  ▼
+                       research-ultra-rag-mcp
         ├── project/source policy
         ├── PDF page extraction
         ├── EPUB section extraction
@@ -126,6 +137,9 @@ citation contract, tests, and user-visible model configuration.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
 - `service.py`: generation, indexing, status, filtering, and evidence workflow.
 - `instructions.py`: guidance returned to MCP agents.
+- `ui.py`: loopback HTTP host, private MCP client, constrained JSON API, and
+  safe original-source serving.
+- `ui_static/`: dependency-free browser workspace (HTML, CSS, and JavaScript).
 - `verify.py`: terminal MCP client for end-to-end project verification.
 - `tests/`: unit and real stdio integration coverage.
 - `ROADMAP.md`: explicitly deferred work.
@@ -138,13 +152,16 @@ The mutable pointer and reviewed metadata live at:
 <project>/.ultrarag/research/current.json
 <project>/.ultrarag/research/source-metadata.json
 <project>/.ultrarag/research/source-exclusions.json
+<project>/.ultrarag/research/project.lock
 ```
 
 Each build gets a unique directory under `generations/`. A failed generation
 gets `failure.json` and never becomes current. Successful generations contain a
 manifest, extraction units, raw UltraRAG chunks, enriched chunks, BM25 index,
 and Qdrant index. Model weights are cached once per project under `models/`. Do
-not treat generated files as source documents.
+not treat generated files as source documents. `project.lock` serializes MCP
+and UI operations across processes; a long ingestion intentionally blocks other
+operations rather than exposing a partially changed runtime or local index.
 
 ## Public MCP tools
 
@@ -211,7 +228,8 @@ in this repository so vanilla can continue tracking upstream safely.
 
 - Use `pathlib.Path`, type hints, and JSON-serializable tool results.
 - Keep blocking extraction and filesystem scans outside the event loop.
-- Serialize ingest/search/metadata operations with the service lock.
+- Serialize every project operation with both the in-process service lock and
+  the cross-process `project.lock`.
 - Prefer new immutable generations to in-place index mutation.
 - Validate a new artifact before updating a pointer to it.
 - Keep model downloads lazy: the embedding model is needed during ingestion;
@@ -235,6 +253,11 @@ uv run ruff check .
 uv run pytest -q
 uv run python -m compileall -q src tests
 ```
+
+UI changes must additionally cover the static workspace, JSON request
+validation, same-origin write protection, safe source-file resolution, and
+forwarding to the public MCP tools. Exercise the real UI host against an
+existing project without mutating its sources before release.
 
 For source or retrieval changes, the integration test must still launch the
 real vanilla stdio server, build BM25 and Qdrant indexes, run hybrid and dense
