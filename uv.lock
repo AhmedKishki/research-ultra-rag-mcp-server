@@ -1887,7 +1887,7 @@ wheels = [
 
 [[package]]
 name = "research-ultra-rag-mcp"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -1909,7 +1909,7 @@ requires-dist = [
     { name = "ebooklib", specifier = ">=0.20,<1" },
     { name = "fastmcp", specifier = "==3.4.0" },
     { name = "pymupdf", specifier = ">=1.26,<2" },
-    { name = "vanilla-ultra-rag-mcp", git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=404839c10aef254a49380695fa3b2bb9c2b1c95f" },
+    { name = "vanilla-ultra-rag-mcp", git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=fa131094a6111a49528a32304ba3ea1c54e2c795" },
 ]
 
 [package.metadata.requires-dev]
@@ -2346,8 +2346,8 @@ wheels = [
 
 [[package]]
 name = "vanilla-ultra-rag-mcp"
-version = "0.1.0"
-source = { git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=404839c10aef254a49380695fa3b2bb9c2b1c95f#404839c10aef254a49380695fa3b2bb9c2b1c95f" }
+version = "0.1.1"
+source = { git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=fa131094a6111a49528a32304ba3ea1c54e2c795#fa131094a6111a49528a32304ba3ea1c54e2c795" }
 dependencies = [
     { name = "bm25s" },
     { name = "fastmcp" },

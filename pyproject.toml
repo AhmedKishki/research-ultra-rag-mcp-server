@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-ultra-rag-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "A project-scoped research knowledge-base MCP server built on vanilla UltraRAG"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -13,7 +13,7 @@ dependencies = [
     "ebooklib>=0.20,<1",
     "fastmcp==3.4.0",
     "pymupdf>=1.26,<2",
-    "vanilla-ultra-rag-mcp @ git+https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git@404839c10aef254a49380695fa3b2bb9c2b1c95f",
+    "vanilla-ultra-rag-mcp @ git+https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git@fa131094a6111a49528a32304ba3ea1c54e2c795",
 ]
 
 [project.scripts]

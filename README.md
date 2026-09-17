@@ -11,6 +11,29 @@ which remains an unmodified gateway to UltraRAG.
 
 The initial release is CPU-only and uses UltraRAG's BM25 retriever.
 
+## Relationship to Vanilla RAG
+
+UltraRAG's official Vanilla RAG pipeline loads benchmark questions, retrieves
+passages, renders an UltraRAG prompt, calls an UltraRAG generation backend,
+extracts boxed answers, and evaluates them. The vanilla MCP repository exposes
+that upstream workflow unchanged.
+
+This server deliberately adapts the architecture for interactive research:
+
+| Vanilla RAG responsibility | Research server adaptation |
+|---|---|
+| Generic corpus and index paths | One enforced project with PDF/EPUB sources and immutable generations |
+| Dense retrieval by default | Local CPU BM25 retrieval for the initial release |
+| Anonymous passage strings | Structured evidence with source identity, metadata, and page/section locators |
+| UltraRAG prompt and generation backend | The connected AI agent reads the evidence and performs synthesis |
+| Benchmark answer extraction and scoring | Human-facing quotations, citations, comparison, and source checking |
+
+RAG therefore spans the MCP boundary: `research-ultra-rag-mcp` supplies the
+retrieved, citable context and the connected AI agent is the generation stage.
+The research server does not currently expose an `answer` tool or call
+UltraRAG's generation server internally. This keeps the evidence visible and
+lets the user choose the agent/model that writes from it.
+
 ## What it provides
 
 - one stdio MCP server named `research-ultra-rag-mcp`;
@@ -104,7 +127,9 @@ For later questions, ask normally:
 > labour exploitation. Compare the relevant passages and cite every claim.
 
 The server tells the agent to check `status`, search before answering, quote only
-returned passage text, and never invent a page number or bibliographic field.
+returned passage text, cite the returned provenance, and never invent a page
+number or bibliographic field. The agent—not this MCP server—writes the final
+research response from those results.
 
 ## MCP tools
 

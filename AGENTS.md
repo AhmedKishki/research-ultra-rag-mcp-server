@@ -17,10 +17,10 @@ repository to support this project.
 ## Current compatibility baseline
 
 - Package and command: `research-ultra-rag-mcp`
-- Version: `0.1.0`
+- Version: `0.1.1`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
-- Vanilla gateway commit: `404839c10aef254a49380695fa3b2bb9c2b1c95f`
+- Vanilla gateway commit: `fa131094a6111a49528a32304ba3ea1c54e2c795`
 - Upstream UltraRAG: `0.3.0.2` at
   `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
@@ -62,6 +62,28 @@ vanilla-ultra-rag-mcp
 Only the high-level research tools are exposed to the outer MCP client. The
 vanilla gateway is an implementation dependency, not a second user-facing tool
 surface within this server.
+
+## Intentional differences from Vanilla RAG
+
+The official UltraRAG Vanilla RAG pipeline includes benchmark loading, dense
+retrieval, prompt rendering, model generation, answer extraction, and
+evaluation. This server reuses UltraRAG's chunking and retrieval mechanics but
+changes the boundary for research work:
+
+- PDF/EPUB extraction, project isolation, immutable storage, metadata, and
+  locators are implemented here.
+- The initial retriever is CPU BM25 rather than the official example's dense
+  retriever.
+- `search` returns visible, structured evidence instead of anonymous passage
+  strings.
+- The calling AI agent is the generation stage and must cite the returned
+  evidence; this server does not call UltraRAG generation internally.
+- Benchmark loading, boxed-answer extraction, and automatic evaluation are not
+  part of the interactive research flow.
+
+Do not blur this boundary in documentation. Adding server-side answer
+generation would be a deliberate research feature requiring its own API,
+citation contract, tests, and user-visible model configuration.
 
 ## Repository map
 
