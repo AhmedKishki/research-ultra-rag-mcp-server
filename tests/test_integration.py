@@ -48,6 +48,43 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "set_source_metadata",
             "status",
         }
+        expected_parameters = {
+            "ingest": {"chunk_size", "chunk_overlap"},
+            "search": {
+                "query",
+                "top_k",
+                "categories",
+                "keywords",
+                "document_ids",
+                "retrieval_method",
+                "rerank",
+            },
+            "list_sources": {"categories", "keywords"},
+            "get_passage": {"chunk_id", "context_chunks"},
+            "set_source_metadata": {"source_path", "metadata"},
+        }
+        for tool_name, parameter_names in expected_parameters.items():
+            properties = tools[tool_name].inputSchema["properties"]
+            assert set(properties) == parameter_names
+            assert all(properties[name].get("description") for name in properties)
+
+        metadata_definition = tools["set_source_metadata"].inputSchema["properties"][
+            "metadata"
+        ]
+        assert metadata_definition["additionalProperties"] is False
+        assert set(metadata_definition["properties"]) == {
+            "title",
+            "authors",
+            "year",
+            "doi",
+            "categories",
+            "keywords",
+        }
+        assert all(
+            field.get("description")
+            for field in metadata_definition["properties"].values()
+        )
+
         search_properties = tools["search"].inputSchema["properties"]
         assert search_properties["retrieval_method"]["default"] == "hybrid"
         assert set(search_properties["retrieval_method"]["enum"]) == {

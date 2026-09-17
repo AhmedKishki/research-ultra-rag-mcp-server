@@ -30,7 +30,7 @@ repository to support this project.
 ## Current compatibility baseline
 
 - Package and command: `research-ultra-rag-mcp`
-- Version: `0.2.0`
+- Version: `0.2.1`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`

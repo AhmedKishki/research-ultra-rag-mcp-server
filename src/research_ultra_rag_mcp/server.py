@@ -6,10 +6,12 @@ import argparse
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, NotRequired, TypeAlias, TypeVar
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from pydantic import ConfigDict, Field
+from typing_extensions import TypedDict
 
 from .config import ConfigurationError, ResearchConfig, resolve_config
 from .instructions import SERVER_INSTRUCTIONS
@@ -17,8 +19,175 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 T = TypeVar("T")
+
+
+class SourceMetadataInput(TypedDict):
+    """Reviewed bibliographic metadata accepted by set_source_metadata."""
+
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
+    title: NotRequired[
+        Annotated[str, Field(description="Reviewed title of the source document.")]
+    ]
+    authors: NotRequired[
+        Annotated[
+            list[str],
+            Field(description="Reviewed author names in preferred citation order."),
+        ]
+    ]
+    year: NotRequired[
+        Annotated[
+            int | None,
+            Field(
+                description="Publication year from 1 through 9999, or null if unknown.",
+                ge=1,
+                le=9999,
+            ),
+        ]
+    ]
+    doi: NotRequired[
+        Annotated[
+            str,
+            Field(
+                description="Reviewed DOI, normally without a https://doi.org/ prefix."
+            ),
+        ]
+    ]
+    categories: NotRequired[
+        Annotated[
+            list[str],
+            Field(description="Reviewed broad categories used to filter this source."),
+        ]
+    ]
+    keywords: NotRequired[
+        Annotated[
+            list[str],
+            Field(description="Reviewed specific keywords used to filter this source."),
+        ]
+    ]
+
+
+ChunkSize: TypeAlias = Annotated[
+    int,
+    Field(
+        description=(
+            "Maximum GPT-2 token count per chunk; must be between 50 and 384."
+        ),
+        ge=50,
+        le=384,
+    ),
+]
+ChunkOverlap: TypeAlias = Annotated[
+    int,
+    Field(
+        description=(
+            "GPT-2 tokens repeated between adjacent chunks; must be non-negative "
+            "and smaller than chunk_size."
+        ),
+        ge=0,
+        le=383,
+    ),
+]
+SearchQuery: TypeAlias = Annotated[
+    str,
+    Field(
+        description="Research question, exact phrase, name, or concept to retrieve.",
+        min_length=1,
+    ),
+]
+TopK: TypeAlias = Annotated[
+    int,
+    Field(
+        description="Maximum number of ranked evidence passages to return (1-50).",
+        ge=1,
+        le=50,
+    ),
+]
+CategoryFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Case-insensitive category filters; a result must contain every supplied "
+            "category. Omit or pass null for no category filter."
+        )
+    ),
+]
+KeywordFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Case-insensitive keyword filters; a result must contain every supplied "
+            "keyword. Omit or pass null for no keyword filter."
+        )
+    ),
+]
+DocumentIdFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Document IDs to include; a result may match any supplied ID. Obtain IDs "
+            "from list_sources or search. Omit or pass null for no document filter."
+        )
+    ),
+]
+RetrievalMethod: TypeAlias = Annotated[
+    Literal["hybrid", "bm25", "dense"],
+    Field(
+        description=(
+            "Retrieval mode: hybrid combines BM25 and dense results, bm25 favors "
+            "exact terms, and dense favors semantic similarity."
+        )
+    ),
+]
+Rerank: TypeAlias = Annotated[
+    bool,
+    Field(
+        description=(
+            "Whether to apply the optional CPU cross-encoder reranker. This is slower "
+            "and may download its pinned model on first use."
+        )
+    ),
+]
+ChunkId: TypeAlias = Annotated[
+    str,
+    Field(
+        description="Exact chunk_id returned by search for the current generation.",
+        min_length=1,
+    ),
+]
+ContextChunks: TypeAlias = Annotated[
+    int,
+    Field(
+        description=(
+            "Number of neighboring chunks to return on each side of the requested "
+            "passage (0-5)."
+        ),
+        ge=0,
+        le=5,
+    ),
+]
+SourcePath: TypeAlias = Annotated[
+    str,
+    Field(
+        description=(
+            "PDF or EPUB path relative to the configured sources directory, as shown "
+            "by status or list_sources; absolute and escaping paths are rejected."
+        ),
+        min_length=1,
+    ),
+]
+ReviewedMetadata: TypeAlias = Annotated[
+    SourceMetadataInput,
+    Field(
+        description=(
+            "Complete reviewed metadata override for the source. Supported fields are "
+            "title, authors, year, doi, categories, and keywords; omitted fields remove "
+            "their previous overrides."
+        )
+    ),
+]
 
 
 async def _tool_call(operation: Callable[[], Awaitable[T]]) -> T:
@@ -82,8 +251,8 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def ingest(
-        chunk_size: int = 384,
-        chunk_overlap: int = 64,
+        chunk_size: ChunkSize = 384,
+        chunk_overlap: ChunkOverlap = 64,
     ) -> dict[str, Any]:
         """Extract PDFs/EPUBs and create a BM25 plus dense generation.
 
@@ -108,13 +277,13 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def search(
-        query: str,
-        top_k: int = 8,
-        categories: list[str] | None = None,
-        keywords: list[str] | None = None,
-        document_ids: list[str] | None = None,
-        retrieval_method: Literal["hybrid", "bm25", "dense"] = "hybrid",
-        rerank: bool = False,
+        query: SearchQuery,
+        top_k: TopK = 8,
+        categories: CategoryFilter = None,
+        keywords: KeywordFilter = None,
+        document_ids: DocumentIdFilter = None,
+        retrieval_method: RetrievalMethod = "hybrid",
+        rerank: Rerank = False,
     ) -> dict[str, Any]:
         """Search the current generation and return citable evidence.
 
@@ -145,8 +314,8 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def list_sources(
-        categories: list[str] | None = None,
-        keywords: list[str] | None = None,
+        categories: CategoryFilter = None,
+        keywords: KeywordFilter = None,
     ) -> dict[str, Any]:
         """List indexed sources and their bibliographic metadata."""
         return await _tool_call(
@@ -165,8 +334,8 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def get_passage(
-        chunk_id: str,
-        context_chunks: int = 1,
+        chunk_id: ChunkId,
+        context_chunks: ContextChunks = 1,
     ) -> dict[str, Any]:
         """Return one retrieved passage with nearby chunks from the same source."""
         return await _tool_call(
@@ -185,8 +354,8 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def set_source_metadata(
-        source_path: str,
-        metadata: dict[str, Any],
+        source_path: SourcePath,
+        metadata: ReviewedMetadata,
     ) -> dict[str, Any]:
         """Set reviewed metadata for one source-relative PDF or EPUB path.
 
