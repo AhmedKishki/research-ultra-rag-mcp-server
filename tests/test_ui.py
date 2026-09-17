@@ -140,7 +140,7 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     with client:
         page = client.get("/")
         assert page.status_code == 200
-        assert "Research UltraRAG" in page.text
+        assert "UltraRAG MCP" in page.text
         assert "Evidence, with its provenance intact" not in page.text
         assert page.text.index('id="search-view"') < page.text.index(
             'id="status-cards"'
@@ -156,11 +156,13 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
         assert client.get("/assets/unknown.js").status_code == 404
 
         health = client.get("/api/health")
+        profile = client.get("/api/ui")
         status = client.get("/api/status")
         sources = client.get("/api/sources?categories=theory,history")
         context = client.get("/api/passages/chunk-1?context_chunks=2")
 
     assert health.json()["project_root"] == str(project)
+    assert profile.json()["application_name"] == "Research UltraRAG"
     assert status.json()["generation_id"] == "generation-1"
     assert sources.json()["sources"][0]["title"] == "Evidence"
     assert context.json()["requested_chunk_id"] == "chunk-1"

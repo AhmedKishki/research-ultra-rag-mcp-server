@@ -65,6 +65,19 @@ licenses. They are not bundled as source files in this repository; the Python
 packages are installed by the package manager and model files are downloaded
 to a project-local cache on first use.
 
+SHARED USER INTERFACE
+
+The optional local browser command uses the independently versioned shared UI
+package at this pinned revision:
+
+    ultra-rag-mcp-ui
+    commit 72d2959b033eb532b8c5c9890b2cc8c070b51abe
+    https://github.com/AhmedKishki/ultra-rag-mcp-ui
+
+The research server owns its adapter and project safety policy. The shared
+package owns only the browser workspace and loopback HTTP boundary; it does not
+store or retrieve research data.
+
 SUGGESTED SOFTWARE CITATION
 
 The pinned UltraRAG revision does not include a dedicated UltraRAG BibTeX entry.

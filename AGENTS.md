@@ -8,8 +8,9 @@ This is the engineering guide for AI coding agents working in
 Provide a high-level stdio MCP server for project-scoped research knowledge
 bases built from original PDF and EPUB sources. The server helps an AI agent
 retrieve citable evidence across a collection while preserving document
-identity and source locators. It also provides a loopback-only browser UI over
-the same public MCP tools and project state.
+identity and source locators. It also provides a research adapter that connects
+the shared loopback-only `ultra-rag-mcp-ui` workspace to the same public MCP
+tools and project state.
 
 The package builds on the separately versioned
 `vanilla-ultra-rag-mcp-server`. Never add research behavior to the vanilla
@@ -33,10 +34,11 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and
   `research-ultra-rag-verify`
-- Version: `0.5.0`
+- Version: `0.6.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
+- Shared UI commit: `72d2959b033eb532b8c5c9890b2cc8c070b51abe`
 - Upstream UltraRAG: `0.3.0.2` at
   `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
@@ -75,27 +77,30 @@ repository to support this project.
 - Do not let UI code read or mutate generation artifacts directly. It must use
   the private stdio MCP client, except for safely serving an allowlisted
   original PDF or EPUB from the configured source root.
+- Keep the shared UI dependency pinned by commit. Keep MCP transport, research
+  tool mapping, and source authorization in this repository's adapter; do not
+  copy the shared static workspace back into this package.
 
 ## Architecture
 
 ```text
-AI agent / MCP client ─────────────┐
-                                  │ stdio
-Local browser ── HTTP ── UI host ─┤ private stdio
-                                  ▼
-                       research-ultra-rag-mcp
-        ├── project/source policy
-        ├── PDF page extraction
-        ├── EPUB section extraction
-        ├── metadata and provenance
-        ├── immutable generations
-        ├── FastEmbed CPU embeddings
-        ├── project-local Qdrant dense index
-        ├── reciprocal-rank fusion
-        ├── optional CPU cross-encoder reranking
-        └── persistent stdio MCP -> vanilla-ultra-rag-mcp
-                                  ├── UltraRAG corpus chunker
-                                  └── UltraRAG BM25 retriever
+AI agent / MCP client ── stdio ──────────────────────────┐
+                                                         ▼
+Local browser ── HTTP ── shared UI ── research adapter ── research-ultra-rag-mcp
+
+research-ultra-rag-mcp
+├── project/source policy
+├── PDF page extraction
+├── EPUB section extraction
+├── metadata and provenance
+├── immutable generations
+├── FastEmbed CPU embeddings
+├── project-local Qdrant dense index
+├── reciprocal-rank fusion
+├── optional CPU cross-encoder reranking
+└── persistent stdio MCP -> vanilla-ultra-rag-mcp
+                          ├── UltraRAG corpus chunker
+                          └── UltraRAG BM25 retriever
 ```
 
 Only the high-level research tools are exposed to the outer MCP client. The
@@ -137,9 +142,10 @@ citation contract, tests, and user-visible model configuration.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
 - `service.py`: generation, indexing, status, filtering, and evidence workflow.
 - `instructions.py`: guidance returned to MCP agents.
-- `ui.py`: loopback HTTP host, private MCP client, constrained JSON API, and
-  safe original-source serving.
-- `ui_static/`: dependency-free browser workspace (HTML, CSS, and JavaScript).
+- `ui.py`: shared-UI profile, private MCP client, public-tool mapping, and safe
+  original-source authorization.
+- `ultra-rag-mcp-ui` dependency: loopback HTTP host, constrained JSON API, and
+  packaged dependency-free browser workspace.
 - `verify.py`: terminal MCP client for end-to-end project verification.
 - `tests/`: unit and real stdio integration coverage.
 - `ROADMAP.md`: explicitly deferred work.
@@ -257,10 +263,11 @@ uv run pytest -q
 uv run python -m compileall -q src tests
 ```
 
-UI changes must additionally cover the static workspace, JSON request
-validation, same-origin write protection, safe source-file resolution, and
-forwarding to the public MCP tools. Exercise the real UI host against an
-existing project without mutating its sources before release.
+Research UI adapter changes must cover safe source-file resolution, forwarding
+to the public MCP tools, and the real UI host against an existing project
+without mutating its sources. Shared workspace, JSON validation, capability,
+and same-origin changes belong in `ultra-rag-mcp-ui` and must pass that
+package's own tests before updating the pinned commit here.
 
 For source or retrieval changes, the integration test must still launch the
 real vanilla stdio server, build BM25 and Qdrant indexes, run hybrid and dense

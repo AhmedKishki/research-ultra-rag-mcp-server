@@ -1,27 +1,24 @@
-"""Local browser interface backed by the public research MCP tools."""
+"""Research adapter for the shared local UltraRAG MCP browser interface."""
 
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, Protocol
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING, Any, Protocol
 
-import uvicorn
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
-from starlette.applications import Starlette
-from starlette.exceptions import HTTPException
-from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
-from starlette.routing import Route
+from ultra_rag_mcp_ui import (
+    AdapterFactory,
+    SourceFile,
+    UIProfile,
+    UIRequestError,
+    run_ui,
+)
+from ultra_rag_mcp_ui import create_ui_app as create_shared_ui_app
 
 from .config import (
     ConfigurationError,
@@ -31,10 +28,27 @@ from .config import (
 )
 from .sources import SourcePolicyError, scan_sources
 
-LOGGER = logging.getLogger(__name__)
-STATIC_ROOT = Path(__file__).with_name("ui_static")
+if TYPE_CHECKING:
+    from starlette.applications import Starlette
+
 UI_NAME = "research-ultra-rag-ui"
 MAX_ERROR_LENGTH = 1200
+
+RESEARCH_UI_PROFILE = UIProfile(
+    application_name="Research UltraRAG",
+    project_label="Project",
+    project_fallback_name="Research project",
+    navigation_label="Research views",
+    source_types_label="PDF + EPUB sources",
+    ingest_intro=(
+        "All included PDFs and EPUBs will be extracted and indexed. The current "
+        "generation remains active unless the complete build succeeds."
+    ),
+    ingest_busy_message=(
+        "Building BM25 and dense indexes. This can take several minutes…"
+    ),
+    footer_text="Verify important quotations in the original PDF or EPUB.",
+)
 
 
 class ResearchToolClient(Protocol):
@@ -44,6 +58,65 @@ class ResearchToolClient(Protocol):
         arguments: dict[str, Any],
         **kwargs: Any,
     ) -> Any: ...
+
+
+class ResearchUIAdapter:
+    """Map the shared UI contract to the seven public research MCP tools."""
+
+    def __init__(self, config: ResearchConfig, client: ResearchToolClient) -> None:
+        self.config = config
+        self.client = client
+
+    async def health(self) -> Mapping[str, Any]:
+        return {
+            "project_root": str(self.config.project_root),
+            "source_root": str(self.config.source_root),
+        }
+
+    async def call(
+        self,
+        operation: str,
+        arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        try:
+            result = await self.client.call_tool(
+                operation,
+                dict(arguments),
+                timeout=1800,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            raise UIRequestError(message[:MAX_ERROR_LENGTH]) from exc
+        data = getattr(result, "data", result)
+        if not isinstance(data, Mapping):
+            raise UIRequestError(
+                f"Research tool {operation!r} returned a non-object response",
+                status_code=502,
+            )
+        return data
+
+    async def source_file(self, source_path: str) -> SourceFile:
+        try:
+            target = resolve_source_reference(self.config, source_path)
+            scan = scan_sources(self.config)
+        except (ConfigurationError, SourcePolicyError, ValueError) as exc:
+            raise UIRequestError(str(exc)) from exc
+        selected = next((item for item in scan.selected if item.path == target), None)
+        if selected is None:
+            raise UIRequestError("Source was not found", status_code=404)
+        media_type = (
+            "application/pdf"
+            if selected.extension == ".pdf"
+            else "application/epub+zip"
+        )
+        disposition = "inline" if selected.extension == ".pdf" else "attachment"
+        return SourceFile(
+            path=selected.path,
+            media_type=media_type,
+            filename=selected.path.name,
+            content_disposition_type=disposition,
+        )
 
 
 def _research_transport(config: ResearchConfig) -> StdioTransport:
@@ -73,255 +146,9 @@ def _research_transport(config: ResearchConfig) -> StdioTransport:
     )
 
 
-async def _tool_call(
-    request: Request,
-    name: str,
-    arguments: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    client: ResearchToolClient = request.app.state.research_client
-    try:
-        result = await client.call_tool(
-            name,
-            arguments or {},
-            timeout=1800,
-            raise_on_error=True,
-        )
-    except Exception as exc:
-        message = str(exc).strip() or exc.__class__.__name__
-        raise HTTPException(
-            status_code=400,
-            detail=message[:MAX_ERROR_LENGTH],
-        ) from exc
-    data = getattr(result, "data", result)
-    if not isinstance(data, dict):
-        raise HTTPException(
-            status_code=502,
-            detail=f"Research tool {name!r} returned a non-object response",
-        )
-    return data
-
-
-def _same_origin(request: Request) -> bool:
-    if request.headers.get("sec-fetch-site", "").casefold() == "cross-site":
-        return False
-    origin = request.headers.get("origin")
-    if not origin:
-        return True
-    parsed = urlsplit(origin)
-    return parsed.scheme in {"http", "https"} and parsed.netloc == request.headers.get(
-        "host", ""
-    )
-
-
-async def _json_body(request: Request) -> dict[str, Any]:
-    if not _same_origin(request):
-        raise HTTPException(status_code=403, detail="Cross-origin writes are blocked")
-    content_type = request.headers.get("content-type", "").split(";", 1)[0]
-    if content_type.casefold() != "application/json":
-        raise HTTPException(
-            status_code=415,
-            detail="Write requests require application/json",
-        )
-    try:
-        value = await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid JSON request") from exc
-    if not isinstance(value, dict):
-        raise HTTPException(status_code=400, detail="JSON body must be an object")
-    return value
-
-
-async def _index(_: Request) -> Response:
-    return FileResponse(STATIC_ROOT / "index.html", media_type="text/html")
-
-
-async def _asset(request: Request) -> Response:
-    filename = request.path_params["filename"]
-    allowed = {
-        "app.css": "text/css",
-        "app.js": "text/javascript",
-    }
-    media_type = allowed.get(filename)
-    if media_type is None:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    return FileResponse(STATIC_ROOT / filename, media_type=media_type)
-
-
-async def _health(request: Request) -> Response:
-    config: ResearchConfig = request.app.state.config
-    return JSONResponse(
-        {
-            "status": "ok",
-            "project_root": str(config.project_root),
-            "source_root": str(config.source_root),
-        }
-    )
-
-
-async def _status(request: Request) -> Response:
-    return JSONResponse(await _tool_call(request, "status"))
-
-
-def _query_list(request: Request, name: str) -> list[str] | None:
-    values: list[str] = []
-    for raw in request.query_params.getlist(name):
-        values.extend(item.strip() for item in raw.split(",") if item.strip())
-    return values or None
-
-
-async def _sources(request: Request) -> Response:
-    return JSONResponse(
-        await _tool_call(
-            request,
-            "list_sources",
-            {
-                "categories": _query_list(request, "categories"),
-                "keywords": _query_list(request, "keywords"),
-            },
-        )
-    )
-
-
-async def _search(request: Request) -> Response:
-    body = await _json_body(request)
-    allowed = {
-        "query",
-        "top_k",
-        "categories",
-        "keywords",
-        "document_ids",
-        "retrieval_method",
-        "rerank",
-    }
-    unknown = set(body) - allowed
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported search fields: {', '.join(sorted(unknown))}",
-        )
-    return JSONResponse(await _tool_call(request, "search", body))
-
-
-async def _passage(request: Request) -> Response:
-    try:
-        context_chunks = int(request.query_params.get("context_chunks", "1"))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="context_chunks must be an integer",
-        ) from exc
-    return JSONResponse(
-        await _tool_call(
-            request,
-            "get_passage",
-            {
-                "chunk_id": request.path_params["chunk_id"],
-                "context_chunks": context_chunks,
-            },
-        )
-    )
-
-
-async def _ingest(request: Request) -> Response:
-    body = await _json_body(request)
-    allowed = {"chunk_size", "chunk_overlap"}
-    unknown = set(body) - allowed
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported ingestion fields: {', '.join(sorted(unknown))}",
-        )
-    return JSONResponse(await _tool_call(request, "ingest", body))
-
-
-async def _set_metadata(request: Request) -> Response:
-    body = await _json_body(request)
-    if set(body) != {"source_path", "metadata"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Metadata requests require source_path and metadata",
-        )
-    return JSONResponse(await _tool_call(request, "set_source_metadata", body))
-
-
-async def _set_inclusion(request: Request) -> Response:
-    body = await _json_body(request)
-    allowed = {"source_path", "included", "reason"}
-    unknown = set(body) - allowed
-    if unknown or not {"source_path", "included"}.issubset(body):
-        raise HTTPException(
-            status_code=400,
-            detail="Inclusion requests require source_path and included",
-        )
-    return JSONResponse(await _tool_call(request, "set_source_inclusion", body))
-
-
-async def _source_file(request: Request) -> Response:
-    config: ResearchConfig = request.app.state.config
-    raw_path = request.query_params.get("path", "").strip()
-    if not raw_path:
-        raise HTTPException(status_code=400, detail="Source path is required")
-    try:
-        target = resolve_source_reference(config, raw_path)
-        scan = scan_sources(config)
-    except (ConfigurationError, SourcePolicyError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    selected = next((item for item in scan.selected if item.path == target), None)
-    if selected is None:
-        raise HTTPException(status_code=404, detail="Source was not found")
-    media_type = (
-        "application/pdf" if selected.extension == ".pdf" else "application/epub+zip"
-    )
-    disposition = "inline" if selected.extension == ".pdf" else "attachment"
-    return FileResponse(
-        selected.path,
-        media_type=media_type,
-        filename=selected.path.name,
-        content_disposition_type=disposition,
-    )
-
-
-async def _security_headers(request: Request, call_next: Any) -> Response:
-    response = await call_next(request)
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; base-uri 'none'; form-action 'self'; "
-        "frame-ancestors 'none'; object-src 'self'; script-src 'self'; "
-        "style-src 'self'; connect-src 'self'; img-src 'self' data:"
-    )
-    response.headers["Referrer-Policy"] = "no-referrer"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
-    return response
-
-
-async def _http_error(_: Request, exc: Exception) -> JSONResponse:
-    assert isinstance(exc, HTTPException)
-    return JSONResponse({"error": exc.detail}, status_code=exc.status_code)
-
-
-async def _unexpected_error(_: Request, exc: Exception) -> JSONResponse:
-    LOGGER.exception("Research UI request failed", exc_info=exc)
-    return JSONResponse(
-        {"error": "Unexpected research UI failure; inspect the UI log."},
-        status_code=500,
-    )
-
-
-def create_ui_app(
-    config: ResearchConfig,
-    *,
-    research_client: ResearchToolClient | None = None,
-) -> Starlette:
+def _adapter_factory(config: ResearchConfig) -> AdapterFactory:
     @asynccontextmanager
-    async def lifespan(app: Starlette) -> AsyncIterator[None]:
-        app.state.config = config
-        if research_client is not None:
-            app.state.research_client = research_client
-            yield
-            return
-
+    async def adapter_context() -> AsyncIterator[ResearchUIAdapter]:
         transport = _research_transport(config)
         async with Client(
             transport,
@@ -329,34 +156,26 @@ def create_ui_app(
             timeout=1800,
             init_timeout=1800,
         ) as client:
-            app.state.research_client = client
-            yield
+            yield ResearchUIAdapter(config, client)
 
-    routes = [
-        Route("/", _index),
-        Route("/assets/{filename:str}", _asset),
-        Route("/api/health", _health),
-        Route("/api/status", _status),
-        Route("/api/sources", _sources),
-        Route("/api/search", _search, methods=["POST"]),
-        Route("/api/passages/{chunk_id:str}", _passage),
-        Route("/api/ingest", _ingest, methods=["POST"]),
-        Route("/api/source-metadata", _set_metadata, methods=["POST"]),
-        Route("/api/source-inclusion", _set_inclusion, methods=["POST"]),
-        Route("/api/source-file", _source_file),
-    ]
-    app = Starlette(
-        routes=routes,
-        lifespan=lifespan,
-        middleware=[Middleware(BaseHTTPMiddleware, dispatch=_security_headers)],
-        exception_handlers={
-            HTTPException: _http_error,
-            Exception: _unexpected_error,
-        },
+    return adapter_context
+
+
+def create_ui_app(
+    config: ResearchConfig,
+    *,
+    research_client: ResearchToolClient | None = None,
+) -> Starlette:
+    """Create the shared UI with the research MCP adapter."""
+    if research_client is not None:
+        return create_shared_ui_app(
+            profile=RESEARCH_UI_PROFILE,
+            adapter=ResearchUIAdapter(config, research_client),
+        )
+    return create_shared_ui_app(
+        profile=RESEARCH_UI_PROFILE,
+        adapter_factory=_adapter_factory(config),
     )
-    app.state.config = config
-
-    return app
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -412,12 +231,11 @@ def main() -> None:
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
-    uvicorn.run(
+    run_ui(
         create_ui_app(config),
         host=args.host,
         port=args.port,
         log_level="warning" if args.log_level == "warn" else args.log_level,
-        access_log=False,
     )
 
 
