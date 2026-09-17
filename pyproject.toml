@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-ultra-rag-mcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "A project-scoped research knowledge-base MCP server built on vanilla UltraRAG"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -18,7 +18,7 @@ dependencies = [
     "pymupdf>=1.26,<2",
     "qdrant-client==1.19.1",
     "typing-extensions>=4.12,<5",
-    "ultra-rag-mcp-ui @ git+https://github.com/AhmedKishki/ultra-rag-mcp-ui.git@72d2959b033eb532b8c5c9890b2cc8c070b51abe",
+    "ui-ultra-rag-mcp @ git+https://github.com/AhmedKishki/ui-ultra-rag-mcp.git@3f90ee16c1a49cdc9d2e72244f7968adf0d246a5",
     "vanilla-ultra-rag-mcp @ git+https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git@d080b0c2c1172f029024149aee15d295cd8e0d14",
 ]
 

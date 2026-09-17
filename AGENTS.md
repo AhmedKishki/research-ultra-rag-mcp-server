@@ -9,7 +9,7 @@ Provide a high-level stdio MCP server for project-scoped research knowledge
 bases built from original PDF and EPUB sources. The server helps an AI agent
 retrieve citable evidence across a collection while preserving document
 identity and source locators. It also provides a research adapter that connects
-the shared loopback-only `ultra-rag-mcp-ui` workspace to the same public MCP
+the shared loopback-only `ui-ultra-rag-mcp` workspace to the same public MCP
 tools and project state.
 
 The package builds on the separately versioned
@@ -34,11 +34,11 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and
   `research-ultra-rag-verify`
-- Version: `0.6.0`
+- Version: `0.6.1`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
-- Shared UI commit: `72d2959b033eb532b8c5c9890b2cc8c070b51abe`
+- Shared UI commit: `3f90ee16c1a49cdc9d2e72244f7968adf0d246a5`
 - Upstream UltraRAG: `0.3.0.2` at
   `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
@@ -144,7 +144,7 @@ citation contract, tests, and user-visible model configuration.
 - `instructions.py`: guidance returned to MCP agents.
 - `ui.py`: shared-UI profile, private MCP client, public-tool mapping, and safe
   original-source authorization.
-- `ultra-rag-mcp-ui` dependency: loopback HTTP host, constrained JSON API, and
+- `ui-ultra-rag-mcp` dependency: loopback HTTP host, constrained JSON API, and
   packaged dependency-free browser workspace.
 - `verify.py`: terminal MCP client for end-to-end project verification.
 - `tests/`: unit and real stdio integration coverage.
@@ -266,7 +266,7 @@ uv run python -m compileall -q src tests
 Research UI adapter changes must cover safe source-file resolution, forwarding
 to the public MCP tools, and the real UI host against an existing project
 without mutating its sources. Shared workspace, JSON validation, capability,
-and same-origin changes belong in `ultra-rag-mcp-ui` and must pass that
+and same-origin changes belong in `ui-ultra-rag-mcp` and must pass that
 package's own tests before updating the pinned commit here.
 
 For source or retrieval changes, the integration test must still launch the

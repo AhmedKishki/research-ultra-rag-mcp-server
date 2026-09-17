@@ -114,7 +114,7 @@ the project's current generation; it does not create a second knowledge base
 and does not require re-ingestion.
 
 The basic browser workspace is supplied by the separately versioned
-[`ultra-rag-mcp-ui`](https://github.com/AhmedKishki/ultra-rag-mcp-ui) package.
+[`ui-ultra-rag-mcp`](https://github.com/AhmedKishki/ui-ultra-rag-mcp) package.
 It is installed automatically at the revision pinned by this repository; you
 do not need to clone or start it separately. This project retains the research
 adapter, MCP subprocess lifecycle, and source-file safety policy.

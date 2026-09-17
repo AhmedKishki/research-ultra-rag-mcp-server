@@ -11,14 +11,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
-from ultra_rag_mcp_ui import (
+from ui_ultra_rag_mcp import (
     AdapterFactory,
     SourceFile,
     UIProfile,
     UIRequestError,
     run_ui,
 )
-from ultra_rag_mcp_ui import create_ui_app as create_shared_ui_app
+from ui_ultra_rag_mcp import create_ui_app as create_shared_ui_app
 
 from .config import (
     ConfigurationError,

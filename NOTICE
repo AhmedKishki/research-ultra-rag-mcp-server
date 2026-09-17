@@ -70,9 +70,9 @@ SHARED USER INTERFACE
 The optional local browser command uses the independently versioned shared UI
 package at this pinned revision:
 
-    ultra-rag-mcp-ui
-    commit 72d2959b033eb532b8c5c9890b2cc8c070b51abe
-    https://github.com/AhmedKishki/ultra-rag-mcp-ui
+    ui-ultra-rag-mcp
+    commit 3f90ee16c1a49cdc9d2e72244f7968adf0d246a5
+    https://github.com/AhmedKishki/ui-ultra-rag-mcp
 
 The research server owns its adapter and project safety policy. The shared
 package owns only the browser workspace and loopback HTTP boundary; it does not
