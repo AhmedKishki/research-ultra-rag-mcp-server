@@ -14,6 +14,19 @@ The package builds on the separately versioned
 `vanilla-ultra-rag-mcp-server`. Never add research behavior to the vanilla
 repository to support this project.
 
+## Documentation responsibilities
+
+- `README.md` is a standalone user manual: capability summary, operation,
+  installation, MCP configuration, concrete usage, expected results, storage,
+  and user-visible limitations. It must not compare or link to sibling
+  MCP-server projects.
+- `AGENT_GUIDE.md` is operational policy for an AI agent using the six research
+  tools. Do not put installation or contributor workflows there.
+- `AGENTS.md` is this engineering contract. It may document internal dependency
+  boundaries, but must not become a second user manual.
+- `ROADMAP.md` contains only deferred work.
+- `NOTICE` contains attribution and legal notices.
+
 ## Current compatibility baseline
 
 - Package and command: `research-ultra-rag-mcp`

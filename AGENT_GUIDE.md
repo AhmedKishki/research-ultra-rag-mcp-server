@@ -1,7 +1,6 @@
 # Agent guide
 
 This file is for AI agents using `research-ultra-rag-mcp` as a research tool.
-Engineering agents changing the repository should also read [AGENTS.md](AGENTS.md).
 
 ## Purpose
 
