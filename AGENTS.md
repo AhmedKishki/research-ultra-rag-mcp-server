@@ -20,7 +20,7 @@ repository to support this project.
 - Version: `0.1.1`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
-- Vanilla gateway commit: `fa131094a6111a49528a32304ba3ea1c54e2c795`
+- Vanilla gateway commit: `0887b47fcd447a0ea9ae7e0722dd98d5205ce180`
 - Upstream UltraRAG: `0.3.0.2` at
   `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
