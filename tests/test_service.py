@@ -8,20 +8,32 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import write_pdf
+from conftest import write_epub, write_pdf
 
+import research_ultra_rag_mcp.service as service_module
 from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.dense import (
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
     DenseSearchHit,
 )
+from research_ultra_rag_mcp.extraction import ExtractionError
 from research_ultra_rag_mcp.service import (
     ResearchError,
     ResearchService,
     _enrich_chunks,
+    _public_document,
 )
 from research_ultra_rag_mcp.storage import read_jsonl, write_jsonl
+
+CORRUPT_TEXT = (
+    "��ѪҶޜഝǄ䘉Ӌਁ ⧠ᢃ⹤Ҷἅ ൠ؞༽൷㜭ᡀ࣏ "
+    "䖜රѪտᆵǃ୶ъㅹ儈ԧ٬ъᘱⲴ⡷䶒ਉһǄ൘ᡰᴹᵳ╄ਈᯩ "
+    "䶒ˈབྷཊᮠ൪ൠ൘䗷 ৫ഋॱᒤѝ࿻㓸؍ᤱ⿱ᴹᡆޜᴹ኎ᙗǄ "
+    "ᵜ᮷䘈ᇎ䇱ਁ ⧠ˈ䜘࠶൪ൠᡰᴹᵳ⭡⊑ḃර⿱㩕Աъࡂ䖜㠣᭯ "
+    "ᓌˈ⭡᭯ ᓌ᢯ᣵޘ䜘؞༽䍴䠁ˈᴰ㓸䙐ᡀ⊑ḃ⋫⨶ᡀᵜ⽮Պॆ "
+    "ˈᒦᕅਁ ⧟ຳнޜǄᴹ∂ᓏ⢙൪ൠ 䳮�"
+)
 
 
 class FakeUltraRAG:
@@ -83,6 +95,7 @@ class FakeDenseBackend:
         self.build_calls = 0
         self.embed_calls = 0
         self.embedded_text_count = 0
+        self.upload_batches: list[tuple[int, int]] = []
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         self.embed_calls += 1
@@ -108,6 +121,47 @@ class FakeDenseBackend:
             "embedding_model_revision": EMBEDDING_MODEL_REVISION,
             "embedding_dimension": 384,
             "point_count": len(chunks),
+        }
+
+    def initialize_index(self, index_path: Path, dimension: int) -> None:
+        self.build_calls += 1
+        if self.fail_build:
+            raise RuntimeError("simulated dense-index failure")
+        assert dimension == 384
+        index_path.mkdir(parents=True)
+        self.chunks = []
+
+    def upload_index_batch(
+        self,
+        chunks: list[dict[str, object]],
+        index_path: Path,
+        vectors: np.ndarray,
+        *,
+        offset: int,
+    ) -> None:
+        assert index_path.is_dir()
+        assert vectors.shape == (len(chunks), 384)
+        assert offset == len(self.chunks)
+        self.upload_batches.append((offset, len(chunks)))
+        self.chunks.extend(chunks)
+
+    def finalize_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> dict[str, object]:
+        assert index_path.is_dir()
+        assert dimension == 384
+        assert len(self.chunks) == expected_count
+        (index_path / "fake-qdrant.json").write_text("{}\n", encoding="utf-8")
+        return {
+            "backend": "fake Qdrant",
+            "embedding_model": EMBEDDING_MODEL,
+            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_dimension": 384,
+            "point_count": expected_count,
         }
 
     def build(
@@ -201,6 +255,56 @@ class ScoredDenseBackend(FakeDenseBackend):
         ]
 
 
+class CancelOnceUltraRAG(FakeUltraRAG):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancel_next_chunk = True
+
+    async def chunk(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        if self.cancel_next_chunk:
+            self.cancel_next_chunk = False
+            raise asyncio.CancelledError
+        await super().chunk(
+            input_path,
+            output_path,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+
+
+class ManyChunkUltraRAG(FakeUltraRAG):
+    async def chunk(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        assert chunk_size > chunk_overlap
+        self.chunk_calls += 1
+        unit = read_jsonl(input_path)[0]
+        write_jsonl(
+            output_path,
+            (
+                {
+                    "id": index,
+                    "doc_id": unit["id"],
+                    "title": unit["title"],
+                    "contents": f"Research evidence passage number {index}.",
+                }
+                for index in range(130)
+            ),
+        )
+
+
 def test_empty_upstream_chunks_are_counted_without_losing_a_unit() -> None:
     document = {
         "document_id": "doc_test",
@@ -242,6 +346,37 @@ def test_empty_upstream_chunks_are_counted_without_losing_a_unit() -> None:
             [unit, second_unit],
             [document],
         )
+
+
+def test_legacy_automatic_metadata_uses_runtime_corruption_guard() -> None:
+    legacy = {
+        "source_path": "sources/safe-name.pdf",
+        "title": CORRUPT_TEXT,
+        "authors": [CORRUPT_TEXT, "Ada Example"],
+        "categories": [],
+        "keywords": [],
+        "doi": "",
+        "metadata_provenance": {
+            "title": "pdf_metadata",
+            "authors": "pdf_metadata",
+        },
+        "metadata_warnings": [],
+    }
+
+    public = _public_document(legacy)
+
+    assert public["title"] == "safe-name"
+    assert public["authors"] == ["Ada Example"]
+    assert "corrupt_extracted_title" in public["metadata_warnings"]
+    assert "corrupt_extracted_authors" in public["metadata_warnings"]
+
+    legacy["metadata_provenance"] = {
+        "title": "reviewed_override",
+        "authors": "reviewed_override",
+    }
+    reviewed = _public_document(legacy)
+    assert reviewed["title"] == CORRUPT_TEXT
+    assert reviewed["authors"][0] == CORRUPT_TEXT
 
 
 async def _assert_research_generation_and_structured_search(project: Path) -> None:
@@ -516,8 +651,10 @@ async def _assert_relevance_gates_allow_abstention(project: Path) -> None:
     assert unrelated["rejected_candidates"] == {
         "bm25_no_query_token_overlap": 1,
         "bm25_extraction_artifact": 0,
+        "bm25_corrupt_text": 0,
         "dense_below_threshold": 1,
         "dense_extraction_artifact": 0,
+        "dense_corrupt_text": 0,
     }
 
     relevant = await service.search("Lenovo", top_k=8)
@@ -689,3 +826,430 @@ async def _assert_failed_dense_build_does_not_replace_current(project: Path) -> 
 
 def test_failed_dense_build_does_not_replace_current(project: Path) -> None:
     asyncio.run(_assert_failed_dense_build_does_not_replace_current(project))
+
+
+async def _assert_bounded_ingestion_resumes_after_service_restart(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = FakeUltraRAG()
+    dense = FakeDenseBackend()
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    first_service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=dense,
+    )
+    result = await first_service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    assert result["status"] == "in_progress"
+    assert result["phase"] == "source_hashing"
+    assert not config.current_path.exists()
+
+    status = await first_service.status()
+    assert status["ingestion_progress"]["build_id"] == result["build_id"]
+
+    resumed_service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=dense,
+    )
+    for _ in range(20):
+        result = await resumed_service.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+            work_budget_seconds=0,
+        )
+        if result["status"] != "in_progress":
+            break
+        assert not config.current_path.exists()
+    else:  # pragma: no cover - protects the bounded state machine from stalling.
+        raise AssertionError("bounded ingestion did not finish")
+
+    assert result["status"] == "ready"
+    assert result["resumed"] is True
+    assert config.current_path.exists()
+    assert not any(config.staging_root.iterdir())
+    assert (await resumed_service.status())["ingestion_progress"] is None
+
+
+def test_bounded_ingestion_resumes_after_service_restart(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_bounded_ingestion_resumes_after_service_restart(project, monkeypatch)
+    )
+
+
+async def _assert_selected_generation_remains_searchable_during_build(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable cobalt evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = FakeUltraRAG()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=FakeDenseBackend(),
+    )
+    selected = await service.ingest(chunk_size=50, chunk_overlap=10)
+    write_pdf(project / "sources" / "new.pdf", ["New amber evidence."])
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    pending = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    search = await service.search("stable cobalt", top_k=1)
+    status = await service.status()
+
+    assert pending["status"] == "in_progress"
+    assert search["generation_id"] == selected["generation_id"]
+    assert search["hits"][0]["chunk_id"]
+    assert status["generation_id"] == selected["generation_id"]
+    assert status["ingestion_progress"]["build_id"] == pending["build_id"]
+
+
+def test_selected_generation_remains_searchable_during_build(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_selected_generation_remains_searchable_during_build(
+            project,
+            monkeypatch,
+        )
+    )
+
+
+async def _assert_cancelled_ingestion_preserves_its_checkpoint(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = CancelOnceUltraRAG()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=FakeDenseBackend(),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    staging_roots = list(config.staging_root.iterdir())
+    assert len(staging_roots) == 1
+    checkpoint = json.loads(
+        (staging_roots[0] / "checkpoint.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint["phase"] == "chunking"
+    assert checkpoint["last_interruption"] == "cancelled"
+    assert not config.current_path.exists()
+
+    resumed = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert resumed["status"] == "ready"
+    assert resumed["resumed"] is True
+
+
+def test_cancelled_ingestion_preserves_its_checkpoint(project: Path) -> None:
+    asyncio.run(_assert_cancelled_ingestion_preserves_its_checkpoint(project))
+
+
+async def _assert_incompatible_force_mode_supersedes_checkpoint(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    normal = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    forced = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        force_recompute=True,
+        work_budget_seconds=0,
+    )
+    forced_resume = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        force_recompute=True,
+        work_budget_seconds=0,
+    )
+
+    assert normal["build_id"] != forced["build_id"]
+    assert forced_resume["build_id"] == forced["build_id"]
+    failure = json.loads(
+        (config.failures_root / f"{normal['build_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "checkpoint superseded" in failure["error"]
+
+
+def test_incompatible_force_mode_supersedes_checkpoint(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_incompatible_force_mode_supersedes_checkpoint(project, monkeypatch)
+    )
+
+
+async def _assert_final_revalidation_catches_same_stat_mutation(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = project / "sources" / "article.pdf"
+    write_pdf(source, ["Stable research evidence."])
+    original_stat = source.stat()
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    for _ in range(30):
+        result = await service.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+            work_budget_seconds=0,
+        )
+        if (
+            result["phase"] == "qdrant_indexing"
+            and result["progress"]["completed"] == result["progress"]["total"]
+        ):
+            break
+    else:  # pragma: no cover
+        raise AssertionError("ingestion did not reach final source revalidation")
+
+    original_bytes = source.read_bytes()
+    mutated = bytearray(original_bytes)
+    mutated[-1] = 32 if mutated[-1] != 32 else 10
+    source.write_bytes(mutated)
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert source.stat().st_size == original_stat.st_size
+    assert source.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+    revalidated = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    assert revalidated["build_id"] == result["build_id"]
+    assert revalidated["phase"] == "source_revalidation"
+    restarted = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    assert restarted["status"] == "in_progress"
+    assert restarted["build_id"] != result["build_id"]
+    assert "Source bytes changed" in restarted["message"]
+    assert not config.current_path.exists()
+
+
+def test_final_revalidation_catches_same_stat_mutation(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_final_revalidation_catches_same_stat_mutation(project, monkeypatch)
+    )
+
+
+async def _assert_bounded_and_single_call_builds_are_equivalent(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    single_project = project / "single"
+    bounded_project = project / "bounded"
+    (single_project / "sources").mkdir(parents=True)
+    (bounded_project / "sources").mkdir(parents=True)
+    source = single_project / "sources" / "evidence.pdf"
+    write_pdf(
+        source,
+        ["First page cobalt evidence.", "Second page amber evidence."],
+    )
+    (bounded_project / "sources" / "evidence.pdf").write_bytes(source.read_bytes())
+
+    single_config = resolve_config(single_project, vanilla_executable=sys.executable)
+    bounded_config = resolve_config(bounded_project, vanilla_executable=sys.executable)
+    single = ResearchService(  # type: ignore[arg-type]
+        single_config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    bounded = ResearchService(  # type: ignore[arg-type]
+        bounded_config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    single_result = await single.ingest(chunk_size=50, chunk_overlap=10)
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+    for _ in range(40):
+        bounded_result = await bounded.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+            work_budget_seconds=0,
+        )
+        if bounded_result["status"] == "ready":
+            break
+    else:  # pragma: no cover
+        raise AssertionError("bounded equivalent build did not finish")
+
+    single_root = Path(single_result["generation_root"])
+    bounded_root = Path(bounded_result["generation_root"])
+    assert read_jsonl(single_root / "corpus" / "extracted-units.jsonl") == read_jsonl(
+        bounded_root / "corpus" / "extracted-units.jsonl"
+    )
+    assert read_jsonl(single_root / "chunks" / "chunks.jsonl") == read_jsonl(
+        bounded_root / "chunks" / "chunks.jsonl"
+    )
+    assert np.array_equal(
+        np.load(single_root / "portable" / "embeddings.npy", allow_pickle=False),
+        np.load(bounded_root / "portable" / "embeddings.npy", allow_pickle=False),
+    )
+
+
+def test_bounded_and_single_call_builds_are_equivalent(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_bounded_and_single_call_builds_are_equivalent(project, monkeypatch)
+    )
+
+
+async def _assert_resumed_dense_batches_are_exactly_once(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = ManyChunkUltraRAG()
+    dense = FakeDenseBackend()
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    for _ in range(60):
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            ultrarag,
+            dense=dense,
+        )
+        result = await service.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+            work_budget_seconds=0,
+        )
+        if result["status"] == "ready":
+            break
+    else:  # pragma: no cover
+        raise AssertionError("multi-batch ingestion did not finish")
+
+    assert result["chunk_count"] == 130
+    assert dense.embed_calls == 3
+    assert dense.embedded_text_count == 130
+    assert dense.upload_batches == [(0, 64), (64, 64), (128, 2)]
+    assert len(dense.chunks) == 130
+    assert len({str(chunk["chunk_id"]) for chunk in dense.chunks}) == 130
+
+
+def test_resumed_dense_batches_are_exactly_once(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(_assert_resumed_dense_batches_are_exactly_once(project, monkeypatch))
+
+
+async def _assert_legacy_corrupt_chunks_are_rejected_immediately(
+    project: Path,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = FakeUltraRAG()
+    dense = FakeDenseBackend()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=dense,
+    )
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+    generation_root = Path(result["generation_root"])
+    chunks_path = generation_root / "chunks" / "chunks.jsonl"
+    chunks = read_jsonl(chunks_path)
+    chunk_id = str(chunks[0]["chunk_id"])
+    clean_chunk = dict(chunks[0])
+    clean_chunk["chunk_id"] = "clean-neighbor"
+    clean_chunk["id"] = "clean-neighbor"
+    clean_chunk["document_chunk_index"] = 0
+    corrupt_chunk = dict(chunks[0])
+    corrupt_chunk["document_chunk_index"] = 1
+    for field in ("contents", "embedding_text", "text"):
+        corrupt_chunk[field] = CORRUPT_TEXT
+    chunks = [clean_chunk, corrupt_chunk]
+    write_jsonl(chunks_path, chunks)
+    ultrarag.passages = [CORRUPT_TEXT, str(clean_chunk["contents"])]
+    dense.chunks = [corrupt_chunk]
+
+    for retrieval_method in ("bm25", "dense", "hybrid"):
+        search = await service.search(
+            "evidence",
+            top_k=8,
+            retrieval_method=retrieval_method,
+            rerank=True,
+        )
+        assert all(hit["chunk_id"] != chunk_id for hit in search["hits"])
+        if retrieval_method in {"bm25", "hybrid"}:
+            assert search["rejected_candidates"]["bm25_corrupt_text"] == 1
+        if retrieval_method in {"dense", "hybrid"}:
+            assert search["rejected_candidates"]["dense_corrupt_text"] == 1
+    with pytest.raises(ResearchError, match="corrupt extracted text"):
+        await service.get_passage(chunk_id)
+    passage = await service.get_passage("clean-neighbor", context_chunks=1)
+    assert [item["chunk_id"] for item in passage["context"]] == ["clean-neighbor"]
+
+
+def test_legacy_corrupt_chunks_are_rejected_immediately(project: Path) -> None:
+    asyncio.run(_assert_legacy_corrupt_chunks_are_rejected_immediately(project))
+
+
+async def _assert_unreadable_source_fails_without_activation(project: Path) -> None:
+    write_epub(project / "sources" / "broken.epub", CORRUPT_TEXT)
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+
+    with pytest.raises(ExtractionError, match="no readable English-oriented text"):
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    assert not config.current_path.exists()
+    assert not any(config.staging_root.iterdir())
+    failures = list(config.failures_root.glob("*.json"))
+    assert len(failures) == 1
+    assert CORRUPT_TEXT not in failures[0].read_text(encoding="utf-8")
+
+
+def test_unreadable_source_fails_without_activation(project: Path) -> None:
+    asyncio.run(_assert_unreadable_source_fails_without_activation(project))

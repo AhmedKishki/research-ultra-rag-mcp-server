@@ -23,7 +23,7 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.8.1"
+SERVER_VERSION = "0.9.0"
 T = TypeVar("T")
 
 
@@ -161,6 +161,17 @@ ForceRecompute: TypeAlias = Annotated[
             "Set true to bypass document, chunk, and vector reuse and rebuild all "
             "derived content. The previous generation remains selected on failure."
         )
+    ),
+]
+WorkBudgetSeconds: TypeAlias = Annotated[
+    int,
+    Field(
+        description=(
+            "Soft per-call ingestion work budget in seconds. Call ingest again "
+            "when it returns status='in_progress'."
+        ),
+        ge=10,
+        le=300,
     ),
 ]
 ChunkId: TypeAlias = Annotated[
@@ -305,6 +316,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         chunk_size: ChunkSize = 384,
         chunk_overlap: ChunkOverlap = 64,
         force_recompute: ForceRecompute = False,
+        work_budget_seconds: WorkBudgetSeconds = 45,
     ) -> dict[str, Any]:
         """Create or refresh an immutable BM25 plus dense generation.
 
@@ -312,8 +324,10 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         GPT-2 tokens and is capped at 384 for the embedding model. Compatible
         unchanged documents, chunks, and vectors are reused unless force_recompute
         is true. Complete BM25 and Qdrant indexes are still built for every changed
-        generation. Existing generations are retained, and current changes only
-        after both indexes pass verification.
+        generation. Work is checkpointed between bounded batches. If the result
+        status is in_progress, call ingest again with the same settings. Existing
+        generations are retained, and current changes only after both indexes pass
+        verification.
         """
 
         return await _tool_call(
@@ -321,6 +335,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 force_recompute=force_recompute,
+                work_budget_seconds=work_budget_seconds,
             )
         )
 

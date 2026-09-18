@@ -27,6 +27,10 @@ appear at the end of this document.
   and optional CPU reranking.
 - Reviewed metadata, reversible source inclusion/exclusion, and portable
   project bundles.
+- Durable CPU ingestion checkpoints: bounded calls can be repeated after a
+  client timeout, cancellation, service restart, or ordinary time-budget return.
+- English-oriented corrupt-text rejection with source locators and reason codes;
+  unreadable units are excluded without guessing replacement text.
 - Immutable, project-local generations that become active only after both
   indexes pass.
 
@@ -143,7 +147,8 @@ The normal agent sequence is:
 2. Report whether no generation exists, the selected generation is stale, or a
    schema/policy upgrade is required.
 3. Obtain permission before a persistent ingestion when appropriate.
-4. Call `ingest`.
+4. Call `ingest`; while it returns `status="in_progress"`, call it again with
+   the same settings.
 5. Search only after the completed generation is active.
 
 Ready-to-copy prompt:
@@ -156,9 +161,13 @@ Ready-to-copy prompt:
 
 First ingestion may download the embedding model and can take minutes on a CPU;
 duration depends mainly on corpus size and embedding work. The server builds in
-project-local staging and switches `current.json` only after the complete BM25
-and Qdrant indexes verify. A failure leaves the previous generation selected,
-removes heavy partial data, and records only a small failure report.
+project-local staging. Each call has a soft 45-second work budget and returns a
+checkpointed `in_progress` result when more work remains. Repeat the same call
+to continue. A single expensive page, first model download, or BM25 finalization
+can exceed that soft budget. The server switches `current.json` only after the
+complete BM25 and Qdrant indexes verify. Cancellation and timeout retain the
+last atomic checkpoint; a non-resumable failure leaves the previous generation
+selected, removes its partial staging data, and records a small failure report.
 
 ## Research workflow
 
@@ -192,6 +201,13 @@ succeeds. **Re-ingest changes** verifies every source hash, reuses compatible
 documents/chunks/vectors, and reconstructs both complete indexes. **Regenerate**
 sets `force_recompute=true` and deliberately bypasses all reuse.
 
+Extraction rejects whole corrupt pages/sections when their text has strong
+signals of a broken PDF character map or is incompatible with the selected
+English-oriented policy. Diagnostics retain only the source locator and reason
+codes, not the rejected garbage. If no readable unit remains in a source, the
+build fails so the original can be repaired or OCRed. Reviewed metadata is not
+overridden by this automatic classifier.
+
 ## Use the UI
 
 From the installed server repository:
@@ -224,7 +240,8 @@ One UI process serves one project. To keep two open simultaneously, launch a
 second process with another project root and port, for example `--port 5052`.
 During ingestion, the UI shows the operation as busy. A project lock serializes
 agent and UI operations, so another operation waits rather than observing a
-partially built index.
+partially built index. The adapter automatically follows checkpointed
+`in_progress` responses until the generation is ready or unchanged.
 
 ## Use the terminal verifier
 
@@ -258,7 +275,8 @@ Choose `--retrieval-method bm25|dense|hybrid`, add `--rerank`, change
 JSON object with `"status": "passed"`, before/after status, optional ingestion
 metrics, and the search result. Common first-run failures are an unavailable
 network/model download, an unsupported Python version, a missing or corrupt
-PDF/EPUB, or `--offline` before the runtime/model cache exists.
+PDF/EPUB, or `--offline` before the runtime/model cache exists. With `--ingest`,
+the verifier automatically repeats checkpointed calls until ingestion finishes.
 
 ## Where project data is stored
 
@@ -275,7 +293,7 @@ my-research-project/
         ├── project.lock
         ├── logs/
         ├── failures/                     small failed-build records
-        ├── staging/                      temporary; empty after completion
+        ├── staging/<build-id>/           resumable incomplete build + checkpoint
         ├── ultrarag-runtime/
         └── generations/<generation-id>/
             ├── manifest.json
@@ -363,8 +381,8 @@ duplication is intentional.
 
 | Tool | Parameters and defaults | Access | When to call it |
 |---|---|---|---|
-| `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, upgrade reasons, model-cache path, and last build metrics. |
-| `ingest` | `chunk_size=384` (50–384 GPT-2 tokens); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false` | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. |
+| `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, upgrade reasons, model-cache path, last build metrics, and any `ingestion_progress`. |
+| `ingest` | `chunk_size=384` (50–384 GPT-2 tokens); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false`; `work_budget_seconds=45` (10–300) | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. Repeat matching calls while the result is `in_progress`; `ready` and `unchanged` are terminal. |
 | `search` | required `query`; `top_k=8` (1–50); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false` | Read | Retrieve relevance-limited evidence. Every requested category and keyword must be present; document IDs are an any-of selection. |
 | `list_sources` | `categories=null`; `keywords=null` | Read | Inspect indexed bibliography or filter it by reviewed metadata. |
 | `get_passage` | required `chunk_id`; `context_chunks=1` (0–5 on each side) | Read | Inspect nearby cleaned passages from the same source and generation. |
@@ -440,7 +458,12 @@ Otherwise, compatible unchanged documents retain their extracted units and
 chunks; an exact `embedding_text` plus model fingerprint can retain its vector.
 Changed material is recomputed. The server always reconstructs complete new
 BM25 and Qdrant indexes for a changed generation and atomically switches the
-pointer only after verification. `force_recompute=true` bypasses reuse.
+pointer only after verification. Source hashes, PDF page scans/extraction, EPUB
+spine sections, extraction-unit chunking, 64-passage embedding batches, and
+64-point Qdrant uploads commit restartable atomic units; UltraRAG BM25 is a
+restartable finalization step. Every source is hashed again before activation.
+`force_recompute=true` bypasses reuse while still resuming its own matching
+checkpoint.
 
 Upstream extraction is not used because this research contract needs
 layout-aware PDF/EPUB handling, bibliographic provenance, and original locators.
@@ -463,7 +486,9 @@ reviewed value then has highest precedence.
 Hybrid search uses weighted reciprocal-rank fusion with `k=60`. BM25 candidates
 must contain a non-stopword query token; dense candidates require cosine
 similarity of at least `0.72`; known extraction artifacts are rejected before
-optional reranking. The pinned embedding model is
+optional reranking. Corrupt-text checks also run during retrieval, so older
+generations stop returning rejected text before re-ingestion removes it from
+their successors. The pinned embedding model is
 `BAAI/bge-small-en-v1.5` (384 dimensions), and the optional reranker is
 `Xenova/ms-marco-MiniLM-L-6-v2`.
 
@@ -474,9 +499,14 @@ optional reranking. The pinned embedding model is
 - PDF locators use physical pages plus a page label when available. Reflowable
   EPUBs have section locators, not stable page numbers.
 - The embedding and reranking models are English-oriented.
+- The text-health policy is intentionally English-oriented and can exclude
+  legitimate predominantly non-Latin source text. It does not perform OCR or
+  attempt encoding repair.
 - Duplicate decisions require agent/user review; the server never deletes the
   original.
-- Large CPU ingestions and optional reranking can be slow.
+- Large CPU ingestions and optional reranking can be slow. Ingestion is
+  resumable, but one expensive page, initial model download, or BM25 step can
+  exceed the soft per-call budget.
 - Cleaned text is not an exact-quote verification surface.
 - Earlier successful generations are retained; automatic pruning is absent.
 

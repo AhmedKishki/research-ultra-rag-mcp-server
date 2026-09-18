@@ -14,6 +14,16 @@ from fastmcp.client.transports import StdioTransport
 from research_ultra_rag_mcp.instructions import SERVER_INSTRUCTIONS
 
 
+async def _ingest_until_complete(
+    client: Client,
+    arguments: dict[str, object],
+):
+    while True:
+        result = await client.call_tool("ingest", arguments, timeout=1800)
+        if result.data["status"] != "in_progress":
+            return result
+
+
 async def _assert_real_stdio_research_flow(project: Path) -> None:
     write_pdf(
         project / "sources" / "evidence.pdf",
@@ -59,7 +69,12 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert tools["import_bundle"].annotations is not None
         assert tools["import_bundle"].annotations.destructiveHint is True
         expected_parameters = {
-            "ingest": {"chunk_size", "chunk_overlap", "force_recompute"},
+            "ingest": {
+                "chunk_size",
+                "chunk_overlap",
+                "force_recompute",
+                "work_budget_seconds",
+            },
             "search": {
                 "query",
                 "top_k",
@@ -106,6 +121,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "dense",
         }
         assert search_properties["rerank"]["default"] is False
+        work_budget = tools["ingest"].inputSchema["properties"]["work_budget_seconds"]
+        assert work_budget["default"] == 45
+        assert work_budget["minimum"] == 10
+        assert work_budget["maximum"] == 300
 
         initial = await client.call_tool("status", {})
         assert initial.data["ready"] is False
@@ -124,10 +143,9 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         )
         assert metadata.data["requires_ingest"] is True
 
-        ingested = await client.call_tool(
-            "ingest",
+        ingested = await _ingest_until_complete(
+            client,
             {"chunk_size": 50, "chunk_overlap": 10},
-            timeout=1800,
         )
         assert ingested.data["document_count"] == 1
         assert ingested.data["ignored_extensions"] == {".md": 1}

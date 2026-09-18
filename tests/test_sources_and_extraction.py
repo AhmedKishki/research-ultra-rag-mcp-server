@@ -15,15 +15,26 @@ from research_ultra_rag_mcp.config import (
     resolve_config,
 )
 from research_ultra_rag_mcp.extraction import (
+    ExtractionError,
     _marker_annotations,
     _pdf_line_text,
     _TextBlock,
     extract_sources,
     normalize_inline_text,
     normalize_reading_text,
+    text_corruption_reasons,
 )
 from research_ultra_rag_mcp.sources import SourcePolicyError, scan_sources
 from research_ultra_rag_mcp.ultrarag import create_vanilla_transport
+
+CORRUPT_TEXT = (
+    "��ѪҶޜഝǄ䘉Ӌਁ ⧠ᢃ⹤Ҷἅ ൠ؞༽൷㜭ᡀ࣏ "
+    "䖜රѪտᆵǃ୶ъㅹ儈ԧ٬ъᘱⲴ⡷䶒ਉһǄ൘ᡰᴹᵳ╄ਈᯩ "
+    "䶒ˈབྷཊᮠ൪ൠ൘䗷 ৫ഋॱᒤѝ࿻㓸؍ᤱ⿱ᴹᡆޜᴹ኎ᙗǄ "
+    "ᵜ᮷䘈ᇎ䇱ਁ ⧠ˈ䜘࠶൪ൠᡰᴹᵳ⭡⊑ḃර⿱㩕Աъࡂ䖜㠣᭯ "
+    "ᓌˈ⭡᭯ ᓌ᢯ᣵޘ䜘؞༽䍴䠁ˈᴰ㓸䙐ᡀ⊑ḃ⋫⨶ᡀᵜ⽮Պॆ "
+    "ˈᒦᕅਁ ⧟ຳнޜǄᴹ∂ᓏ⢙൪ൠ 䳮�"
+)
 
 
 def test_only_pdf_and_epub_are_selected(project: Path) -> None:
@@ -78,6 +89,100 @@ def test_extracted_text_removes_layout_wrapping() -> None:
         "A commodity remains readable. "
         "A PDF span says waste-value. Final paragraph."
     )
+
+
+def test_english_oriented_corruption_policy_preserves_valid_symbols() -> None:
+    assert text_corruption_reasons("W–(M–C–M′)–W′") == []
+    assert (
+        text_corruption_reasons(
+            "Café workers’ organisations analyse political economy."
+        )
+        == []
+    )
+    assert text_corruption_reasons("https://example.org/10.1000/test") == []
+    assert (
+        text_corruption_reasons("Âme, Ãlvaro, and Zoë discuss political economy.") == []
+    )
+    assert text_corruption_reasons(CORRUPT_TEXT) == [
+        "replacement_characters",
+        "private_or_unassigned_characters",
+        "non_latin_dominant",
+        "mixed_script_text",
+    ]
+    assert text_corruption_reasons(
+        "这是一个完整的中文段落，用于测试英语导向的过滤策略。这里有足够多的汉字。"
+    ) == ["non_latin_dominant"]
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("Readable prose with two broken symbols: ��", "replacement_characters"),
+        (
+            "Readable prose with repeated private symbols: \ue000\ue001",
+            "private_or_unassigned_characters",
+        ),
+        ("The cafÃ© text is a known damaged encoding sequence.", "known_mojibake"),
+        (
+            "Latinlettersab αβγ БГД אבג enough",
+            "mixed_script_text",
+        ),
+    ],
+)
+def test_each_corruption_signal_has_an_inspectable_reason(
+    text: str,
+    reason: str,
+) -> None:
+    assert reason in text_corruption_reasons(text)
+
+
+def test_one_replacement_character_requires_another_corruption_signal() -> None:
+    assert text_corruption_reasons("A single transcription marker � remains.") == []
+    assert text_corruption_reasons("Damaged cafÃ© text � remains.") == [
+        "replacement_characters",
+        "known_mojibake",
+    ]
+
+
+def test_corrupt_epub_units_are_excluded_with_locator_diagnostics(
+    project: Path,
+) -> None:
+    path = project / "sources" / "mixed.epub"
+    book = epub.EpubBook()
+    book.set_identifier("mixed-corruption")
+    book.set_title(CORRUPT_TEXT)
+    book.set_language("en")
+    clean = epub.EpubHtml(title="Clean", file_name="clean.xhtml", lang="en")
+    clean.content = "<h1>Clean</h1><p>Readable English research evidence.</p>"
+    corrupt = epub.EpubHtml(title="Broken", file_name="broken.xhtml", lang="en")
+    corrupt.content = f"<h1>Broken</h1><p>{CORRUPT_TEXT}</p>"
+    book.add_item(clean)
+    book.add_item(corrupt)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", clean, corrupt]
+    epub.write_epub(str(path), book)
+
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    documents, units = extract_sources(scan_sources(config).selected, {})
+
+    assert len(units) == 1
+    assert units[0]["contents"].startswith("Clean")
+    assert documents[0]["title"] == "mixed"
+    assert "corrupt_extracted_title" in documents[0]["metadata_warnings"]
+    assert documents[0]["excluded_corrupt_unit_count"] == 1
+    diagnostic = documents[0]["excluded_corrupt_units"][0]
+    assert diagnostic["locator"]["type"] == "epub_section"
+    assert "non_latin_dominant" in diagnostic["reasons"]
+    assert CORRUPT_TEXT not in json.dumps(diagnostic, ensure_ascii=False)
+
+
+def test_source_with_only_corrupt_text_fails_extraction(project: Path) -> None:
+    write_epub(project / "sources" / "broken.epub", CORRUPT_TEXT)
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    with pytest.raises(ExtractionError, match="no readable English-oriented text"):
+        extract_sources(scan_sources(config).selected, {})
 
 
 def test_pdf_split_symbol_font_dashes_are_restored_from_geometry() -> None:

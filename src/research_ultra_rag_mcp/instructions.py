@@ -26,7 +26,10 @@ For research questions:
    compatible documents, chunks, and vectors while reconstructing complete new
    indexes. Use force_recompute=true only when the user explicitly asks to
    regenerate or reuse must be bypassed. Report generation_changed, reuse/build
-   counts, and phase timings from the result.
+   counts, and phase timings from the result. Ingestion uses a soft per-call
+   budget. If it returns status=in_progress, call ingest again with exactly the
+   same chunk settings and force mode until it returns ready or unchanged. The
+   selected prior generation remains searchable while this work is staged.
 3. Call search with the user's substantive query. Use the default hybrid method
    for ordinary research. Use bm25 alone for exact terminology or names;
    use dense alone to inspect semantic matches. Use categories, keywords, or
@@ -69,4 +72,8 @@ reranker scores are ranking signals, not confidence or truth probabilities, and
 scores should not be compared across different queries. Never invent missing
 bibliographic fields, relevance scores, page numbers, or quotations. Search may
 return fewer than requested results, including zero, when relevance gates abstain.
+Corrupt extraction units are excluded whole under an English-oriented policy;
+the server records their locators and reason codes without retaining garbage
+text. The same guard filters older generations at retrieval time. Never guess an
+encoding repair or fabricate replacement wording.
 """

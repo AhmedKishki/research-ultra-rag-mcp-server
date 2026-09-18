@@ -142,6 +142,31 @@ class FakeResearchClient:
         return SimpleNamespace(data=responses[name])
 
 
+class BatchedIngestResearchClient(FakeResearchClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ingest_calls = 0
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        **kwargs: Any,
+    ) -> SimpleNamespace:
+        if name == "ingest":
+            self.ingest_calls += 1
+            if self.ingest_calls == 1:
+                self.calls.append((name, arguments))
+                return SimpleNamespace(
+                    data={
+                        "status": "in_progress",
+                        "build_id": "pending-generation",
+                        "phase": "embedding",
+                    }
+                )
+        return await super().call_tool(name, arguments, **kwargs)
+
+
 def _client(project: Path) -> tuple[TestClient, FakeResearchClient]:
     config = resolve_config(project, vanilla_executable=sys.executable)
     fake = FakeResearchClient()
@@ -265,6 +290,22 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
             "activate": True,
         },
     ) in fake.calls
+
+
+def test_ui_repeats_batched_ingestion_until_ready(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    fake = BatchedIngestResearchClient()
+    app = create_ui_app(config, research_client=fake)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/ingest",
+            json={"chunk_size": 384, "chunk_overlap": 64},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert fake.ingest_calls == 2
 
 
 def test_ui_rejects_unsafe_writes_and_source_paths(project: Path) -> None:

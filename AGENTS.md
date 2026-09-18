@@ -34,7 +34,7 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`,
   `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.8.1`
+- Version: `0.9.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
@@ -191,8 +191,11 @@ Changed builds use a unique directory under `staging/`, then move a verified
 generation beneath `generations/` before switching `current.json`. Successful
 generations retain only the manifest, cleaned extraction units, final chunks,
 portable float32 vectors, BM25 index, and Qdrant index. UltraRAG raw chunks are
-temporary staging data, and raw coordinate records are not generated. Failed
-builds remove heavy staging data and leave a small record under `failures/`.
+temporary staging data, and raw coordinate records are not generated. Bounded
+calls, cancellations, and timeouts retain an atomic `checkpoint.json` and only
+committed work; incompatible inputs supersede that checkpoint with a small
+diagnostic. Non-resumable failures remove heavy staging data and leave a small
+record under `failures/`.
 Model binaries default to `~/.cache/research-ultra-rag-mcp/models` and are the
 only cross-project shared state. `project.lock` serializes MCP and UI operations
 across processes so no caller observes a partial index.
@@ -200,9 +203,10 @@ across processes so no caller observes a partial index.
 ## Public MCP tools
 
 - `status`: read-only source/current/staleness inspection.
-- `ingest`: return the current generation for an exact no-op, or create and
-  select a complete new generation with verified reuse; `force_recompute`
-  bypasses reuse.
+- `ingest`: return the current generation for an exact no-op, advance a
+  checkpointed build and return `in_progress`, or select a complete new
+  generation with verified reuse; `force_recompute` bypasses reuse but may
+  resume its own matching checkpoint.
 - `search`: hybrid-by-default retrieval with selectable BM25/dense modes,
   optional reranking, and structured evidence.
 - `list_sources`: inspect indexed documents and metadata.
@@ -288,6 +292,11 @@ Update tests and documentation when changing them.
 - Never infer authors from filenames. Reject DOI/URL/export-junk titles, move a
   detected DOI to its own field, and expose per-field provenance/confidence plus
   review warnings.
+- Apply the deterministic English-oriented text-health classifier to complete
+  extraction units and automatically extracted titles/authors. Retain only
+  locator/reason diagnostics for rejected units, never guessed repairs or their
+  garbage text. Reviewed metadata remains authoritative. Apply the same guard
+  at retrieval time for older generations.
 - Inspect the first five text-bearing PDF pages for identity. Keep physical page
   and available page-label locators.
 - Use coordinate blocks to restore column order, remove repeated margins/page
@@ -302,6 +311,10 @@ Update tests and documentation when changing them.
 - Always reconstruct complete BM25 and Qdrant indexes for a changed generation;
   never update selected indexes in place. `force_recompute=true` disables all
   document, chunk, and vector reuse.
+- Check the soft work budget only between atomic units: source hashes, PDF page
+  scans/extraction, EPUB spine sections, extraction-unit chunking, 64-text
+  embedding batches, and 64-point Qdrant uploads. Treat BM25 finalization as one
+  restartable unit and re-hash all sources before activation.
 
 Do not move the Qdrant implementation into the vanilla gateway or patch
 UltraRAG for this feature. The research-specific integration deliberately lives

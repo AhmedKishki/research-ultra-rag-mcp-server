@@ -85,6 +85,8 @@ _AUTHOR_AFFILIATION = re.compile(
 _AUTHOR_MARKER = re.compile(r"(?:\d+(?:\s*,\s*\d+)*|[*∗†‡§])+$")
 _FIGURE_CAPTION = re.compile(r"^(?:fig(?:ure)?\.?)\s*(?:\d|[ivxlcdm])", re.IGNORECASE)
 _TABLE_CAPTION = re.compile(r"^table\s*(?:\d|[ivxlcdm])", re.IGNORECASE)
+_MOJIBAKE_MARKERS = ("â€", "ï¿½", "ðŸ")
+_MOJIBAKE_LATIN1_PAIR = re.compile(r"(?:Ã|Â)[\u0080-\u00bf]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +163,111 @@ def normalize_inline_text(value: str) -> str:
     return _HORIZONTAL_SPACE.sub(
         " ", normalize_reading_text(value).replace("\n", " ")
     ).strip()
+
+
+def _script_family(character: str) -> str | None:
+    """Return a stable, dependency-free script family for alphabetic text."""
+
+    if not character.isalpha():
+        return None
+    name = unicodedata.name(character, "")
+    for prefix, family in (
+        ("LATIN ", "latin"),
+        ("CJK ", "cjk"),
+        ("IDEOGRAPHIC ", "cjk"),
+        ("HIRAGANA ", "japanese"),
+        ("KATAKANA ", "japanese"),
+        ("HANGUL ", "hangul"),
+        ("CYRILLIC ", "cyrillic"),
+        ("GREEK ", "greek"),
+        ("ARABIC ", "arabic"),
+        ("HEBREW ", "hebrew"),
+        ("ARMENIAN ", "armenian"),
+        ("DEVANAGARI ", "devanagari"),
+        ("BENGALI ", "bengali"),
+        ("GURMUKHI ", "gurmukhi"),
+        ("GUJARATI ", "gujarati"),
+        ("ORIYA ", "oriya"),
+        ("TAMIL ", "tamil"),
+        ("TELUGU ", "telugu"),
+        ("KANNADA ", "kannada"),
+        ("MALAYALAM ", "malayalam"),
+        ("SINHALA ", "sinhala"),
+        ("THAI ", "thai"),
+        ("LAO ", "lao"),
+        ("TIBETAN ", "tibetan"),
+        ("MYANMAR ", "myanmar"),
+        ("GEORGIAN ", "georgian"),
+        ("ETHIOPIC ", "ethiopic"),
+        ("CHEROKEE ", "cherokee"),
+        ("CANADIAN SYLLABICS ", "canadian_syllabics"),
+        ("MONGOLIAN ", "mongolian"),
+        ("THAANA ", "thaana"),
+        ("COPTIC ", "coptic"),
+    ):
+        if name.startswith(prefix):
+            return family
+    return name.split(" ", 1)[0].casefold() if name else "unknown"
+
+
+def text_corruption_reasons(value: str) -> list[str]:
+    """Identify high-confidence corrupt or non-English extraction text.
+
+    This intentionally implements the server's English-oriented retrieval
+    policy. It rejects incoherent font-map output without attempting a lossy
+    encoding repair.
+    """
+
+    raw = unicodedata.normalize("NFC", value)
+    normalized = normalize_inline_text(raw)
+    if not normalized:
+        return []
+    replacement_count = normalized.count("\ufffd")
+    private_or_unassigned = sum(
+        unicodedata.category(character) in {"Co", "Cn", "Cs"}
+        for character in normalized
+    )
+    alphabetic = [character for character in normalized if character.isalpha()]
+    families = Counter(
+        family
+        for character in alphabetic
+        if (family := _script_family(character)) is not None
+    )
+    latin_count = families.get("latin", 0)
+    dominant_count = max(families.values(), default=0)
+
+    reasons: list[str] = []
+    mojibake = bool(
+        _MOJIBAKE_LATIN1_PAIR.search(raw)
+        or any(marker in raw for marker in _MOJIBAKE_MARKERS)
+    )
+    other_signal = bool(
+        private_or_unassigned
+        or mojibake
+        or (len(alphabetic) >= 20 and latin_count / len(alphabetic) < 0.50)
+        or (
+            len(alphabetic) >= 20
+            and len(families) >= 4
+            and dominant_count / len(alphabetic) < 0.70
+        )
+    )
+    if replacement_count >= 2 or (replacement_count == 1 and other_signal):
+        reasons.append("replacement_characters")
+    if private_or_unassigned >= 2 or (
+        private_or_unassigned == 1 and replacement_count > 0
+    ):
+        reasons.append("private_or_unassigned_characters")
+    if mojibake:
+        reasons.append("known_mojibake")
+    if len(alphabetic) >= 20 and latin_count / len(alphabetic) < 0.50:
+        reasons.append("non_latin_dominant")
+    if (
+        len(alphabetic) >= 20
+        and len(families) >= 4
+        and dominant_count / len(alphabetic) < 0.70
+    ):
+        reasons.append("mixed_script_text")
+    return reasons
 
 
 def _normalize_text_list(values: list[Any]) -> list[str]:
@@ -396,6 +503,18 @@ def _base_metadata(
         if candidate_doi and not doi:
             doi = candidate_doi
             doi_source = invalid_title_source
+    if title_source != "reviewed_override" and text_corruption_reasons(resolved_title):
+        resolved_title = source.path.stem
+        title_source = "filename"
+        warnings.append("corrupt_extracted_title")
+    if author_source != "reviewed_override":
+        clean_authors = [
+            author for author in resolved_authors if not text_corruption_reasons(author)
+        ]
+        if len(clean_authors) != len(resolved_authors):
+            warnings.append("corrupt_extracted_authors")
+            author_source = "missing" if not clean_authors else author_source
+        resolved_authors = clean_authors
     resolved_title = resolved_title or source.path.stem
     resolved_doi = _doi(str(doi)) or normalize_inline_text(str(doi or ""))
     metadata_warnings = list(dict.fromkeys(warnings))
@@ -964,6 +1083,96 @@ def _pdf_locator(page: pymupdf.Page, page_number: int) -> dict[str, Any]:
     return {"type": "pdf_page", "page": page_number, "page_label": page_label}
 
 
+def _pdf_page_units(
+    page: pymupdf.Page,
+    *,
+    page_number: int,
+    blocks: list[_TextBlock],
+    page_width: float,
+    page_height: float,
+    repeated_margins: set[str],
+    document_id: str,
+    title: str,
+) -> tuple[list[dict[str, Any]], bool, int]:
+    locator = _pdf_locator(page, page_number)
+    filtered: list[_TextBlock] = []
+    removed_margin_blocks = 0
+    for block in blocks:
+        in_margin = (
+            block.bbox[3] <= page_height * 0.12 or block.bbox[1] >= page_height * 0.88
+        )
+        if in_margin and (
+            _block_signature(block) in repeated_margins
+            or _PAGE_NUMBER.fullmatch(normalize_inline_text(block.text))
+        ):
+            removed_margin_blocks += 1
+            continue
+        filtered.append(block)
+    if not filtered:
+        return [], True, removed_margin_blocks
+
+    regions = _non_prose_regions(page)
+    assigned: set[int] = set()
+    page_units: list[tuple[str, list[_TextBlock]]] = []
+    for region in regions:
+        members = [
+            block
+            for block in filtered
+            if _rect_intersection_ratio(block.bbox, region.bbox) >= 0.35
+        ]
+        nearby_labels = _nearby_region_labels(
+            region,
+            [
+                block
+                for block in filtered
+                if block.number not in assigned and block not in members
+            ],
+        )
+        members.extend(nearby_labels)
+        if not members:
+            continue
+        assigned.update(block.number for block in members)
+        page_units.append((region.kind, members))
+    prose = [block for block in filtered if block.number not in assigned]
+    if prose:
+        page_units[0:0] = _split_prose_and_lists(_reading_order(prose, page_width))
+
+    units: list[dict[str, Any]] = []
+    for region_index, (kind, members) in enumerate(page_units, 1):
+        ordered = (
+            members
+            if kind == "prose"
+            else sorted(members, key=lambda item: (item.bbox[1], item.bbox[0]))
+        )
+        annotations = _label_annotations(kind, ordered)
+        marker_annotations, strip_marker = _marker_annotations(ordered)
+        annotations.extend(marker_annotations)
+        paragraphs = []
+        for block in ordered:
+            value = _LEGEND_ASTERISK.sub("", block.text) if strip_marker else block.text
+            if normalized := normalize_reading_text(value):
+                paragraphs.append(normalized)
+        text = "\n\n".join(paragraphs)
+        if not text:
+            continue
+        units.append(
+            {
+                "id": (
+                    f"{document_id}:pdf-page:{page_number:06d}:"
+                    f"region:{region_index:03d}"
+                ),
+                "document_id": document_id,
+                "title": title,
+                "contents": text,
+                "content_kind": kind,
+                "annotations": annotations,
+                "quality_flags": _quality_flags(text, kind),
+                "locator": locator,
+            }
+        )
+    return units, False, removed_margin_blocks
+
+
 def _extract_pdf(
     source: SourceFile,
     override: dict[str, Any],
@@ -1004,86 +1213,20 @@ def _extract_pdf(
         removed_margin_blocks = 0
         for page_index, page in enumerate(document):
             page_number = page_index + 1
-            locator = _pdf_locator(page, page_number)
             blocks, page_width, page_height = pages[page_index]
-            filtered: list[_TextBlock] = []
-            for block in blocks:
-                in_margin = (
-                    block.bbox[3] <= page_height * 0.12
-                    or block.bbox[1] >= page_height * 0.88
-                )
-                if in_margin and (
-                    _block_signature(block) in repeated_margins
-                    or _PAGE_NUMBER.fullmatch(normalize_inline_text(block.text))
-                ):
-                    removed_margin_blocks += 1
-                    continue
-                filtered.append(block)
-            if not filtered:
-                empty_pages += 1
-                continue
-
-            regions = _non_prose_regions(page)
-            assigned: set[int] = set()
-            page_units: list[tuple[str, list[_TextBlock]]] = []
-            for region in regions:
-                members = [
-                    block
-                    for block in filtered
-                    if _rect_intersection_ratio(block.bbox, region.bbox) >= 0.35
-                ]
-                nearby_labels = _nearby_region_labels(
-                    region,
-                    [
-                        block
-                        for block in filtered
-                        if block.number not in assigned and block not in members
-                    ],
-                )
-                members.extend(nearby_labels)
-                if not members:
-                    continue
-                assigned.update(block.number for block in members)
-                page_units.append((region.kind, members))
-            prose = [block for block in filtered if block.number not in assigned]
-            if prose:
-                page_units[0:0] = _split_prose_and_lists(
-                    _reading_order(prose, page_width)
-                )
-
-            for region_index, (kind, members) in enumerate(page_units, 1):
-                ordered = (
-                    members
-                    if kind == "prose"
-                    else sorted(members, key=lambda item: (item.bbox[1], item.bbox[0]))
-                )
-                annotations = _label_annotations(kind, ordered)
-                marker_annotations, strip_marker = _marker_annotations(ordered)
-                annotations.extend(marker_annotations)
-                paragraphs = []
-                for block in ordered:
-                    value = (
-                        _LEGEND_ASTERISK.sub("", block.text)
-                        if strip_marker
-                        else block.text
-                    )
-                    if normalized := normalize_reading_text(value):
-                        paragraphs.append(normalized)
-                text = "\n\n".join(paragraphs)
-                if not text:
-                    continue
-                units.append(
-                    {
-                        "id": f"{document_id}:pdf-page:{page_number:06d}:region:{region_index:03d}",
-                        "document_id": document_id,
-                        "title": record["title"],
-                        "contents": text,
-                        "content_kind": kind,
-                        "annotations": annotations,
-                        "quality_flags": _quality_flags(text, kind),
-                        "locator": locator,
-                    }
-                )
+            page_units, empty, removed = _pdf_page_units(
+                page,
+                page_number=page_number,
+                blocks=blocks,
+                page_width=page_width,
+                page_height=page_height,
+                repeated_margins=repeated_margins,
+                document_id=document_id,
+                title=str(record["title"]),
+            )
+            units.extend(page_units)
+            empty_pages += int(empty)
+            removed_margin_blocks += removed
 
         record.update(
             {
@@ -1167,12 +1310,179 @@ def _extract_epub(
     digest: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     digest = digest or sha256_file(source.path)
-    document_id = _document_id(source, digest)
+    record, spine_items = prepare_epub_extraction(source, override, digest)
+    units: list[dict[str, Any]] = []
+    empty_sections = 0
+    for spine_index in range(spine_items):
+        batch, empty = extract_epub_spine_item(source, record, spine_index)
+        units.extend(batch)
+        empty_sections += int(empty)
+    record["extracted_units"] = len(units)
+    record["empty_units"] = empty_sections
+    if not units:
+        raise ExtractionError(f"EPUB produced no readable sections: {source.path}")
+    return record, units
+
+
+def pdf_page_count(source: SourceFile) -> int:
+    """Return the physical page count after validating a PDF for extraction."""
+
+    try:
+        document = pymupdf.open(source.path)
+    except Exception as exc:
+        raise ExtractionError(f"Cannot open PDF source: {source.path}") from exc
+    try:
+        if document.needs_pass:
+            raise ExtractionError(
+                f"Password-protected PDF is unsupported: {source.path}"
+            )
+        return document.page_count
+    finally:
+        document.close()
+
+
+def scan_pdf_page(source: SourceFile, page_index: int) -> dict[str, Any]:
+    """Capture one page's deterministic text blocks for resumable extraction."""
+
+    try:
+        document = pymupdf.open(source.path)
+    except Exception as exc:
+        raise ExtractionError(f"Cannot open PDF source: {source.path}") from exc
+    try:
+        if document.needs_pass:
+            raise ExtractionError(
+                f"Password-protected PDF is unsupported: {source.path}"
+            )
+        page = document.load_page(page_index)
+        blocks = _page_blocks(page)
+        return {
+            "page_index": page_index,
+            "page_width": float(page.rect.width),
+            "page_height": float(page.rect.height),
+            "blocks": [
+                {
+                    "number": block.number,
+                    "bbox": list(block.bbox),
+                    "lines": list(block.lines),
+                    "text": block.text,
+                    "font_size": block.font_size,
+                }
+                for block in blocks
+            ],
+        }
+    finally:
+        document.close()
+
+
+def _blocks_from_scan(scan: dict[str, Any]) -> list[_TextBlock]:
+    return [
+        _TextBlock(
+            number=int(item["number"]),
+            bbox=tuple(float(value) for value in item["bbox"]),
+            lines=tuple(str(value) for value in item["lines"]),
+            text=str(item["text"]),
+            font_size=float(item["font_size"]),
+        )
+        for item in scan["blocks"]
+    ]
+
+
+def prepare_scanned_pdf(
+    source: SourceFile,
+    override: dict[str, Any],
+    digest: str,
+    page_scans: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str]]:
+    """Resolve PDF metadata and repeated margins from completed page scans."""
+
+    try:
+        document = pymupdf.open(source.path)
+    except Exception as exc:
+        raise ExtractionError(f"Cannot open PDF source: {source.path}") from exc
+    try:
+        if document.needs_pass:
+            raise ExtractionError(
+                f"Password-protected PDF is unsupported: {source.path}"
+            )
+        pages = [
+            (
+                _blocks_from_scan(scan),
+                float(scan["page_width"]),
+                float(scan["page_height"]),
+            )
+            for scan in page_scans
+        ]
+        automatic, provenance, warnings = _front_matter_identity(
+            pages,
+            document.metadata or {},
+            source.path.stem,
+        )
+        record = _base_metadata(
+            source=source,
+            document_id=_document_id(source, digest),
+            digest=digest,
+            automatic=automatic,
+            provenance=provenance,
+            warnings=warnings,
+            override=override,
+        )
+        record.update(
+            {
+                "physical_pages": document.page_count,
+                "extracted_units": 0,
+                "empty_units": 0,
+                "removed_repeated_margin_blocks": 0,
+            }
+        )
+        return record, sorted(_repeated_margin_signatures(pages))
+    finally:
+        document.close()
+
+
+def extract_scanned_pdf_page(
+    source: SourceFile,
+    document_record: dict[str, Any],
+    scan: dict[str, Any],
+    repeated_margins: list[str],
+) -> tuple[list[dict[str, Any]], bool, int]:
+    """Extract one previously scanned PDF page without touching other pages."""
+
+    page_index = int(scan["page_index"])
+    try:
+        document = pymupdf.open(source.path)
+    except Exception as exc:
+        raise ExtractionError(f"Cannot open PDF source: {source.path}") from exc
+    try:
+        if document.needs_pass:
+            raise ExtractionError(
+                f"Password-protected PDF is unsupported: {source.path}"
+            )
+        page = document.load_page(page_index)
+        return _pdf_page_units(
+            page,
+            page_number=page_index + 1,
+            blocks=_blocks_from_scan(scan),
+            page_width=float(scan["page_width"]),
+            page_height=float(scan["page_height"]),
+            repeated_margins=set(repeated_margins),
+            document_id=str(document_record["document_id"]),
+            title=str(document_record["title"]),
+        )
+    finally:
+        document.close()
+
+
+def prepare_epub_extraction(
+    source: SourceFile,
+    override: dict[str, Any],
+    digest: str,
+) -> tuple[dict[str, Any], int]:
+    """Resolve EPUB metadata and return its deterministic spine work count."""
+
     try:
         book = epub.read_epub(str(source.path), options={"ignore_ncx": True})
     except Exception as exc:
         raise ExtractionError(f"Cannot open EPUB source: {source.path}") from exc
-
     titles = _epub_metadata_values(book, "title")
     authors = _epub_metadata_values(book, "creator")
     identifiers = _epub_metadata_values(book, "identifier")
@@ -1183,13 +1493,11 @@ def _extract_epub(
         "",
     )
     title = opf_title or visible_title or source.path.stem
-    title_source = (
-        "epub_opf" if opf_title else "epub_visible" if visible_title else "filename"
-    )
     valid_opf_authors = [author for author in authors if _valid_author(author)]
     resolved_authors = valid_opf_authors or visible_authors
     year_match = next(
-        (_YEAR.search(item) for item in dates if _YEAR.search(item)), None
+        (_YEAR.search(item) for item in dates if _YEAR.search(item)),
+        None,
     )
     automatic = {
         "title": title,
@@ -1197,24 +1505,26 @@ def _extract_epub(
         "year": int(year_match.group(1)) if year_match else None,
         "doi": next((_doi(item) for item in identifiers if _doi(item)), ""),
     }
-    provenance = {
-        "title": title_source,
-        "authors": (
-            "epub_opf"
-            if valid_opf_authors
-            else "epub_visible"
-            if visible_authors
-            else "missing"
-        ),
-        "year": "epub_opf" if year_match else "missing",
-        "doi": "epub_opf" if automatic["doi"] else "missing",
-    }
+    title_source = (
+        "epub_opf" if opf_title else "epub_visible" if visible_title else "filename"
+    )
     record = _base_metadata(
         source=source,
-        document_id=document_id,
+        document_id=_document_id(source, digest),
         digest=digest,
         automatic=automatic,
-        provenance=provenance,
+        provenance={
+            "title": title_source,
+            "authors": (
+                "epub_opf"
+                if valid_opf_authors
+                else "epub_visible"
+                if visible_authors
+                else "missing"
+            ),
+            "year": "epub_opf" if year_match else "missing",
+            "doi": "epub_opf" if automatic["doi"] else "missing",
+        },
         warnings=(
             ["conflicting_candidates"]
             if opf_title
@@ -1224,95 +1534,109 @@ def _extract_epub(
         ),
         override=override,
     )
-
-    units: list[dict[str, Any]] = []
-    empty_sections = 0
-    for spine_position, spine_entry in enumerate(book.spine, 1):
-        item_id = spine_entry[0] if isinstance(spine_entry, tuple) else spine_entry
-        item = book.get_item_with_id(item_id)
-        if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
-            continue
-        soup = BeautifulSoup(item.get_content(), "html.parser")
-        for unwanted in soup(["script", "style", "nav"]):
-            unwanted.decompose()
-        heading = soup.find(re.compile(r"^h[1-6]$"))
-        section_title = (
-            normalize_inline_text(heading.get_text(" ", strip=True))
-            if heading is not None
-            else ""
-        )
-        href = str(item.get_name() or "")
-        locator = {
-            "type": "epub_section",
-            "section_index": spine_position,
-            "section_title": section_title,
-            "href": href,
-        }
-        prose_parts: list[str] = []
-        tables: list[str] = []
-        for element in soup.find_all(
-            ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "table"]
-        ):
-            if not isinstance(element, Tag):
-                continue
-            if element.name == "table":
-                rows = []
-                for row in element.find_all("tr"):
-                    cells = [
-                        normalize_inline_text(cell.get_text(" ", strip=True))
-                        for cell in row.find_all(["th", "td"])
-                    ]
-                    if any(cells):
-                        rows.append(" | ".join(cells))
-                if rows:
-                    tables.append("\n".join(rows))
-            elif element.find_parent("table") is None:
-                value = normalize_reading_text(element.get_text("\n", strip=True))
-                if value:
-                    prose_parts.append(value)
-        if not prose_parts and not tables:
-            empty_sections += 1
-            continue
-        region_index = 0
-        if prose_parts:
-            region_index += 1
-            units.append(
-                {
-                    "id": f"{document_id}:epub-section:{spine_position:06d}:region:{region_index:03d}",
-                    "document_id": document_id,
-                    "title": record["title"],
-                    "contents": "\n\n".join(prose_parts),
-                    "content_kind": "prose",
-                    "annotations": [],
-                    "quality_flags": _quality_flags("\n\n".join(prose_parts), "prose"),
-                    "locator": locator,
-                }
-            )
-        for table in tables:
-            region_index += 1
-            units.append(
-                {
-                    "id": f"{document_id}:epub-section:{spine_position:06d}:region:{region_index:03d}",
-                    "document_id": document_id,
-                    "title": record["title"],
-                    "contents": table,
-                    "content_kind": "table",
-                    "annotations": [],
-                    "quality_flags": _quality_flags(table, "table"),
-                    "locator": locator,
-                }
-            )
-
     record.update(
         {
             "spine_items": len(book.spine),
-            "extracted_units": len(units),
-            "empty_units": empty_sections,
+            "extracted_units": 0,
+            "empty_units": 0,
         }
     )
-    if not units:
-        raise ExtractionError(f"EPUB produced no readable sections: {source.path}")
-    return record, units
+    return record, len(book.spine)
+
+
+def extract_epub_spine_item(
+    source: SourceFile,
+    document_record: dict[str, Any],
+    spine_index: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Extract one EPUB spine entry while preserving its original locator."""
+
+    try:
+        book = epub.read_epub(str(source.path), options={"ignore_ncx": True})
+    except Exception as exc:
+        raise ExtractionError(f"Cannot open EPUB source: {source.path}") from exc
+    spine_entry = book.spine[spine_index]
+    item_id = spine_entry[0] if isinstance(spine_entry, tuple) else spine_entry
+    item = book.get_item_with_id(item_id)
+    if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+        return [], False
+    soup = BeautifulSoup(item.get_content(), "html.parser")
+    for unwanted in soup(["script", "style", "nav"]):
+        unwanted.decompose()
+    heading = soup.find(re.compile(r"^h[1-6]$"))
+    section_title = (
+        normalize_inline_text(heading.get_text(" ", strip=True))
+        if heading is not None
+        else ""
+    )
+    locator = {
+        "type": "epub_section",
+        "section_index": spine_index + 1,
+        "section_title": section_title,
+        "href": str(item.get_name() or ""),
+    }
+    prose_parts: list[str] = []
+    tables: list[str] = []
+    for element in soup.find_all(
+        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "table"]
+    ):
+        if not isinstance(element, Tag):
+            continue
+        if element.name == "table":
+            rows = []
+            for row in element.find_all("tr"):
+                cells = [
+                    normalize_inline_text(cell.get_text(" ", strip=True))
+                    for cell in row.find_all(["th", "td"])
+                ]
+                if any(cells):
+                    rows.append(" | ".join(cells))
+            if rows:
+                tables.append("\n".join(rows))
+        elif element.find_parent("table") is None:
+            value = normalize_reading_text(element.get_text("\n", strip=True))
+            if value:
+                prose_parts.append(value)
+    units: list[dict[str, Any]] = []
+    document_id = str(document_record["document_id"])
+    title = str(document_record["title"])
+    region_index = 0
+    if prose_parts:
+        region_index += 1
+        text = "\n\n".join(prose_parts)
+        units.append(
+            {
+                "id": (
+                    f"{document_id}:epub-section:{spine_index + 1:06d}:"
+                    f"region:{region_index:03d}"
+                ),
+                "document_id": document_id,
+                "title": title,
+                "contents": text,
+                "content_kind": "prose",
+                "annotations": [],
+                "quality_flags": _quality_flags(text, "prose"),
+                "locator": locator,
+            }
+        )
+    for table in tables:
+        region_index += 1
+        units.append(
+            {
+                "id": (
+                    f"{document_id}:epub-section:{spine_index + 1:06d}:"
+                    f"region:{region_index:03d}"
+                ),
+                "document_id": document_id,
+                "title": title,
+                "contents": table,
+                "content_kind": "table",
+                "annotations": [],
+                "quality_flags": _quality_flags(table, "table"),
+                "locator": locator,
+            }
+        )
+    return units, not units
 
 
 def extract_sources(
@@ -1333,6 +1657,40 @@ def extract_sources(
             document, extracted = _extract_epub(source, override, digest)
         else:  # pragma: no cover
             raise ExtractionError(f"Unsupported source format: {source.path}")
+        retained: list[dict[str, Any]] = []
+        rejected: list[dict[str, Any]] = []
+        for unit in extracted:
+            reasons = text_corruption_reasons(str(unit.get("contents") or ""))
+            if reasons:
+                rejected.append(
+                    {
+                        "unit_id": str(unit.get("id") or ""),
+                        "locator": dict(unit.get("locator") or {}),
+                        "reasons": reasons,
+                    }
+                )
+            else:
+                retained.append(unit)
+        if rejected:
+            document["excluded_corrupt_unit_count"] = len(rejected)
+            document["excluded_corrupt_units"] = rejected
+            document["metadata_warnings"] = list(
+                dict.fromkeys(
+                    [
+                        *document.get("metadata_warnings", []),
+                        "corrupt_extraction_units_excluded",
+                    ]
+                )
+            )
+        else:
+            document["excluded_corrupt_unit_count"] = 0
+            document["excluded_corrupt_units"] = []
+        document["extracted_units"] = len(retained)
+        if not retained:
+            raise ExtractionError(
+                "Source produced no readable English-oriented text after corrupt "
+                f"extraction units were excluded: {source.path}"
+            )
         documents.append(document)
-        units.extend(extracted)
+        units.extend(retained)
     return documents, units

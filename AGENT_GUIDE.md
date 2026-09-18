@@ -16,13 +16,17 @@ you remain responsible for interpretation, uncertainty, and final writing.
    `ingest`. The old generation remains searchable with a warning. Use
    `force_recompute=true` only when the user explicitly requests regeneration or
    compatible reuse must be bypassed.
-5. Search with the actual research question. Hybrid is the normal default.
-6. Inspect several hits. Fewer than requested—or zero—can be the correct result
+5. When `ingest` returns `status="in_progress"`, repeat it with identical chunk
+   settings and force mode until it returns `ready` or `unchanged`. Report the
+   build ID, phase, and completed/total progress when useful. A selected prior
+   generation remains searchable during the staged build.
+6. Search with the actual research question. Hybrid is the normal default.
+7. Inspect several hits. Fewer than requested—or zero—can be the correct result
    after relevance gates.
-7. Use `get_passage` for surrounding semantic context. For a direct quotation,
+8. Use `get_passage` for surrounding semantic context. For a direct quotation,
    open the original at `source_path` and `locator`; never quote returned `text`
    as though it were an exact transcript.
-8. If two files appear to be the same work, do not count them as independent
+9. If two files appear to be the same work, do not count them as independent
    support. Explain the issue and use `set_source_inclusion` only after
    agent/user review.
 
@@ -74,10 +78,16 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
 - `ingest` hashes every source. An exact input match returns the selected
   generation unchanged. Otherwise it safely reuses compatible unchanged
   documents, chunks, and exact-text vectors while building complete new BM25
-  and Qdrant indexes. `force_recompute=true` bypasses reuse.
+  and Qdrant indexes. Work is durably checkpointed between bounded units;
+  `status.ingestion_progress` reports an unfinished build. `force_recompute=true`
+  bypasses reuse but may resume its own matching checkpoint.
 - `current.json` changes only after BM25 and Qdrant both succeed. Prior and
-  successful generations remain on disk; failed builds leave only a small
-  failure record.
+  successful generations remain on disk. Cancellation and timeout retain a
+  resumable checkpoint; incompatible inputs supersede it with a small diagnostic,
+  and non-resumable failures leave only a small failure record.
+- Corrupt extraction units are omitted whole, with locator/reason diagnostics
+  but without retained garbage text. Retrieval also filters corrupt chunks from
+  older generations. Never reconstruct, repair, or invent rejected wording.
 - Read `generation_changed`, reuse/rebuild counts, vector counts, and phase
   timings from the ingestion response before reporting what occurred.
 - Use `set_source_metadata` for reviewed bibliography, categories, and

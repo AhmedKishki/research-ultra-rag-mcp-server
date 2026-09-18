@@ -98,23 +98,25 @@ class ResearchUIAdapter:
         operation: str,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
-        try:
-            result = await self.client.call_tool(
-                operation,
-                dict(arguments),
-                timeout=1800,
-                raise_on_error=True,
-            )
-        except Exception as exc:
-            message = str(exc).strip() or exc.__class__.__name__
-            raise UIRequestError(message[:MAX_ERROR_LENGTH]) from exc
-        data = getattr(result, "data", result)
-        if not isinstance(data, Mapping):
-            raise UIRequestError(
-                f"Research tool {operation!r} returned a non-object response",
-                status_code=502,
-            )
-        return data
+        while True:
+            try:
+                result = await self.client.call_tool(
+                    operation,
+                    dict(arguments),
+                    timeout=1800,
+                    raise_on_error=True,
+                )
+            except Exception as exc:
+                message = str(exc).strip() or exc.__class__.__name__
+                raise UIRequestError(message[:MAX_ERROR_LENGTH]) from exc
+            data = getattr(result, "data", result)
+            if not isinstance(data, Mapping):
+                raise UIRequestError(
+                    f"Research tool {operation!r} returned a non-object response",
+                    status_code=502,
+                )
+            if operation != "ingest" or data.get("status") != "in_progress":
+                return data
 
     async def source_file(self, source_path: str) -> SourceFile:
         try:

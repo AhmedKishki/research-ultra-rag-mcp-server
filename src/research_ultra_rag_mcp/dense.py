@@ -55,6 +55,25 @@ class DenseBackend(Protocol):
         vectors: np.ndarray[Any, np.dtype[np.float32]],
     ) -> dict[str, Any]: ...
 
+    def initialize_index(self, index_path: Path, dimension: int) -> None: ...
+
+    def upload_index_batch(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+        *,
+        offset: int,
+    ) -> None: ...
+
+    def finalize_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> dict[str, Any]: ...
+
     def search(
         self,
         index_path: Path,
@@ -182,7 +201,23 @@ class LocalQdrantDenseBackend:
         if index_path.exists():
             raise ValueError(f"Dense index path already exists: {index_path}")
         dimension = int(vectors.shape[1])
+        self.initialize_index(index_path, dimension)
+        for offset in range(0, len(chunks), 64):
+            self.upload_index_batch(
+                chunks[offset : offset + 64],
+                index_path,
+                vectors[offset : offset + 64],
+                offset=offset,
+            )
+        return self.finalize_index(
+            index_path,
+            expected_count=len(chunks),
+            dimension=dimension,
+        )
 
+    def initialize_index(self, index_path: Path, dimension: int) -> None:
+        if index_path.exists():
+            raise ValueError(f"Dense index path already exists: {index_path}")
         index_path.parent.mkdir(parents=True, exist_ok=True)
         client = self._client(index_path)
         try:
@@ -193,9 +228,24 @@ class LocalQdrantDenseBackend:
                     distance=models.Distance.COSINE,
                 ),
             )
+        finally:
+            client.close()
+
+    def upload_index_batch(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+        *,
+        offset: int,
+    ) -> None:
+        if vectors.shape != (len(chunks), EMBEDDING_DIMENSION):
+            raise ValueError("Dense index batch has an invalid vector shape")
+        client = self._client(index_path)
+        try:
             points = (
                 models.PointStruct(
-                    id=index,
+                    id=offset + index,
                     vector=vector.tolist(),
                     payload={
                         "chunk_id": chunk["chunk_id"],
@@ -220,16 +270,27 @@ class LocalQdrantDenseBackend:
                 batch_size=64,
                 wait=True,
             )
-            collection = client.get_collection(COLLECTION_NAME)
-            point_count = int(collection.points_count or 0)
-            if point_count != len(chunks):
-                raise RuntimeError(
-                    "Qdrant verification failed: "
-                    f"expected {len(chunks)} points, found {point_count}"
-                )
         finally:
             client.close()
 
+    def finalize_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> dict[str, Any]:
+        client = self._client(index_path)
+        try:
+            collection = client.get_collection(COLLECTION_NAME)
+            point_count = int(collection.points_count or 0)
+            if point_count != expected_count:
+                raise RuntimeError(
+                    "Qdrant verification failed: "
+                    f"expected {expected_count} points, found {point_count}"
+                )
+        finally:
+            client.close()
         return {
             "backend": "Qdrant local mode",
             "collection": COLLECTION_NAME,
@@ -238,7 +299,7 @@ class LocalQdrantDenseBackend:
             "embedding_model": EMBEDDING_MODEL,
             "embedding_model_revision": EMBEDDING_MODEL_REVISION,
             "embedding_dimension": dimension,
-            "point_count": len(chunks),
+            "point_count": expected_count,
         }
 
     @staticmethod

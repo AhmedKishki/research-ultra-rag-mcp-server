@@ -63,6 +63,22 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+async def _ingest_until_complete(
+    client: Any,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    while True:
+        ingestion = (
+            await client.call_tool(
+                "ingest",
+                arguments,
+                timeout=1800,
+            )
+        ).data
+        if ingestion.get("status") != "in_progress":
+            return ingestion
+
+
 async def _verify(args: argparse.Namespace) -> dict[str, Any]:
     project = args.project_root.expanduser().resolve()
     if not project.is_dir():
@@ -93,17 +109,14 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         before = (await client.call_tool("status", {})).data
         ingestion = None
         if args.ingest:
-            ingestion = (
-                await client.call_tool(
-                    "ingest",
-                    {
-                        "chunk_size": args.chunk_size,
-                        "chunk_overlap": args.chunk_overlap,
-                        "force_recompute": args.force_recompute,
-                    },
-                    timeout=1800,
-                )
-            ).data
+            ingestion = await _ingest_until_complete(
+                client,
+                {
+                    "chunk_size": args.chunk_size,
+                    "chunk_overlap": args.chunk_overlap,
+                    "force_recompute": args.force_recompute,
+                },
+            )
         elif not before.get("ready"):
             raise RuntimeError(
                 "No knowledge base exists. Run again with --ingest to create one."
