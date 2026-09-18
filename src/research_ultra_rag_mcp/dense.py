@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import numpy as np
 from fastembed import TextEmbedding
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client import QdrantClient, models
@@ -33,6 +34,25 @@ class DenseBackend(Protocol):
         self,
         chunks: list[dict[str, Any]],
         index_path: Path,
+        vectors_path: Path | None = None,
+    ) -> dict[str, Any]: ...
+
+    def build_from_vectors(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors_path: Path,
+    ) -> dict[str, Any]: ...
+
+    def embed_texts(
+        self, texts: list[str]
+    ) -> np.ndarray[Any, np.dtype[np.float32]]: ...
+
+    def build_index(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
     ) -> dict[str, Any]: ...
 
     def search(
@@ -95,21 +115,73 @@ class LocalQdrantDenseBackend:
         self,
         chunks: list[dict[str, Any]],
         index_path: Path,
+        vectors_path: Path | None = None,
+    ) -> dict[str, Any]:
+        texts = [str(chunk["embedding_text"]) for chunk in chunks]
+        vectors = self.embed_texts(texts)
+
+        if vectors_path is not None:
+            vectors_path.parent.mkdir(parents=True, exist_ok=True)
+            with vectors_path.open("wb") as handle:
+                np.save(handle, vectors, allow_pickle=False)
+        return self.build_index(chunks, index_path, vectors)
+
+    def embed_texts(
+        self,
+        texts: list[str],
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        if not texts:
+            return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+        embedded = list(self._embedder().passage_embed(texts, batch_size=64))
+        if len(embedded) != len(texts):
+            raise RuntimeError(
+                "FastEmbed returned a different number of vectors than passages"
+            )
+        vectors = np.asarray(embedded, dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape != (len(texts), EMBEDDING_DIMENSION):
+            raise RuntimeError(
+                f"Unexpected {EMBEDDING_MODEL} vector shape: {vectors.shape}"
+            )
+        if not np.isfinite(vectors).all():
+            raise RuntimeError("FastEmbed returned non-finite embedding values")
+        return vectors
+
+    def build_from_vectors(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors_path: Path,
+    ) -> dict[str, Any]:
+        try:
+            vectors = np.load(vectors_path, allow_pickle=False)
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"Cannot load portable embeddings: {vectors_path}"
+            ) from exc
+        if vectors.dtype != np.float32:
+            raise ValueError("Portable embeddings must use float32 values")
+        if vectors.ndim != 2 or vectors.shape != (
+            len(chunks),
+            EMBEDDING_DIMENSION,
+        ):
+            raise ValueError(
+                "Portable embedding dimensions do not match the chunk collection"
+            )
+        if not np.isfinite(vectors).all():
+            raise ValueError("Portable embeddings contain non-finite values")
+        return self.build_index(chunks, index_path, vectors)
+
+    def build_index(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
     ) -> dict[str, Any]:
         if not chunks:
             raise ValueError("Cannot build a dense index without chunks")
         if index_path.exists():
             raise ValueError(f"Dense index path already exists: {index_path}")
-
-        texts = [str(chunk["embedding_text"]) for chunk in chunks]
-        vectors = list(self._embedder().passage_embed(texts, batch_size=64))
-        if len(vectors) != len(chunks):
-            raise RuntimeError(
-                "FastEmbed returned a different number of vectors than passages"
-            )
-        dimension = len(vectors[0])
-        if dimension != EMBEDDING_DIMENSION:
-            raise RuntimeError(f"Unexpected {EMBEDDING_MODEL} vector size: {dimension}")
+        dimension = int(vectors.shape[1])
 
         index_path.parent.mkdir(parents=True, exist_ok=True)
         client = self._client(index_path)

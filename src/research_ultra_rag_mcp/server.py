@@ -6,20 +6,24 @@ import argparse
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal, NotRequired, TypeAlias, TypeVar
+from typing import Annotated, Any, Literal, NotRequired, TypeAlias, TypedDict, TypeVar
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import ConfigDict, Field
-from typing_extensions import TypedDict
 
-from .config import ConfigurationError, ResearchConfig, resolve_config
+from .config import (
+    ConfigurationError,
+    ResearchConfig,
+    configured_source_directory,
+    resolve_config,
+)
 from .instructions import SERVER_INSTRUCTIONS
 from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.6.1"
+SERVER_VERSION = "0.8.0"
 T = TypeVar("T")
 
 
@@ -150,6 +154,15 @@ Rerank: TypeAlias = Annotated[
         )
     ),
 ]
+ForceRecompute: TypeAlias = Annotated[
+    bool,
+    Field(
+        description=(
+            "Set true to bypass document, chunk, and vector reuse and rebuild all "
+            "derived content. The previous generation remains selected on failure."
+        )
+    ),
+]
 ChunkId: TypeAlias = Annotated[
     str,
     Field(
@@ -207,6 +220,25 @@ ExclusionReason: TypeAlias = Annotated[
         )
     ),
 ]
+BundleName: TypeAlias = Annotated[
+    str,
+    Field(
+        description=(
+            "Filename of a .research-rag.zip archive already placed directly in "
+            "the project's .research-rag/bundles directory. Paths are rejected."
+        ),
+        min_length=1,
+    ),
+]
+ActivateImport: TypeAlias = Annotated[
+    bool,
+    Field(
+        description=(
+            "Whether to select the imported generation after all validation and "
+            "local index reconstruction succeeds."
+        )
+    ),
+]
 
 
 async def _tool_call(operation: Callable[[], Awaitable[T]]) -> T:
@@ -258,7 +290,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def status() -> dict[str, Any]:
-        """Report source selection, current generation, and whether it is stale."""
+        """Report project identity, staleness, and required generation upgrades."""
         return await _tool_call(service().status)
 
     @app.tool(
@@ -272,18 +304,23 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
     async def ingest(
         chunk_size: ChunkSize = 384,
         chunk_overlap: ChunkOverlap = 64,
+        force_recompute: ForceRecompute = False,
     ) -> dict[str, Any]:
-        """Extract PDFs/EPUBs and create a BM25 plus dense generation.
+        """Create or refresh an immutable BM25 plus dense generation.
 
         Markdown and all other formats are ignored. chunk_size is measured in
-        GPT-2 tokens and is capped at 384 for the embedding model. Existing
-        generations are retained; current changes only after both indexes pass.
+        GPT-2 tokens and is capped at 384 for the embedding model. Compatible
+        unchanged documents, chunks, and vectors are reused unless force_recompute
+        is true. Complete BM25 and Qdrant indexes are still built for every changed
+        generation. Existing generations are retained, and current changes only
+        after both indexes pass verification.
         """
 
         return await _tool_call(
             lambda: service().ingest(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                force_recompute=force_recompute,
             )
         )
 
@@ -304,12 +341,14 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         retrieval_method: RetrievalMethod = "hybrid",
         rerank: Rerank = False,
     ) -> dict[str, Any]:
-        """Search the current generation and return citable evidence.
+        """Search the current generation and return cleaned semantic evidence.
 
         Optional filters require every requested category or keyword to be
         present. Hybrid is the default; BM25 and dense retrieval can be inspected
         separately. Optional CPU reranking is slower and lazily loads another
-        local model. Returned passages include provenance and component ranks.
+        local model. Results may be fewer than top_k when relevance gates reject
+        weak candidates. Returned text is not safe for direct quotation; use the
+        original source path and locator.
         """
 
         return await _tool_call(
@@ -356,7 +395,11 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         chunk_id: ChunkId,
         context_chunks: ContextChunks = 1,
     ) -> dict[str, Any]:
-        """Return one retrieved passage with nearby chunks from the same source."""
+        """Return cleaned semantic context near one retrieved passage.
+
+        Context preserves source and page/section provenance but is not safe for
+        direct quotation. Open the original PDF or EPUB for exact wording.
+        """
         return await _tool_call(
             lambda: service().get_passage(
                 chunk_id,
@@ -367,7 +410,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
     @app.tool(
         annotations={
             "readOnlyHint": False,
-            "destructiveHint": False,
+            "destructiveHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
         }
@@ -389,7 +432,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
     @app.tool(
         annotations={
             "readOnlyHint": False,
-            "destructiveHint": False,
+            "destructiveHint": True,
             "idempotentHint": True,
             "openWorldHint": False,
         }
@@ -416,6 +459,50 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
             )
         )
 
+    @app.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def export_bundle() -> dict[str, Any]:
+        """Export the fresh current generation and all original sources.
+
+        The validated archive is written beneath .research-rag/bundles and is
+        accompanied by a SHA-256 sidecar. Export is refused when the generation
+        is stale or requires an upgrade. The user is responsible for the right
+        to redistribute every included PDF and EPUB.
+        """
+
+        return await _tool_call(service().export_bundle)
+
+    @app.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def import_bundle(
+        bundle_name: BundleName,
+        activate: ActivateImport = True,
+    ) -> dict[str, Any]:
+        """Validate a project bundle and reconstruct local BM25/Qdrant indexes.
+
+        Existing source files are accepted only when their SHA-256 matches the
+        bundled original; conflicting files are never overwritten. Bundled
+        reviewed metadata and exclusions replace the project's portable copies.
+        The current generation pointer changes last and only when activate is
+        true.
+        """
+
+        return await _tool_call(
+            lambda: service().import_bundle(bundle_name, activate=activate)
+        )
+
     return app
 
 
@@ -434,8 +521,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-directory",
-        default=os.environ.get("RESEARCH_ULTRARAG_SOURCE_DIRECTORY", "sources"),
-        help="Project-relative source directory (default: sources).",
+        default=os.environ.get("RESEARCH_ULTRARAG_SOURCE_DIRECTORY"),
+        help=(
+            "Project-relative source directory. Omit to reuse project.json, or "
+            "use 'sources' for an uninitialized project."
+        ),
     )
     parser.add_argument(
         "--vanilla-executable",
@@ -446,6 +536,14 @@ def _parser() -> argparse.ArgumentParser:
         "--runtime-cache-root",
         default=os.environ.get("VANILLA_ULTRARAG_CACHE_ROOT"),
         help="Override the vanilla gateway's managed UltraRAG cache.",
+    )
+    parser.add_argument(
+        "--model-cache-root",
+        default=os.environ.get("RESEARCH_ULTRARAG_MODEL_CACHE_ROOT"),
+        help=(
+            "Shared FastEmbed model cache (default: "
+            "~/.cache/research-ultra-rag-mcp/models)."
+        ),
     )
     parser.add_argument(
         "--offline",
@@ -466,11 +564,15 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     try:
+        source_directory = args.source_directory or configured_source_directory(
+            args.project_root
+        )
         config = resolve_config(
             args.project_root,
-            source_directory=args.source_directory,
+            source_directory=source_directory,
             vanilla_executable=args.vanilla_executable,
             runtime_cache_root=args.runtime_cache_root,
+            model_cache_root=args.model_cache_root,
             offline=args.offline,
             log_level=args.log_level,
         )

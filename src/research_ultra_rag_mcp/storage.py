@@ -78,6 +78,19 @@ def load_metadata_overrides(path: Path) -> dict[str, dict[str, Any]]:
         for key, item in sources.items()
     ):
         raise StorageError(f"Invalid source metadata mapping: {path}")
+    for source_path in sources:
+        relative = PurePosixPath(source_path)
+        if (
+            source_path in {"", "."}
+            or "\\" in source_path
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != source_path
+        ):
+            raise StorageError(
+                "Metadata source paths must be normalized and relative: "
+                f"{source_path!r}"
+            )
     return sources
 
 
@@ -110,7 +123,9 @@ def load_source_exclusions(path: Path) -> dict[str, dict[str, str]]:
             raise StorageError(f"Invalid excluded source path: {path}")
         relative = PurePosixPath(source_path)
         if (
-            relative.is_absolute()
+            source_path == "."
+            or "\\" in source_path
+            or relative.is_absolute()
             or ".." in relative.parts
             or relative.as_posix() != source_path
         ):

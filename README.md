@@ -1,76 +1,43 @@
-# research-ultra-rag-mcp-server
+# Research UltraRAG MCP Server
 
-Build and search a project-local research knowledge base from PDF and EPUB
-sources through an AI agent.
+## Purpose
 
-The server is designed for evidence-based research: it retrieves passages from
-multiple works, preserves source metadata and page or section locators, and
-returns structured results that an agent can quote and cite.
+This server helps human researchers work across large collections of PDF and
+EPUB sources through an AI agent. It retrieves material for discovering
+relationships, comparing authors, and finding passages that support, qualify,
+or contradict a claim. Retrieval supplies evidence candidates; the researcher
+and agent remain responsible for interpretation, source criticism, and writing.
 
-## Built on UltraRAG
+> **Retrieved text is cleaned semantic text, not a quote-safe transcript.**
+> Open the original PDF or EPUB at the returned locator before using a direct
+> quotation.
 
-This project uses the corpus chunking and BM25 retrieval provided by
-[`OpenBMB/UltraRAG`](https://github.com/OpenBMB/UltraRAG), pinned to version
-`0.3.0.2` at commit
-[`3a709a2`](https://github.com/OpenBMB/UltraRAG/tree/3a709a2aea3fbe46acca59c422621c94b6e86857).
-UltraRAG is a joint project of THUNLP, NEUIR, OpenBMB, AI9stars, and its
-contributors, and is licensed under Apache-2.0.
+The server is built on [UltraRAG](https://github.com/OpenBMB/UltraRAG), whose
+corpus chunking and BM25 retrieval it uses. Full credit and licensing details
+appear at the end of this document.
 
-This is an independent project and is not an official UltraRAG release. See
-[`NOTICE`](NOTICE) for complete attribution and dependency licenses.
+## What the server provides
 
-## What the server offers
+- A CPU-first stdio MCP server for AI agents and a local browser UI.
+- Recursive ingestion of regular `.pdf` and `.epub` files only. Markdown and
+  all other formats are ignored.
+- Resolved titles, authors, years, DOIs, metadata provenance, and original-file
+  page or section locators.
+- BM25 lexical search, dense semantic search, hybrid search, metadata filters,
+  and optional CPU reranking.
+- Reviewed metadata, reversible source inclusion/exclusion, and portable
+  project bundles.
+- Immutable, project-local generations that become active only after both
+  indexes pass.
 
-- one stdio MCP server named `research-ultra-rag-mcp`;
-- one isolated knowledge base per configured project root;
-- enforced PDF and EPUB ingestion—Markdown and other formats are ignored;
-- PDF page locators and EPUB section locators;
-- readable passage text with extraction-related line wrapping removed;
-- reviewed title, author, year, DOI, category, and keyword metadata;
-- reversible, agent-reviewed source exclusion without deleting original files;
-- immutable knowledge-base generations with stable source provenance;
-- CPU BM25, dense, and hybrid retrieval;
-- project-local Qdrant storage with no database service to run;
-- optional CPU cross-encoder reranking; and
-- seven high-level tools intended for direct use by an AI agent; and
-- a local research UI backed by those same MCP tools and project data.
+It does not determine truth, autonomously delete or exclude sources, generate
+answers on the server, or promise exact quotation transcripts. Its job is to
+return structured evidence for an agent and researcher to assess.
 
-The server retrieves evidence but does not generate a final answer. The
-connected AI agent compares the returned passages and writes the response.
+## Install once
 
-## How it works
-
-```text
-PDF/EPUB files
-    │
-    ├─ omit sources explicitly excluded by the agent/user
-    ├─ extract text by PDF page or EPUB section
-    ├─ split text into overlapping chunks with UltraRAG
-    ├─ build an UltraRAG BM25 lexical index
-    ├─ build FastEmbed vectors in local Qdrant
-    └─ save provenance and reviewed metadata
-             │
-             ▼
-       hybrid search with RRF
-             │
-             ▼
- citable passages returned through MCP
-```
-
-Hybrid search is the default. BM25 finds exact terms and distinctive phrases;
-dense retrieval finds conceptually related wording. Reciprocal-rank fusion
-(RRF) combines the independent rankings without treating their incompatible
-raw scores as equivalent. Optional reranking applies a cross-encoder to a
-bounded candidate set.
-
-## Requirements
-
-- Python 3.11 or 3.12
-- [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
-- Linux for the currently tested setup
-- Internet access during installation and first ingestion
-
-## Install
+Requirements are Python 3.11 or 3.12, Linux for the currently tested setup,
+and [`uv`](https://docs.astral.sh/uv/getting-started/installation/).
 
 ```bash
 git clone https://github.com/AhmedKishki/research-ultra-rag-mcp-server.git
@@ -78,78 +45,62 @@ cd research-ultra-rag-mcp-server
 uv sync --frozen
 ```
 
-No separate UltraRAG checkout or Qdrant service is required. The first
-ingestion downloads an approximately 67 MB CPU embedding model. The first
-search with `rerank=true` downloads an additional approximately 80 MB reranker.
-Exact model revisions are recorded in each generation manifest.
+No separate UltraRAG checkout, external Qdrant service, or virtual environment
+inside each research project is required. Use the one `.venv` created in this
+server repository for every project.
 
-## Prepare a project
+The pinned UltraRAG runtime is installed automatically. The embedding model is
+downloaded on first ingestion; the optional reranker is downloaded on its first
+use. Model binaries are shared by default at
+`~/.cache/research-ultra-rag-mcp/models`, while document data remains isolated
+inside each project. Override the model location with
+`--model-cache-root /absolute/cache/path` or
+`RESEARCH_ULTRARAG_MODEL_CACHE_ROOT`.
 
-Put original documents in a `sources` directory:
+Use `--offline` only after the runtime and required model files have been
+downloaded. In offline mode, an existing legacy project-local model cache can
+still be read, but it is never moved or deleted automatically.
+
+## Create an isolated research project
+
+Put originals beneath a project root:
 
 ```text
 my-research-project/
-├── sources/
-│   ├── article.pdf
-│   ├── book.epub
-│   └── notes.md       # permitted, but never indexed
-└── .ultrarag/         # created automatically
+└── sources/
+    ├── articles/
+    │   └── article.pdf
+    ├── book.epub
+    └── notes.md                 # ignored
 ```
 
-Files are discovered recursively. Symbolic links and every extension other
-than `.pdf` and `.epub` are excluded.
+Only regular PDF and EPUB files are indexed. Discovery is recursive; source
+symlinks are rejected.
 
-## Launch the research UI
+One server process is bound to one absolute `--project-root`. It cannot search
+another project. Multiple projects use the same installation and model cache,
+but need separate MCP entries/processes and retain separate documents,
+metadata, chunks, vectors, indexes, bundles, and logs.
 
-From this repository, point the UI at the same project root used by your MCP
-client:
+On first use, the server creates `.research-rag/project.json` with a stable
+project ID, project name, and project-relative source directory. The default is
+`sources`. To choose another directory, pass, for example,
+`--source-directory library` on first use. Later commands reuse the stored
+setting; a conflicting setting is rejected.
 
-```bash
-uv run research-ultra-rag-ui \
-  --project-root /absolute/path/to/my-research-project
-```
+## Connect an AI agent
 
-Open [http://127.0.0.1:5051](http://127.0.0.1:5051). The UI immediately reads
-the project's current generation; it does not create a second knowledge base
-and does not require re-ingestion.
-
-The basic browser workspace is supplied by the separately versioned
-[`ui-ultra-rag-mcp`](https://github.com/AhmedKishki/ui-ultra-rag-mcp) package.
-It is installed automatically at the revision pinned by this repository; you
-do not need to clone or start it separately. This project retains the research
-adapter, MCP subprocess lifecycle, and source-file safety policy.
-
-The UI can:
-
-- inspect readiness, staleness, generation identity, and source counts;
-- search with hybrid, BM25, or dense retrieval and optional CPU reranking;
-- copy passages and citations, inspect neighboring passages, and open the
-  original PDF or download the original EPUB;
-- browse and filter indexed sources;
-- edit reviewed metadata and explicitly exclude or restore a source; and
-- create a new immutable generation.
-
-It binds to the local machine only. The browser talks to a private stdio
-instance of this MCP server, so the UI and an AI agent use the same seven tools
-and receive the same results. The UI is an evidence workspace, not a chatbot:
-it does not generate an answer or treat retrieval scores as truth.
-
-You may keep the UI open while the configured MCP server is running in Cline.
-Project operations are serialized with a lock; if one process is ingesting,
-searches and writes from the other wait for it to finish.
-
-## Configure your MCP client
-
-Replace both paths with absolute paths:
+Add an entry like this to the MCP configuration used by your client, such as
+`mcp_settings.json`. Use absolute paths:
 
 ```json
 {
   "mcpServers": {
-    "research-ultra-rag-mcp": {
-      "command": "/ABSOLUTE/PATH/TO/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+    "research-corpus": {
+      "command": "/ABSOLUTE/PATH/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
       "args": [
         "--project-root",
-        "/ABSOLUTE/PATH/TO/my-research-project"
+        "/ABSOLUTE/PATH/my-research-project"
       ],
       "env": {},
       "disabled": false,
@@ -160,195 +111,387 @@ Replace both paths with absolute paths:
 }
 ```
 
-A copyable configuration is provided in
-[`mcp_settings.example.json`](mcp_settings.example.json). Keep `autoApprove`
-empty initially because ingestion creates persistent data and may take time.
-
-The executable is a stdio server. Running it directly shows no interactive
-prompt because it waits for an MCP client.
-
-## Use it
-
-For the first ingestion, ask your agent:
-
-> Check the research knowledge-base status. If no generation exists, ingest the
-> PDF and EPUB sources. Then search for evidence about commodity fetishism and
-> artificial intelligence. Return the strongest passages with their source and
-> page or section locator.
-
-For later research:
-
-> Search the knowledge base for sources connecting AI supply chains to labour
-> exploitation. Compare the relevant passages and cite every claim.
-
-To add reviewed metadata:
-
-> Set the metadata for `article.pdf`: authors Ahmed Example and Sam Researcher,
-> year 2025, category political economy, and keywords AI and labour. Then ingest
-> a new generation.
-
-Metadata changes take effect after the next ingestion.
-
-If search reveals that two files represent the same source, ask the agent to
-retain the preferred copy and exclude the other one:
-
-> Exclude `duplicate-copy.pdf` from the knowledge base because it duplicates
-> `preferred-copy.pdf`. Do not delete either source file.
-
-The exclusion affects `search`, `list_sources`, and `get_passage` immediately.
-It is recorded for future ingestions and can be reversed by setting the source
-back to included. Run `ingest` afterward when you want a new immutable
-generation whose stored indexes no longer contain the excluded source.
-
-## MCP tools
-
-| Tool | Purpose |
-|---|---|
-| `status` | Report whether a generation exists and whether sources changed |
-| `ingest` | Extract all PDFs/EPUBs and atomically create new BM25 and Qdrant indexes |
-| `search` | Return ranked evidence using hybrid, BM25, or dense retrieval |
-| `list_sources` | List indexed sources and reviewed metadata |
-| `get_passage` | Return a passage with neighboring chunks for context |
-| `set_source_metadata` | Save reviewed metadata for the next generation |
-| `set_source_inclusion` | Exclude or restore one source without changing its file |
-
-`search` accepts optional `categories`, `keywords`, and `document_ids` filters.
-Every requested category and keyword must be present. A result must match one
-of the supplied document IDs.
-
-## Expected search result
-
-The following is representative; scores and identifiers vary by corpus and
-query:
+The same installation can serve two isolated projects:
 
 ```json
 {
-  "query": "commodity fetishism artificial intelligence",
-  "generation_id": "20260917T120000Z-ab12cd34",
-  "retrieval_method": "hybrid",
-  "reranked": false,
+  "mcpServers": {
+    "research-history": {
+      "command": "/ABSOLUTE/PATH/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+      "args": ["--project-root", "/data/projects/history"]
+    },
+    "research-philosophy": {
+      "command": "/ABSOLUTE/PATH/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+      "args": ["--project-root", "/data/projects/philosophy"]
+    }
+  }
+}
+```
+
+A complete template is in
+[`mcp_settings.example.json`](mcp_settings.example.json). Running the stdio
+executable directly appears idle because it is waiting for an MCP client to
+send protocol messages. Keep write tools out of automatic approval initially:
+ingestion, metadata decisions, exclusions, exports, and imports persist state
+or create large files.
+
+## First use
+
+The normal agent sequence is:
+
+1. Call `status`.
+2. Report whether no generation exists, the selected generation is stale, or a
+   schema/policy upgrade is required.
+3. Obtain permission before a persistent ingestion when appropriate.
+4. Call `ingest`.
+5. Search only after the completed generation is active.
+
+Ready-to-copy prompt:
+
+> Check the research knowledge-base status. Tell me whether a generation
+> exists, is stale, or needs an upgrade. If ingestion is needed, explain what
+> will be written and ask before doing it. After it succeeds, search the corpus
+> for evidence about [YOUR QUESTION], including material that qualifies or
+> contradicts the claim, and give me the original source paths and locators.
+
+First ingestion may download the embedding model and can take minutes on a CPU;
+duration depends mainly on corpus size and embedding work. The server builds in
+project-local staging and switches `current.json` only after the complete BM25
+and Qdrant indexes verify. A failure leaves the previous generation selected,
+removes heavy partial data, and records only a small failure report.
+
+## Research workflow
+
+Useful prompts include:
+
+- “Find the strongest source passages supporting the claim that …”
+- “Search for evidence that contradicts or qualifies this claim: …”
+- “Compare how these sources explain …; distinguish agreement from conflict.”
+- “Get the neighboring passages around chunk `chk_…` before interpreting it.”
+- “Open the original at the returned path and page before quoting it.”
+- “List sources with missing or low-confidence author/title metadata so I can
+  review them.”
+- “Exclude `duplicate.pdf` as a reviewed duplicate of `preferred.pdf`; do not
+  delete either file.”
+- “Restore `duplicate.pdf`, then re-ingest if it is absent from the current
+  generation.”
+
+Hybrid is the normal search mode. Use BM25 diagnostically for exact names,
+terms, and phrases; use dense search to inspect conceptual similarity. Optional
+reranking is slower and is best reserved for a candidate set that needs another
+ordering pass.
+
+Search can correctly return fewer than `top_k`, including zero, when candidates
+fail relevance gates. A rank or similarity score is an ordering signal, not a
+truth or confidence probability.
+
+Adding, removing, or changing a source or reviewed metadata makes the selected
+generation stale; it does not change search results until a new generation
+succeeds. **Re-ingest changes** verifies every source hash, reuses compatible
+documents/chunks/vectors, and reconstructs both complete indexes. **Regenerate**
+sets `force_recompute=true` and deliberately bypasses all reuse.
+
+## Use the UI
+
+From the installed server repository:
+
+```bash
+uv run research-ultra-rag-ui \
+  --project-root /absolute/path/to/my-research-project
+```
+
+Open [http://127.0.0.1:5051](http://127.0.0.1:5051) manually if a browser does
+not open. The UI binds only to loopback and calls the same nine public MCP tools
+against the same project state as an agent.
+
+The UI provides:
+
+- status, staleness, upgrade, and build-metric inspection;
+- the indexed source list and resolved bibliography;
+- hybrid, BM25, or dense search with filters and optional reranking;
+- neighboring passage context;
+- opening a PDF in the browser or downloading an EPUB original;
+- reviewed metadata editing;
+- reviewed source exclusion and restoration without deleting originals;
+- **Create generation** for the first normal build;
+- **Re-ingest changes** for verified reuse after project changes;
+- **Regenerate** for forced extraction, chunking, and embedding recomputation;
+- bundle export; and
+- import of a bundle already placed in `.research-rag/bundles/`.
+
+One UI process serves one project. To keep two open simultaneously, launch a
+second process with another project root and port, for example `--port 5052`.
+During ingestion, the UI shows the operation as busy. A project lock serializes
+agent and UI operations, so another operation waits rather than observing a
+partially built index.
+
+## Use the terminal verifier
+
+Read-only status and search verification:
+
+```bash
+uv run research-ultra-rag-verify \
+  /absolute/path/to/my-research-project \
+  --query "commodity fetishism and artificial intelligence"
+```
+
+Normal first ingestion or re-ingestion:
+
+```bash
+uv run research-ultra-rag-verify \
+  /absolute/path/to/my-research-project \
+  --ingest \
+  --query "commodity fetishism and artificial intelligence"
+```
+
+Forced recomputation:
+
+```bash
+uv run research-ultra-rag-verify \
+  /absolute/path/to/my-research-project \
+  --ingest --force-recompute
+```
+
+Choose `--retrieval-method bm25|dense|hybrid`, add `--rerank`, change
+`--top-k`, or add `--offline` when all required caches exist. Success prints a
+JSON object with `"status": "passed"`, before/after status, optional ingestion
+metrics, and the search result. Common first-run failures are an unavailable
+network/model download, an unsupported Python version, a missing or corrupt
+PDF/EPUB, or `--offline` before the runtime/model cache exists.
+
+## Where project data is stored
+
+```text
+my-research-project/
+├── sources/                              untouched PDF/EPUB originals
+├── .research-rag/                        portable project-owned state
+│   ├── project.json                      stable ID, name, source setting
+│   ├── source-metadata.json              reviewed metadata, when present
+│   ├── source-exclusions.json            reviewed decisions, when present
+│   └── bundles/                          exported/import-ready archives
+└── .ultrarag/research/                   disposable project-local runtime
+    ├── current.json                      selected generation pointer
+    ├── project.lock
+    ├── logs/
+    ├── failures/                         small failed-build records
+    ├── staging/                          temporary; empty after completion
+    ├── ultrarag-runtime/
+    └── generations/<generation-id>/
+        ├── manifest.json
+        ├── corpus/extracted-units.jsonl
+        ├── chunks/chunks.jsonl
+        ├── portable/embeddings.npy
+        └── indexes/
+            ├── bm25/
+            └── qdrant/
+
+~/.cache/research-ultra-rag-mcp/models/  shared model binaries only
+```
+
+`sources/` remains the authority for exact quotation. `.research-rag/` contains
+small portable identity and reviewed decisions plus any deliberately exported
+bundles. `.ultrarag/research/` can be regenerated from sources and portable
+state. Document text, embeddings, indexes, query/runtime state, and logs never
+cross project roots; only immutable model binaries are shared.
+
+`current.json` points to the one generation used by search. Earlier successful
+generations remain on disk, but are not searched. Automatic generation pruning
+is not implemented.
+
+## Export, import, and move a project
+
+An agent can call `export_bundle` and `import_bundle`; the UI exposes matching
+controls. Terminal commands are:
+
+```bash
+uv run research-ultra-rag-bundle export \
+  --project-root /absolute/path/to/my-research-project
+
+uv run research-ultra-rag-bundle import \
+  --project-root /absolute/path/to/my-research-project \
+  --bundle /path/to/project-generation.research-rag.zip
+```
+
+MCP and UI import accept a filename already placed directly beneath
+`.research-rag/bundles/`. The terminal command accepts an external archive,
+copies it safely into that directory, then invokes the same MCP import.
+
+A bundle contains every original PDF/EPUB—including excluded sources—the
+project descriptor, reviewed metadata/exclusions, generation manifest, cleaned
+semantic units/chunks, and float32 embeddings in stable chunk order. It excludes
+live BM25/Qdrant databases, locks, logs, temporary files, runtime files, and
+model caches. Import validates archive paths and entry types, checksums,
+project ID, schemas, embedding compatibility, and every original. It refuses to
+overwrite an existing path with different bytes. It reconstructs complete BM25
+and Qdrant indexes without re-extraction or re-embedding, then changes
+`current.json` last when activation is requested.
+
+To move to another device:
+
+1. Preserve the original `.research-rag/project.json` so the stable project ID
+   remains the same.
+2. Transfer the bundle and its `.sha256` sidecar.
+3. Install this package once on the destination.
+4. Put the project descriptor in the new project, then run the terminal import
+   command. Future searches still need the pinned embedding model to encode
+   queries, so allow its download or prepare the shared cache before offline use.
+
+> **Bundles contain complete original works and derived text. You are
+> responsible for having the right to redistribute every bundled source.**
+
+For Git, commit `.research-rag/project.json`, reviewed metadata/exclusions, and
+only legally shareable sources. Ignore `.ultrarag/`. Track PDFs, EPUBs, and
+bundle archives with Git LFS. Usually share either standalone originals for
+regeneration or a source-containing bundle, not both, unless duplication is
+intentional.
+
+```gitattributes
+*.pdf filter=lfs diff=lfs merge=lfs -text
+*.epub filter=lfs diff=lfs merge=lfs -text
+*.research-rag.zip filter=lfs diff=lfs merge=lfs -text
+```
+
+## Complete MCP tool reference
+
+| Tool | Parameters and defaults | Access | When to call it |
+|---|---|---|---|
+| `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, upgrade reasons, model-cache path, and last build metrics. |
+| `ingest` | `chunk_size=384` (50–384 GPT-2 tokens); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false` | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. |
+| `search` | required `query`; `top_k=8` (1–50); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false` | Read | Retrieve relevance-limited evidence. Every requested category and keyword must be present; document IDs are an any-of selection. |
+| `list_sources` | `categories=null`; `keywords=null` | Read | Inspect indexed bibliography or filter it by reviewed metadata. |
+| `get_passage` | required `chunk_id`; `context_chunks=1` (0–5 on each side) | Read | Inspect nearby cleaned passages from the same source and generation. |
+| `set_source_metadata` | required source-relative `source_path`; required `metadata` object | Write | Save reviewed `title`, `authors`, `year`, `doi`, `categories`, and/or `keywords`; re-ingest to apply them to a generation. Omitted fields remove previous overrides. |
+| `set_source_inclusion` | required source-relative `source_path`; required `included`; `reason=null` | Write | Exclude or restore a reviewed source without changing the original. A non-empty reason is required for exclusion. |
+| `export_bundle` | none | Write | Export the selected fresh, upgrade-compatible generation and all originals beneath `.research-rag/bundles/`. |
+| `import_bundle` | required `bundle_name`; `activate=true` | Write | Validate a project-local archive, install non-conflicting originals/state, reconstruct indexes, and optionally select it. |
+
+A representative abbreviated search response is:
+
+```json
+{
+  "query": "supply chains and labour precarity",
+  "requested_top_k": 8,
   "result_count": 1,
+  "relevance_limited": true,
   "hits": [
     {
       "rank": 1,
-      "chunk_id": "chk_7e1a...",
-      "document_id": "doc_a812...",
-      "title": "The Fetishism of AI",
-      "authors": ["Author Name"],
-      "year": 2024,
-      "source_path": "sources/the-fetishism-of-ai.pdf",
-      "locator": {
-        "type": "pdf_page",
-        "page": 12,
-        "page_label": "12"
-      },
-      "citation": "Author Name, The Fetishism of AI (2024), p. 12",
-      "text": "The retrieved source passage...",
-      "component_ranks": {
-        "bm25": 2,
-        "dense": 1
-      },
-      "component_scores": {
-        "dense_cosine_similarity": 0.73,
-        "bm25": null
-      },
-      "fusion_score": 0.0325,
+      "title": "Supply Chains and the Human Condition",
+      "authors": ["Anna Tsing"],
+      "source_path": "sources/tsing.pdf",
+      "locator": {"type": "pdf_page", "page": 4, "page_label": "4"},
+      "text": "Cleaned semantic text from the relevant passage...",
+      "direct_quote_safe": false,
+      "match_kind": "hybrid",
+      "component_ranks": {"bm25": 2, "dense": 1},
+      "component_scores": {"dense_cosine_similarity": 0.79, "bm25": null},
+      "fusion_score": 0.0363,
       "rerank_score": null
     }
   ]
 }
 ```
 
-Only `text` is source passage text suitable for quotation. The locator and
-citation identify where to verify it in the original. Ranking scores are not
-truth probabilities and should not be compared across different queries.
+Researchers normally use `title`, `authors`, `source_path`, and `locator` to
+identify the original; `text` to assess semantic relevance; `match_kind` to see
+which route found it; and component ranks/scores to understand ordering. BM25
+does not expose a comparable raw score in this integration, so it reports rank
+only.
 
-PDF locators use physical PDF pages and available page labels. Reflowable EPUBs
-use section titles, file references, and spine positions because they do not
-have stable page numbers.
-
-Layout line breaks introduced by PDF or EPUB extraction are removed from
-returned passages. Existing generations benefit at response time. A new
-ingestion stores the normalized text in the generation itself. This does not
-perform OCR or rewrite source wording, so important quotations still need to be
-checked against the original document.
-
-## Choose a retrieval mode
-
-- `hybrid` is the default and is recommended for ordinary research.
-- `bm25` emphasizes exact words, names, quotations, and technical terms.
-- `dense` emphasizes conceptual similarity and related wording.
-- `rerank=true` can improve final ordering but is slower on CPU.
-
-The embedding model is `BAAI/bge-small-en-v1.5`. The optional reranker is
-`Xenova/ms-marco-MiniLM-L-6-v2`. Both are revision-pinned and English-oriented.
-
-## Project storage
-
-All derived knowledge-base data is stored beneath the configured project:
+## How it works under the hood
 
 ```text
-my-research-project/.ultrarag/research/
-├── current.json
-├── project.lock
-├── source-metadata.json
-├── source-exclusions.json
-├── models/
-├── logs/
-├── ultrarag-runtime/
-└── generations/
-    └── 20260917T120000Z-ab12cd34/
-        ├── manifest.json
-        ├── corpus/extracted-units.jsonl
-        ├── chunks/ultrarag-chunks.jsonl
-        ├── chunks/chunks.jsonl
-        └── indexes/
-            ├── bm25/
-            └── qdrant/
+project PDF/EPUB files
+        │
+        ▼
+research extraction ── bibliography + layout + original locators
+        │
+        ▼
+UltraRAG GPT-2 token chunking
+        ├──────────────► UltraRAG BM25
+        └──► FastEmbed CPU vectors ──► embedded project-local Qdrant
+                                      │
+                         weighted rank fusion
+                                      │
+                                      ▼
+                         structured MCP evidence
 ```
 
-Each successful ingestion creates a new immutable generation. `current.json`
-changes only after extraction and both indexes succeed. Previous and failed
-generations are retained. Original files under `sources/` are never modified.
-`source-exclusions.json` records reversible source-level decisions separately
-from the immutable generations.
+The research layer selects allowed files, extracts layout-aware semantic units,
+resolves bibliography, cleans layout artifacts, and preserves locators.
+UltraRAG performs GPT-2 token chunking and BM25 indexing/search. FastEmbed
+produces revision-pinned CPU embeddings; embedded Qdrant stores vectors and
+filter payloads inside the generation. Weighted reciprocal-rank fusion combines
+BM25 weight `1.25` and dense weight `1.0`. The MCP returns structured passages;
+the calling agent performs interpretation and answer generation.
 
-Use a separate server configuration for each project. Multiple local processes,
-such as Cline and the research UI, may use the same project root because access
-is serialized through `project.lock`. A long ingestion blocks other operations
-for that project until it completes.
+Generations are immutable. Before ingestion decides what to do, it hashes every
+discovered PDF/EPUB and fingerprints metadata, exclusions, chunk settings,
+processing policies, and embedding model. An exact match is a true no-op.
+Otherwise, compatible unchanged documents retain their extracted units and
+chunks; an exact `embedding_text` plus model fingerprint can retain its vector.
+Changed material is recomputed. The server always reconstructs complete new
+BM25 and Qdrant indexes for a changed generation and atomically switches the
+pointer only after verification. `force_recompute=true` bypasses reuse.
 
-Generations created by version 0.1 remain searchable with
-`retrieval_method="bm25"`. When `status` reports
-`hybrid_upgrade_required=true`, run `ingest` to create a hybrid generation.
+Upstream extraction is not used because this research contract needs
+layout-aware PDF/EPUB handling, bibliographic provenance, and original locators.
+Upstream dense output is not used because this server needs scored results,
+payload filters, portable vectors, and exact reuse accounting. Those
+research-specific responsibilities remain thin layers around UltraRAG rather
+than changes to its source.
 
-## Verify from the terminal
+Bibliographic fields resolve independently. PDF precedence is reviewed override
+→ high-confidence visible front matter → validated embedded metadata → filename
+stem for title only. EPUB precedence is reviewed override → validated OPF
+metadata → visible title/byline → filename stem for title only. Authors are
+never inferred from filenames, and DOI-like titles are moved to the DOI field.
 
-Create a generation and run a real MCP search:
+Hybrid search uses weighted reciprocal-rank fusion with `k=60`. BM25 candidates
+must contain a non-stopword query token; dense candidates require cosine
+similarity of at least `0.72`; known extraction artifacts are rejected before
+optional reranking. The pinned embedding model is
+`BAAI/bge-small-en-v1.5` (384 dimensions), and the optional reranker is
+`Xenova/ms-marco-MiniLM-L-6-v2`.
 
-```bash
-uv run research-ultra-rag-verify \
-  /absolute/path/to/my-research-project \
-  --ingest \
-  --query "commodity fetishism artificial intelligence"
-```
+## Limitations and troubleshooting
 
-Later checks can omit `--ingest`. Use `--retrieval-method bm25` or `dense` to
-inspect one component, and `--rerank` to exercise the optional reranker. The
-command prints status, ingestion details, and search results as JSON.
+- Scanned PDFs require OCR before ingestion. Password-protected PDFs are
+  rejected.
+- PDF locators use physical pages plus a page label when available. Reflowable
+  EPUBs have section locators, not stable page numbers.
+- The embedding and reranking models are English-oriented.
+- Duplicate decisions require agent/user review; the server never deletes the
+  original.
+- Large CPU ingestions and optional reranking can be slow.
+- Cleaned text is not an exact-quote verification surface.
+- Earlier successful generations are retained; automatic pruning is absent.
 
-After the runtime and models are cached, add `--offline` to the MCP server
-arguments or verifier command to prohibit downloads.
+If the server appears stuck when run directly, it is waiting for an MCP client.
+If `--offline` reports missing runtime or models, run once online or point
+`--model-cache-root` to a populated cache. If `status` is stale, search still
+uses the prior generation until re-ingestion succeeds. Empty search results can
+be correct; try a precise BM25 query or inspect dense mode before lowering any
+quality expectation. Import project-ID conflicts mean the wrong
+`.research-rag/project.json` is in use; source conflicts mean an existing path
+has different bytes. Neither safeguard should be bypassed.
 
-## Current limitations
+## UltraRAG credit and licensing
 
-- Scanned PDFs require OCR before ingestion.
-- Password-protected PDFs are rejected.
-- Extraction may alter spacing or hyphenation; verify important quotations in
-  the original source.
-- The embedding and reranker models are English-oriented.
-- Source changes currently require a complete new generation.
-- Duplicate identification is intentionally left to the agent and user; the
-  server does not guess whether similar files are the same source.
-- CPU embedding and reranking are slower than GPU-backed alternatives.
-- There is no automatic generation cleanup yet.
+This independent server directly uses UltraRAG and gratefully credits the
+UltraRAG team and contributor community. UltraRAG identifies itself as a joint
+project of [THUNLP](https://nlp.csai.tsinghua.edu.cn/),
+[NEUIR](https://neuir.github.io/), [OpenBMB](https://www.openbmb.cn/home),
+[AI9stars](https://github.com/AI9Stars), and
+[contributors](https://github.com/OpenBMB/UltraRAG/graphs/contributors).
+
+The dependency is pinned to UltraRAG `0.3.0.2`, commit
+[`3a709a2aea3fbe46acca59c422621c94b6e86857`](https://github.com/OpenBMB/UltraRAG/tree/3a709a2aea3fbe46acca59c422621c94b6e86857).
+UltraRAG is distributed under the
+[Apache License 2.0](https://github.com/OpenBMB/UltraRAG/blob/3a709a2aea3fbe46acca59c422621c94b6e86857/LICENSE.txt).
+The installed upstream snapshot retains its license and notices.
+
+This repository is not an official UltraRAG release and is not affiliated with
+or endorsed by OpenBMB, THUNLP, NEUIR, AI9stars, or UltraRAG contributors. See
+[`NOTICE`](NOTICE) for full upstream, model, retrieval-component, and UI
+attribution.

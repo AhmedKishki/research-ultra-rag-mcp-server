@@ -10,14 +10,11 @@ instructions belong in `README.md`, `AGENT_GUIDE.md`, and `AGENTS.md`.
 - measure BM25, dense, hybrid, and reranked recall/precision;
 - make fusion weights or rank constants configurable only if evaluation shows a
   repeatable benefit;
-- reuse unchanged embeddings across immutable generations;
 - add a multilingual embedding profile alongside multilingual BM25; and
 - investigate GPU profiles without changing the CPU default.
 
 ## Ingestion lifecycle
 
-- detect unchanged files by hash;
-- reuse unchanged extracted units and embeddings;
 - add generation cleanup tools;
 - provide generation listing and rollback; and
 - validate disk-space requirements before building.
@@ -33,6 +30,6 @@ instructions belong in `README.md`, `AGENT_GUIDE.md`, and `AGENTS.md`.
 
 ## Other deferred work
 
-- import/export and backup tooling;
+- optional encrypted or source-free backup profiles;
 - retrieval-quality evaluation sets; and
 - optional cross-project federated search that preserves explicit boundaries.

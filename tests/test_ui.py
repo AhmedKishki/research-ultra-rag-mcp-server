@@ -27,6 +27,7 @@ class FakeResearchClient:
                 "ready": True,
                 "stale": False,
                 "project_root": "/research/project",
+                "project_name": "Research project",
                 "source_root": "/research/project/sources",
                 "generation_id": "generation-1",
                 "created_at": "2026-09-17T12:00:00Z",
@@ -36,6 +37,8 @@ class FakeResearchClient:
                 "excluded_source_count": 0,
                 "chunk_count": 1,
                 "hybrid_ready": True,
+                "generation_upgrade_required": False,
+                "upgrade_reasons": [],
                 "available_retrieval_methods": ["bm25", "dense", "hybrid"],
                 "default_retrieval_method": "hybrid",
             },
@@ -83,7 +86,8 @@ class FakeResearchClient:
                             "page_label": "1",
                         },
                         "citation": "Researcher, Evidence (2026), p. 1",
-                        "text": "A citable passage.",
+                        "text": "A cleaned semantic passage.",
+                        "direct_quote_safe": False,
                         "component_ranks": {"bm25": 1, "dense": 1},
                         "component_scores": {
                             "dense_cosine_similarity": 0.8,
@@ -105,7 +109,7 @@ class FakeResearchClient:
                         "title": "Evidence",
                         "locator": {"type": "pdf_page", "page": 1},
                         "citation": "Researcher, Evidence (2026), p. 1",
-                        "text": "A citable passage.",
+                        "text": "A cleaned semantic passage.",
                     }
                 ],
             },
@@ -124,6 +128,15 @@ class FakeResearchClient:
                 "status": "ready",
                 "generation_id": "generation-2",
                 "chunk_count": 2,
+            },
+            "export_bundle": {
+                "bundle_name": "research-generation.research-rag.zip",
+                "sha256": "abc123",
+            },
+            "import_bundle": {
+                "generation_id": "generation-imported",
+                "activated": arguments.get("activate", True),
+                "message": "Bundle imported and selected.",
             },
         }
         return SimpleNamespace(data=responses[name])
@@ -163,6 +176,9 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
 
     assert health.json()["project_root"] == str(project)
     assert profile.json()["application_name"] == "Research UltraRAG"
+    assert profile.json()["capabilities"]["bundle_export"] is True
+    assert profile.json()["capabilities"]["force_recompute"] is True
+    assert profile.json()["result_text_label"].startswith("Cleaned semantic text")
     assert status.json()["generation_id"] == "generation-1"
     assert sources.json()["sources"][0]["title"] == "Evidence"
     assert context.json()["requested_chunk_id"] == "chunk-1"
@@ -203,13 +219,27 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
         )
         ingestion = client.post(
             "/api/ingest",
-            json={"chunk_size": 384, "chunk_overlap": 64},
+            json={
+                "chunk_size": 384,
+                "chunk_overlap": 64,
+                "force_recompute": True,
+            },
+        )
+        exported = client.post("/api/bundles/export", json={})
+        imported = client.post(
+            "/api/bundles/import",
+            json={
+                "bundle_name": "research-generation.research-rag.zip",
+                "activate": True,
+            },
         )
 
     assert search.json()["hits"][0]["citation"].endswith("p. 1")
     assert metadata.json()["requires_ingest"] is True
     assert inclusion.json()["included"] is False
     assert ingestion.json()["generation_id"] == "generation-2"
+    assert exported.json()["bundle_name"].endswith(".research-rag.zip")
+    assert imported.json()["generation_id"] == "generation-imported"
     assert (
         "search",
         {
@@ -217,6 +247,22 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
             "top_k": 5,
             "retrieval_method": "hybrid",
             "rerank": False,
+        },
+    ) in fake.calls
+    assert ("export_bundle", {}) in fake.calls
+    assert (
+        "ingest",
+        {
+            "chunk_size": 384,
+            "chunk_overlap": 64,
+            "force_recompute": True,
+        },
+    ) in fake.calls
+    assert (
+        "import_bundle",
+        {
+            "bundle_name": "research-generation.research-rag.zip",
+            "activate": True,
         },
     ) in fake.calls
 

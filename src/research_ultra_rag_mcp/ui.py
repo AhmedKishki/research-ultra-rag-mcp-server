@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol
 
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
 from ui_ultra_rag_mcp import (
     AdapterFactory,
     SourceFile,
+    UICapabilities,
     UIProfile,
     UIRequestError,
     run_ui,
@@ -23,10 +22,12 @@ from ui_ultra_rag_mcp import create_ui_app as create_shared_ui_app
 from .config import (
     ConfigurationError,
     ResearchConfig,
+    configured_source_directory,
     resolve_config,
     resolve_source_reference,
 )
 from .sources import SourcePolicyError, scan_sources
+from .transport import create_research_transport
 
 if TYPE_CHECKING:
     from starlette.applications import Starlette
@@ -47,7 +48,26 @@ RESEARCH_UI_PROFILE = UIProfile(
     ingest_busy_message=(
         "Building BM25 and dense indexes. This can take several minutes…"
     ),
-    footer_text="Verify important quotations in the original PDF or EPUB.",
+    footer_text=(
+        "Retrieved text is cleaned for semantic use. Open the original PDF or "
+        "EPUB before quoting."
+    ),
+    result_text_label="Cleaned semantic text — not for direct quotation",
+    copy_text_label="Copy semantic text",
+    bundle_import_intro=(
+        "Place the archive in this project's .research-rag/bundles directory, "
+        "then enter its filename. Existing source files are never overwritten; "
+        "bundled reviewed metadata and exclusions replace the local copies."
+    ),
+    bundle_export_warning=(
+        "Export this generation? The bundle contains complete original PDF/EPUB "
+        "works and derived text. You are responsible for redistribution rights."
+    ),
+    capabilities=UICapabilities(
+        bundle_export=True,
+        bundle_import=True,
+        force_recompute=True,
+    ),
 )
 
 
@@ -61,7 +81,7 @@ class ResearchToolClient(Protocol):
 
 
 class ResearchUIAdapter:
-    """Map the shared UI contract to the seven public research MCP tools."""
+    """Map the shared UI contract to the public research MCP tools."""
 
     def __init__(self, config: ResearchConfig, client: ResearchToolClient) -> None:
         self.config = config
@@ -119,37 +139,13 @@ class ResearchUIAdapter:
         )
 
 
-def _research_transport(config: ResearchConfig) -> StdioTransport:
-    arguments = [
-        "-m",
-        "research_ultra_rag_mcp",
-        "--project-root",
-        str(config.project_root),
-        "--source-directory",
-        config.source_root.relative_to(config.project_root).as_posix(),
-        "--vanilla-executable",
-        str(config.vanilla_executable),
-        "--log-level",
-        config.log_level,
-    ]
-    if config.runtime_cache_root is not None:
-        arguments.extend(["--runtime-cache-root", str(config.runtime_cache_root)])
-    if config.offline:
-        arguments.append("--offline")
-    return StdioTransport(
-        command=sys.executable,
-        args=arguments,
-        env=dict(os.environ),
-        cwd=str(config.project_root),
-        keep_alive=True,
-        log_file=config.logs_root / "research-ui-mcp-stderr.log",
-    )
-
-
 def _adapter_factory(config: ResearchConfig) -> AdapterFactory:
     @asynccontextmanager
     async def adapter_context() -> AsyncIterator[ResearchUIAdapter]:
-        transport = _research_transport(config)
+        transport = create_research_transport(
+            config,
+            log_file=config.logs_root / "research-ui-mcp-stderr.log",
+        )
         async with Client(
             transport,
             name=UI_NAME,
@@ -190,7 +186,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--source-directory",
-        default=os.environ.get("RESEARCH_ULTRARAG_SOURCE_DIRECTORY", "sources"),
+        default=os.environ.get("RESEARCH_ULTRARAG_SOURCE_DIRECTORY"),
+        help="Omit to reuse the initialized project's source-directory setting.",
     )
     parser.add_argument(
         "--vanilla-executable",
@@ -199,6 +196,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--runtime-cache-root",
         default=os.environ.get("VANILLA_ULTRARAG_CACHE_ROOT"),
+    )
+    parser.add_argument(
+        "--model-cache-root",
+        default=os.environ.get("RESEARCH_ULTRARAG_MODEL_CACHE_ROOT"),
     )
     parser.add_argument("--offline", action="store_true")
     parser.add_argument(
@@ -221,11 +222,15 @@ def main() -> None:
     if not 1 <= args.port <= 65535:
         raise SystemExit("--port must be between 1 and 65535")
     try:
+        source_directory = args.source_directory or configured_source_directory(
+            args.project_root
+        )
         config = resolve_config(
             args.project_root,
-            source_directory=args.source_directory,
+            source_directory=source_directory,
             vanilla_executable=args.vanilla_executable,
             runtime_cache_root=args.runtime_cache_root,
+            model_cache_root=args.model_cache_root,
             offline=args.offline,
             log_level=args.log_level,
         )

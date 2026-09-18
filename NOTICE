@@ -24,7 +24,7 @@ This server depends on UltraRAG's MCP architecture, corpus chunker, and BM25
 retriever. Its pinned dependency chain currently resolves to:
 
     vanilla-ultra-rag-mcp-server commit
-    d080b0c2c1172f029024149aee15d295cd8e0d14
+    05ae4b155d38a294260a36017f6429ce73b1641b
 
     UltraRAG version 0.3.0.2
     commit 3a709a2aea3fbe46acca59c422621c94b6e86857
@@ -63,7 +63,7 @@ The hybrid retrieval implementation also depends on:
 These dependencies and model files retain their respective authorship and
 licenses. They are not bundled as source files in this repository; the Python
 packages are installed by the package manager and model files are downloaded
-to a project-local cache on first use.
+to a shared user cache on first use.
 
 SHARED USER INTERFACE
 
@@ -71,7 +71,7 @@ The optional local browser command uses the independently versioned shared UI
 package at this pinned revision:
 
     ui-ultra-rag-mcp
-    commit 3f90ee16c1a49cdc9d2e72244f7968adf0d246a5
+    commit fb569668c381efaa0089536de99928c77f8e7f31
     https://github.com/AhmedKishki/ui-ultra-rag-mcp
 
 The research server owns its adapter and project safety policy. The shared

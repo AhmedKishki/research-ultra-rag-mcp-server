@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,16 +89,6 @@ def sha256_file(path: Path) -> str:
         while block := handle.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
-
-
-def metadata_revision(overrides: dict[str, dict[str, Any]]) -> str:
-    encoded = json.dumps(
-        overrides,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _string_list(value: Any, field: str) -> list[str]:

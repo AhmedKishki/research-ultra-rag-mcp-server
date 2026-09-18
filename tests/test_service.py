@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 from conftest import write_pdf
 
 from research_ultra_rag_mcp.config import resolve_config
-from research_ultra_rag_mcp.dense import DenseSearchHit
+from research_ultra_rag_mcp.dense import (
+    EMBEDDING_MODEL,
+    EMBEDDING_MODEL_REVISION,
+    DenseSearchHit,
+)
 from research_ultra_rag_mcp.service import (
     ResearchError,
     ResearchService,
@@ -22,6 +28,8 @@ class FakeUltraRAG:
     def __init__(self) -> None:
         self.passages: list[str] = []
         self.initialized: tuple[Path, Path] | None = None
+        self.chunk_calls = 0
+        self.bm25_build_calls = 0
 
     async def chunk(
         self,
@@ -32,6 +40,7 @@ class FakeUltraRAG:
         chunk_overlap: int,
     ) -> None:
         assert chunk_size > chunk_overlap
+        self.chunk_calls += 1
         units = read_jsonl(input_path)
         write_jsonl(
             output_path,
@@ -47,6 +56,7 @@ class FakeUltraRAG:
         )
 
     async def build_bm25(self, chunks_path: Path, index_path: Path) -> None:
+        self.bm25_build_calls += 1
         index_path.mkdir(parents=True)
         (index_path / "fake-index.json").write_text("{}\n", encoding="utf-8")
         self.passages = [item["contents"] for item in read_jsonl(chunks_path)]
@@ -70,23 +80,58 @@ class FakeDenseBackend:
     def __init__(self) -> None:
         self.chunks: list[dict[str, object]] = []
         self.fail_build = False
+        self.build_calls = 0
+        self.embed_calls = 0
+        self.embedded_text_count = 0
 
-    def build(
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        self.embed_calls += 1
+        self.embedded_text_count += len(texts)
+        return np.ones((len(texts), 384), dtype=np.float32)
+
+    def build_index(
         self,
         chunks: list[dict[str, object]],
         index_path: Path,
+        vectors: np.ndarray,
     ) -> dict[str, object]:
+        self.build_calls += 1
         if self.fail_build:
             raise RuntimeError("simulated dense-index failure")
+        assert vectors.shape == (len(chunks), 384)
         index_path.mkdir(parents=True)
         (index_path / "fake-qdrant.json").write_text("{}\n", encoding="utf-8")
         self.chunks = chunks
         return {
             "backend": "fake Qdrant",
-            "embedding_model": "fake-embedding-model",
-            "embedding_dimension": 3,
+            "embedding_model": EMBEDDING_MODEL,
+            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_dimension": 384,
             "point_count": len(chunks),
         }
+
+    def build(
+        self,
+        chunks: list[dict[str, object]],
+        index_path: Path,
+        vectors_path: Path | None = None,
+    ) -> dict[str, object]:
+        vectors = self.embed_texts([str(chunk["embedding_text"]) for chunk in chunks])
+        if vectors_path is not None:
+            vectors_path.parent.mkdir(parents=True, exist_ok=True)
+            with vectors_path.open("wb") as handle:
+                np.save(handle, vectors, allow_pickle=False)
+        return self.build_index(chunks, index_path, vectors)
+
+    def build_from_vectors(
+        self,
+        chunks: list[dict[str, object]],
+        index_path: Path,
+        vectors_path: Path,
+    ) -> dict[str, object]:
+        vectors = np.load(vectors_path, allow_pickle=False)
+        assert vectors.shape == (len(chunks), 384)
+        return self.build_index(chunks, index_path, vectors)
 
     def search(
         self,
@@ -134,6 +179,25 @@ class FakeDenseBackend:
         return [
             float(document.casefold().count(query.split()[0].casefold()))
             for document in documents
+        ]
+
+
+class ScoredDenseBackend(FakeDenseBackend):
+    def __init__(self, score: float) -> None:
+        super().__init__()
+        self.score = score
+
+    def search(
+        self,
+        index_path: Path,
+        query: str,
+        top_k: int,
+        **_filters: object,
+    ) -> list[DenseSearchHit]:
+        assert index_path.is_dir()
+        return [
+            DenseSearchHit(chunk_id=str(chunk["chunk_id"]), score=self.score)
+            for chunk in self.chunks[:top_k]
         ]
 
 
@@ -223,12 +287,21 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     assert status["stale"] is False
     assert status["hybrid_ready"] is True
     assert status["hybrid_upgrade_required"] is False
+    assert status["generation_upgrade_required"] is False
+    assert status["model_cache_root"] == str(config.model_cache_root)
+    assert status["last_build_metrics"]["created_vector_count"] == result["chunk_count"]
 
     sources = await service.list_sources(categories=["political economy"])
     assert sources["source_count"] == 1
     assert sources["sources"][0]["source_path"] == "sources/article.pdf"
 
     generation_root = Path(result["generation_root"])
+    manifest = json.loads(
+        (generation_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert "raw_extraction" not in manifest["files"]
+    assert "raw_ultrarag_chunks" not in manifest["files"]
+    assert not (generation_root / "work").exists()
     chunks_path = generation_root / "chunks" / "chunks.jsonl"
     stored_chunks = read_jsonl(chunks_path)
     stored_chunks[0]["text"] = (
@@ -252,6 +325,13 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     assert hit["component_ranks"]["bm25"] == 1
     assert hit["component_ranks"]["dense"] == 1
     assert hit["fusion_score"] is not None
+    assert hit["direct_quote_safe"] is False
+    assert hit["text_fidelity"] == "cleaned_semantic_text"
+    assert hit["content_kind"] == "prose"
+    assert hit["metadata_provenance"]["authors"] == "reviewed_override"
+    assert search["requested_top_k"] == 1
+    assert search["relevance_limited"] is False
+    assert search["relevance_policy"]["dense_minimum_cosine_similarity"] == 0.72
     assert "notes" not in json.dumps(search)
 
     dense_search = await service.search(
@@ -272,6 +352,17 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
 
     manifest_path = generation_root / "manifest.json"
     legacy_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    legacy_manifest["retrieval"]["relevance_gates"][
+        "dense_minimum_cosine_similarity"
+    ] = 0.71
+    manifest_path.write_text(
+        json.dumps(legacy_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    policy_status = await service.status()
+    assert policy_status["generation_upgrade_required"] is True
+    assert "retrieval_policy" in policy_status["upgrade_reasons"]
+
     legacy_manifest["schema_version"] = 1
     legacy_manifest["retrieval"] = {
         "backend": "UltraRAG BM25",
@@ -285,6 +376,8 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     )
     legacy_status = await service.status()
     assert legacy_status["hybrid_upgrade_required"] is True
+    assert legacy_status["generation_upgrade_required"] is True
+    assert "generation_schema" in legacy_status["upgrade_reasons"]
     with pytest.raises(ResearchError, match="does not support 'hybrid'"):
         await service.search("cobalt", top_k=1)
     legacy_search = await service.search(
@@ -363,6 +456,8 @@ async def _assert_agent_reviewed_source_exclusion(project: Path) -> None:
     assert rebuilt["source_file_count"] == 2
     assert rebuilt["excluded_source_count"] == 1
     assert rebuilt["document_count"] == 1
+    assert rebuilt["reused_document_count"] == 1
+    assert rebuilt["rebuilt_document_count"] == 0
     rebuilt_status = await service.status()
     assert rebuilt_status["stale"] is False
     assert (
@@ -381,6 +476,8 @@ async def _assert_agent_reviewed_source_exclusion(project: Path) -> None:
     restored = await service.ingest(chunk_size=50, chunk_overlap=10)
     assert restored["document_count"] == 2
     assert restored["excluded_source_count"] == 0
+    assert restored["reused_document_count"] == 1
+    assert restored["rebuilt_document_count"] == 1
 
 
 def test_agent_reviewed_source_exclusion_is_immediate_and_reversible(
@@ -396,6 +493,167 @@ def test_reciprocal_rank_fusion_rewards_agreement() -> None:
     )
     assert ordered[0] == "shared"
     assert scores["shared"] > scores["bm25-only"]
+    assert scores["bm25-only"] > scores["dense-only"]
+
+
+async def _assert_relevance_gates_allow_abstention(project: Path) -> None:
+    write_pdf(
+        project / "sources" / "brands.pdf",
+        ["Lenovo ZTE Sony (Motorola) Microsoft Samsung Vodafone"],
+        title="Brand Table",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    unrelated = await service.search("hello", top_k=8)
+    assert unrelated["result_count"] == 0
+    assert unrelated["relevance_limited"] is True
+    assert unrelated["rejected_candidates"] == {
+        "bm25_no_query_token_overlap": 1,
+        "bm25_extraction_artifact": 0,
+        "dense_below_threshold": 1,
+        "dense_extraction_artifact": 0,
+    }
+
+    relevant = await service.search("Lenovo", top_k=8)
+    assert relevant["result_count"] == 1
+    assert relevant["hits"][0]["match_kind"] == "hybrid"
+
+
+def test_relevance_gates_allow_zero_results(project: Path) -> None:
+    asyncio.run(_assert_relevance_gates_allow_abstention(project))
+
+
+async def _assert_dense_threshold_boundary(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Semantic research material."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    dense = ScoredDenseBackend(0.7199)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=dense,
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    rejected = await service.search("unrelated", retrieval_method="dense", top_k=1)
+    assert rejected["result_count"] == 0
+    assert rejected["rejected_candidates"]["dense_below_threshold"] == 1
+
+    dense.score = 0.72
+    accepted = await service.search("unrelated", retrieval_method="dense", top_k=1)
+    assert accepted["result_count"] == 1
+    assert accepted["hits"][0]["match_kind"] == "semantic"
+
+
+def test_dense_threshold_boundary(project: Path) -> None:
+    asyncio.run(_assert_dense_threshold_boundary(project))
+
+
+async def _assert_no_change_ingest_is_noop_and_force_rebuilds(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = FakeUltraRAG()
+    dense = FakeDenseBackend()
+    service = ResearchService(config, ultrarag, dense=dense)  # type: ignore[arg-type]
+
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+    second = await service.ingest(chunk_size=50, chunk_overlap=10)
+    forced = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        force_recompute=True,
+    )
+
+    assert first["generation_id"] == second["generation_id"]
+    assert second["generation_changed"] is False
+    assert second["rebuilt_document_count"] == 0
+    assert second["created_vector_count"] == 0
+    assert forced["generation_id"] != first["generation_id"]
+    assert forced["generation_changed"] is True
+    assert forced["reused_document_count"] == 0
+    assert forced["created_vector_count"] == forced["chunk_count"]
+    assert Path(first["generation_root"]).is_dir()
+    assert Path(forced["generation_root"]).is_dir()
+    assert ultrarag.chunk_calls == 2
+    assert ultrarag.bm25_build_calls == 2
+    assert dense.build_calls == 2
+    current = json.loads(config.current_path.read_text(encoding="utf-8"))
+    assert current["generation_id"] == forced["generation_id"]
+
+
+def test_no_change_ingest_is_noop_and_force_rebuilds(project: Path) -> None:
+    asyncio.run(_assert_no_change_ingest_is_noop_and_force_rebuilds(project))
+
+
+async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> None:
+    first_path = project / "sources" / "first.pdf"
+    second_path = project / "sources" / "second.pdf"
+    write_pdf(first_path, ["Stable cobalt evidence."], title="First")
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    dense = FakeDenseBackend()
+    ultrarag = FakeUltraRAG()
+    service = ResearchService(config, ultrarag, dense=dense)  # type: ignore[arg-type]
+
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+    write_pdf(second_path, ["Amber evidence in a second source."], title="Second")
+    added = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert added["generation_changed"] is True
+    assert added["reused_document_count"] == 1
+    assert added["rebuilt_document_count"] == 1
+    assert added["reused_chunk_count"] == 1
+    assert added["created_vector_count"] == 1
+
+    previous_stat = second_path.stat()
+    second_path.unlink()
+    write_pdf(second_path, ["Cedar evidence in a second source."], title="Second")
+    assert second_path.stat().st_size == previous_stat.st_size
+    os.utime(
+        second_path,
+        ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns),
+    )
+    changed_bytes = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert changed_bytes["generation_changed"] is True
+    assert changed_bytes["reused_document_count"] == 1
+    assert changed_bytes["rebuilt_document_count"] == 1
+
+    await service.set_source_metadata("first.pdf", {"categories": ["theory"]})
+    metadata_changed = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert metadata_changed["rebuilt_document_count"] == 1
+    assert metadata_changed["reused_document_count"] == 1
+    assert metadata_changed["reused_vector_count"] == metadata_changed["chunk_count"]
+    assert metadata_changed["created_vector_count"] == 0
+
+    reuse_search = await service.search("evidence", top_k=8)
+    forced = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        force_recompute=True,
+    )
+    full_search = await service.search("evidence", top_k=8)
+    assert forced["created_vector_count"] == forced["chunk_count"]
+    assert [item["chunk_id"] for item in reuse_search["hits"]] == [
+        item["chunk_id"] for item in full_search["hits"]
+    ]
+    assert [item["rank"] for item in reuse_search["hits"]] == [
+        item["rank"] for item in full_search["hits"]
+    ]
+
+    second_path.unlink()
+    removed = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert removed["generation_changed"] is True
+    assert removed["document_count"] == 1
+    assert removed["reused_document_count"] == 1
+    assert removed["rebuilt_document_count"] == 0
+    assert removed["generation_id"] != first["generation_id"]
+
+
+def test_selective_reuse_tracks_every_input_change(project: Path) -> None:
+    asyncio.run(_assert_selective_reuse_tracks_every_input_change(project))
 
 
 async def _assert_failed_dense_build_does_not_replace_current(project: Path) -> None:
@@ -411,17 +669,21 @@ async def _assert_failed_dense_build_does_not_replace_current(project: Path) -> 
     dense.fail_build = True
 
     with pytest.raises(RuntimeError, match="simulated dense-index failure"):
-        await service.ingest(chunk_size=50, chunk_overlap=10)
+        await service.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+            force_recompute=True,
+        )
 
     current = json.loads(config.current_path.read_text(encoding="utf-8"))
     assert current["generation_id"] == first["generation_id"]
-    failed = [
-        path
-        for path in config.generations_root.iterdir()
-        if path.name != first["generation_id"]
+    assert [path.name for path in config.generations_root.iterdir()] == [
+        first["generation_id"]
     ]
-    assert len(failed) == 1
-    failure = json.loads((failed[0] / "failure.json").read_text(encoding="utf-8"))
+    assert not any(config.staging_root.iterdir())
+    failures = list(config.failures_root.glob("*.json"))
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text(encoding="utf-8"))
     assert failure["error"] == "simulated dense-index failure"
 
 

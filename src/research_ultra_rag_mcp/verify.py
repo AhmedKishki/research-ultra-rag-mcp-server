@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
+import os
 from pathlib import Path
 from typing import Any
 
 from fastmcp import Client
-from fastmcp.client.transports import StdioTransport
+
+from .config import configured_source_directory, resolve_config
+from .transport import create_research_transport
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -41,12 +43,22 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Create and select a new generation before searching.",
     )
+    parser.add_argument(
+        "--force-recompute",
+        action="store_true",
+        help="With --ingest, bypass all compatible document/chunk/vector reuse.",
+    )
     parser.add_argument("--chunk-size", type=int, default=384)
     parser.add_argument("--chunk-overlap", type=int, default=64)
     parser.add_argument(
         "--offline",
         action="store_true",
         help="Require the vanilla runtime and model files to be cached already.",
+    )
+    parser.add_argument(
+        "--model-cache-root",
+        default=os.environ.get("RESEARCH_ULTRARAG_MODEL_CACHE_ROOT"),
+        help="Override the shared FastEmbed model cache.",
     )
     return parser
 
@@ -57,17 +69,18 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"Project root is not a directory: {project}")
     if not 1 <= args.top_k <= 50:
         raise RuntimeError("--top-k must be between 1 and 50")
+    if args.force_recompute and not args.ingest:
+        raise RuntimeError("--force-recompute requires --ingest")
 
-    executable = Path(sys.executable).parent / "research-ultra-rag-mcp"
-    if not executable.is_file():
-        raise RuntimeError(f"MCP executable was not found: {executable}")
-    arguments = ["--project-root", str(project)]
-    if args.offline:
-        arguments.append("--offline")
+    config = resolve_config(
+        project,
+        source_directory=configured_source_directory(project),
+        model_cache_root=args.model_cache_root,
+        offline=args.offline,
+    )
     log_path = project / ".ultrarag" / "research" / "logs" / "verify-stderr.log"
-    transport = StdioTransport(
-        command=str(executable),
-        args=arguments,
+    transport = create_research_transport(
+        config,
         log_file=log_path,
     )
 
@@ -86,6 +99,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
                     {
                         "chunk_size": args.chunk_size,
                         "chunk_overlap": args.chunk_overlap,
+                        "force_recompute": args.force_recompute,
                     },
                     timeout=1800,
                 )

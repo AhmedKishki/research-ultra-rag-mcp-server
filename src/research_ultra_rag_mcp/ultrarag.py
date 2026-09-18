@@ -18,6 +18,10 @@ def create_vanilla_transport(config: ResearchConfig) -> StdioTransport:
         str(config.ultrarag_workspace),
         "--log-level",
         config.log_level,
+        "--namespace",
+        "corpus",
+        "--namespace",
+        "retriever",
     ]
     if config.runtime_cache_root is not None:
         arguments.extend(["--runtime-cache-root", str(config.runtime_cache_root)])

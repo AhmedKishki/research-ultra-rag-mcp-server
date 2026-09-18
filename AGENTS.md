@@ -7,10 +7,10 @@ This is the engineering guide for AI coding agents working in
 
 Provide a high-level stdio MCP server for project-scoped research knowledge
 bases built from original PDF and EPUB sources. The server helps an AI agent
-retrieve citable evidence across a collection while preserving document
-identity and source locators. It also provides a research adapter that connects
-the shared loopback-only `ui-ultra-rag-mcp` workspace to the same public MCP
-tools and project state.
+retrieve cleaned semantic evidence across a collection while preserving
+document identity and original-file locators. It also provides a research
+adapter that connects the shared loopback-only `ui-ultra-rag-mcp` workspace to
+the same public MCP tools and project state.
 
 The package builds on the separately versioned
 `vanilla-ultra-rag-mcp-server`. Never add research behavior to the vanilla
@@ -22,7 +22,7 @@ repository to support this project.
   installation, MCP configuration, concrete usage, expected results, storage,
   and user-visible limitations. It must not compare or link to sibling
   MCP-server projects.
-- `AGENT_GUIDE.md` is operational policy for an AI agent using the seven research
+- `AGENT_GUIDE.md` is operational policy for an AI agent using the nine research
   tools. Do not put installation or contributor workflows there.
 - `AGENTS.md` is this engineering contract. It may document internal dependency
   boundaries, but must not become a second user manual.
@@ -32,13 +32,13 @@ repository to support this project.
 ## Current compatibility baseline
 
 - Package: `research-ultra-rag-mcp`
-- Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and
-  `research-ultra-rag-verify`
-- Version: `0.6.1`
+- Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`,
+  `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
+- Version: `0.8.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
-- Vanilla gateway commit: `d080b0c2c1172f029024149aee15d295cd8e0d14`
-- Shared UI commit: `3f90ee16c1a49cdc9d2e72244f7968adf0d246a5`
+- Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
+- Shared UI commit: `fb569668c381efaa0089536de99928c77f8e7f31`
 - Upstream UltraRAG: `0.3.0.2` at
   `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
@@ -54,7 +54,11 @@ repository to support this project.
 - Ingestion selects only regular PDF and EPUB files beneath the configured
   sources directory.
 - Reject source symlinks and path traversal.
-- Store all derived state beneath `<project>/.ultrarag/research`.
+- Store portable identity/review state beneath `<project>/.research-rag` and all
+  disposable runtime state beneath `<project>/.ultrarag/research`.
+- Share only immutable model binaries through the configured user cache. Never
+  place documents, metadata, chunks, vectors, indexes, bundles, logs, or query
+  state in global storage.
 - Never edit or write the original source documents.
 - Keep source exclusions explicit, reversible, project-local, and immediately
   enforced by every retrieval surface. Do not add automatic duplicate guessing.
@@ -66,14 +70,13 @@ repository to support this project.
   the generation unless both indexes validate successfully.
 - Keep dense vectors and Qdrant payloads project-local; do not introduce a
   required external database service.
-- Search results must separate passage text from metadata so an agent knows what
-  may be quoted.
-- Never claim that extracted text is a substitute for checking the original.
+- Search results must identify `text` as cleaned semantic text with
+  `direct_quote_safe=false`; direct quotations must come from the original.
 - Keep MCP stdout reserved for protocol messages.
 - Keep the UI bound to loopback addresses. Do not add remote exposure or
   authentication assumptions without an explicit security design.
 - Keep browser write endpoints same-origin, JSON-only, and constrained to the
-  seven public MCP operations.
+  nine public MCP operations.
 - Do not let UI code read or mutate generation artifacts directly. It must use
   the private stdio MCP client, except for safely serving an allowlisted
   original PDF or EPUB from the configured source root.
@@ -93,6 +96,7 @@ research-ultra-rag-mcp
 ├── PDF page extraction
 ├── EPUB section extraction
 ├── metadata and provenance
+├── portable project bundles
 ├── immutable generations
 ├── FastEmbed CPU embeddings
 ├── project-local Qdrant dense index
@@ -118,8 +122,8 @@ changes the boundary for research work:
   locators are implemented here.
 - Retrieval combines UltraRAG CPU BM25 with a project-local FastEmbed/Qdrant
   dense index. This extension owns fusion, filters, scores, and provenance.
-- `search` returns visible, structured evidence instead of anonymous passage
-  strings.
+- `search` returns visible, structured semantic evidence instead of anonymous
+  passage strings. It is explicitly not an exact-quotation surface.
 - The calling AI agent is the generation stage and must cite the returned
   evidence; this server does not call UltraRAG generation internally.
 - Benchmark loading, boxed-answer extraction, and automatic evaluation are not
@@ -131,15 +135,20 @@ citation contract, tests, and user-visible model configuration.
 
 ## Repository map
 
-- `src/research_ultra_rag_mcp/server.py`: CLI, MCP lifecycle, and seven public
+- `src/research_ultra_rag_mcp/server.py`: CLI, MCP lifecycle, and nine public
   tools.
-- `config.py`: project boundary and executable validation.
+- `config.py`: project boundary, stable identity, and executable validation.
 - `sources.py`: allowlist, source discovery, hashing, and metadata validation.
-- `extraction.py`: PDF pages and EPUB sections.
+- `extraction.py`: layout-aware PDF/EPUB extraction and bibliographic identity.
+- `bundle.py`: deterministic export and hostile-archive-safe import staging.
+- `bundle_cli.py`: terminal export/import client.
 - `storage.py`: atomic JSON state and JSONL artifacts.
 - `dense.py`: pinned FastEmbed models, local Qdrant indexing/filtering, and
   optional cross-encoder reranking.
+- `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
+- `transport.py`: the single research stdio transport builder used by UI and
+  terminal clients.
 - `service.py`: generation, indexing, status, filtering, and evidence workflow.
 - `instructions.py`: guidance returned to MCP agents.
 - `ui.py`: shared-UI profile, private MCP client, public-tool mapping, and safe
@@ -152,27 +161,42 @@ citation contract, tests, and user-visible model configuration.
 
 ## Storage model
 
-The mutable pointer and reviewed metadata live at:
+Portable, project-owned state lives at:
+
+```text
+<project>/.research-rag/project.json
+<project>/.research-rag/source-metadata.json
+<project>/.research-rag/source-exclusions.json
+<project>/.research-rag/bundles/
+```
+
+`project.json` is authoritative for the stable project ID, name, and
+project-relative source directory. CLI entrypoints reuse its source setting
+when `--source-directory` is omitted; an explicit differing value must fail.
+
+Disposable local state lives at:
 
 ```text
 <project>/.ultrarag/research/current.json
-<project>/.ultrarag/research/source-metadata.json
-<project>/.ultrarag/research/source-exclusions.json
 <project>/.ultrarag/research/project.lock
 ```
 
-Each build gets a unique directory under `generations/`. A failed generation
-gets `failure.json` and never becomes current. Successful generations contain a
-manifest, extraction units, raw UltraRAG chunks, enriched chunks, BM25 index,
-and Qdrant index. Model weights are cached once per project under `models/`. Do
-not treat generated files as source documents. `project.lock` serializes MCP
-and UI operations across processes; a long ingestion intentionally blocks other
-operations rather than exposing a partially changed runtime or local index.
+Changed builds use a unique directory under `staging/`, then move a verified
+generation beneath `generations/` before switching `current.json`. Successful
+generations retain only the manifest, cleaned extraction units, final chunks,
+portable float32 vectors, BM25 index, and Qdrant index. UltraRAG raw chunks are
+temporary staging data, and raw coordinate records are not generated. Failed
+builds remove heavy staging data and leave a small record under `failures/`.
+Model binaries default to `~/.cache/research-ultra-rag-mcp/models` and are the
+only cross-project shared state. `project.lock` serializes MCP and UI operations
+across processes so no caller observes a partial index.
 
 ## Public MCP tools
 
 - `status`: read-only source/current/staleness inspection.
-- `ingest`: create and select a complete new generation.
+- `ingest`: return the current generation for an exact no-op, or create and
+  select a complete new generation with verified reuse; `force_recompute`
+  bypasses reuse.
 - `search`: hybrid-by-default retrieval with selectable BM25/dense modes,
   optional reranking, and structured evidence.
 - `list_sources`: inspect indexed documents and metadata.
@@ -180,6 +204,10 @@ operations rather than exposing a partially changed runtime or local index.
 - `set_source_metadata`: update reviewed metadata for the next generation.
 - `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed
   source without modifying the source file; rebuild later to align the indexes.
+- `export_bundle`: export a fresh generation and all original sources beneath
+  the project's portable bundle directory.
+- `import_bundle`: validate a project-owned bundle, reconstruct BM25/Qdrant from
+  chunks/vectors, install non-conflicting originals, and switch current last.
 
 Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 Update tests and documentation when changing them.
@@ -191,13 +219,14 @@ Update tests and documentation when changing them.
 - Dense path: FastEmbed `BAAI/bge-small-en-v1.5`, ONNX Runtime CPU, 384
   dimensions, cosine distance, embedded Qdrant collection `research_chunks`.
   Artifact revision: `52398278842ec682c6f32300af41344b1c0b0bb2`.
-- Fusion: reciprocal-rank fusion with `k=60`. Do not combine raw BM25 and cosine
-  values; their scales are unrelated.
+- Fusion: weighted reciprocal-rank fusion with `k=60`, BM25 weight `1.25`, and
+  dense weight `1.0`. Do not combine raw BM25 and cosine values; their scales
+  are unrelated.
 - Candidate depth: at least 20, normally `top_k * 4`, bounded at 200 and by the
   current chunk count.
 - Chunking: UltraRAG token chunker with the GPT-2 tiktoken encoding, default and
-  maximum 384 tokens, overlap 64. The cap reserves space for retrieval metadata
-  within the embedding model's 512-token window; do not raise it without adding
+  maximum 384 tokens, overlap 64. The cap stays below the embedding model's
+  512-token input limit despite tokenizer differences; do not raise it without
   an explicit long-input strategy and tests.
 - Optional reranker: FastEmbed
   `Xenova/ms-marco-MiniLM-L-6-v2`, CPU, lazily loaded, applied to at most 50
@@ -215,12 +244,17 @@ Update tests and documentation when changing them.
 - Raw BM25 scores are unavailable from the pinned UltraRAG tool. Report its
   rank, never synthesize a score. Dense/fusion/reranker scores are ranking
   signals, not calibrated confidence or truth probabilities.
-- `text` is the only quote-safe passage field returned to clients.
-  `embedding_text` is internal retrieval input and must not be exposed as a
-  quotation.
-- Normalize extraction-related line wrapping before chunking and again at the
-  public response boundary so older generations remain readable. Preserve
-  meaningful paragraph breaks; do not rewrite wording or silently correct OCR.
+- BM25 candidates require at least one non-stopword query token. Dense candidates
+  require cosine similarity `>= 0.72`. Reject extraction artifacts before the
+  optional reranker and permit fewer than `top_k`, including zero.
+- `text` and internal `embedding_text` contain only cleaned semantic content;
+  never inject paths, IDs, authors, citations, or repeated document titles into
+  each indexed passage.
+- Normalize layout wrapping before chunking, remove controls/soft hyphens, and
+  join alphabetic line-end hyphen splits. Preserve all other wording and
+  punctuation, but set `direct_quote_safe=false` on every public passage.
+- Do not retain raw coordinate extraction. The untouched PDF/EPUB is the quote
+  authority. Preserve legend-marker meaning in cleaned-unit annotations.
 - Schema-1 generations are BM25-only. Keep them usable when a caller explicitly
   requests `bm25`; require a new ingestion before dense or hybrid search.
 - Exclusions are path-based, stored outside generations, and applied to BM25,
@@ -228,6 +262,36 @@ Update tests and documentation when changing them.
   exclusion revision and omits excluded documents from both indexes. Inclusion
   can only restore current retrieval immediately if the current generation
   still contains that source.
+- Bundle import must reject traversal, symlinks/non-regular members, duplicate
+  entries, checksum/schema/model failures, project-ID mismatch, unsafe manifest
+  paths, and differing bytes at an existing source path. Never export live
+  indexes, locks, logs, runtime files, or model caches. Import intentionally
+  replaces reviewed metadata/exclusions with the validated bundled copies and
+  must disclose that behavior.
+
+## Metadata and extraction contract
+
+- Resolve each field independently. PDF precedence is reviewed override,
+  high-confidence visible front matter, validated embedded metadata, then the
+  filename stem for title only. EPUB precedence is reviewed override, validated
+  OPF metadata, visible title/byline, then the filename stem for title only.
+- Never infer authors from filenames. Reject DOI/URL/export-junk titles, move a
+  detected DOI to its own field, and expose per-field provenance/confidence plus
+  review warnings.
+- Inspect the first five text-bearing PDF pages for identity. Keep physical page
+  and available page-label locators.
+- Use coordinate blocks to restore column order, remove repeated margins/page
+  numbers, and distinguish prose, lists, tables, and figures. Do not infer visual
+  relationships not expressed by captions, legends, or labels.
+- Hash all discovered sources before ingestion decides whether work is needed.
+  Exact source bytes, portable-state revisions, chunk settings, processing
+  policies, and model fingerprints are required for a no-op.
+- Reuse extraction units/chunks only for a source with matching bytes,
+  per-source reviewed metadata, and processing fingerprints. Reuse a vector
+  only when `embedding_text`, model revision, and dimension match exactly.
+- Always reconstruct complete BM25 and Qdrant indexes for a changed generation;
+  never update selected indexes in place. `force_recompute=true` disables all
+  document, chunk, and vector reuse.
 
 Do not move the Qdrant implementation into the vanilla gateway or patch
 UltraRAG for this feature. The research-specific integration deliberately lives
@@ -243,7 +307,8 @@ in this repository so vanilla can continue tracking upstream safely.
 - Validate a new artifact before updating a pointer to it.
 - Keep model downloads lazy: the embedding model is needed during ingestion;
   the reranker model only when `rerank=true`. In offline mode, require an
-  existing project-local cache instead of making a network request.
+  existing shared cache, with read-only fallback to an existing legacy
+  project-local cache. Never migrate or delete that legacy cache automatically.
 - Do not expose underlying vanilla tools through this server.
 - Do not silently skip a selected PDF/EPUB that fails extraction; fail the new
   generation and leave the previous current generation intact.
@@ -274,7 +339,9 @@ real vanilla stdio server, build BM25 and Qdrant indexes, run hybrid and dense
 search, retrieve the known passage, and prove that a neighboring Markdown file
 was excluded. It must then restart offline and repeat hybrid reranked search from
 the caches. Unit tests must cover RRF and failure atomicity without depending on
-model downloads.
+model downloads. They must also cover no-op ingestion, additions, changes,
+removals, reviewed metadata/exclusions, same-size/same-mtime byte changes,
+forced regeneration, exact-text vector reuse, and lean final artifacts.
 
 For significant extraction changes, also test a representative real collection
 without writing into its source directory.

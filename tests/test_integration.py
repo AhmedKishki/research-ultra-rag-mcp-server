@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -41,7 +42,9 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         tool_records = await client.list_tools()
         tools = {tool.name: tool for tool in tool_records}
         assert set(tools) == {
+            "export_bundle",
             "get_passage",
+            "import_bundle",
             "ingest",
             "list_sources",
             "search",
@@ -49,8 +52,14 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "set_source_metadata",
             "status",
         }
+        assert tools["set_source_metadata"].annotations is not None
+        assert tools["set_source_metadata"].annotations.destructiveHint is True
+        assert tools["set_source_inclusion"].annotations is not None
+        assert tools["set_source_inclusion"].annotations.destructiveHint is True
+        assert tools["import_bundle"].annotations is not None
+        assert tools["import_bundle"].annotations.destructiveHint is True
         expected_parameters = {
-            "ingest": {"chunk_size", "chunk_overlap"},
+            "ingest": {"chunk_size", "chunk_overlap", "force_recompute"},
             "search": {
                 "query",
                 "top_k",
@@ -64,6 +73,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "get_passage": {"chunk_id", "context_chunks"},
             "set_source_metadata": {"source_path", "metadata"},
             "set_source_inclusion": {"source_path", "included", "reason"},
+            "export_bundle": set(),
+            "import_bundle": {"bundle_name", "activate"},
         }
         for tool_name, parameter_names in expected_parameters.items():
             properties = tools[tool_name].inputSchema["properties"]
@@ -142,6 +153,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
         ready = await client.call_tool("status", {})
         assert ready.data["hybrid_ready"] is True
+        assert ready.data["generation_upgrade_required"] is False
 
         result = await client.call_tool(
             "search",
@@ -156,11 +168,14 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert result.data["retrieval_method"] == "hybrid"
         assert hit["component_ranks"] == {"bm25": 1, "dense": 1}
         assert hit["fusion_score"] is not None
+        assert hit["direct_quote_safe"] is False
+        assert hit["text_fidelity"] == "cleaned_semantic_text"
+        assert result.data["requested_top_k"] == 1
 
         dense_result = await client.call_tool(
             "search",
             {
-                "query": "wetland bird and work",
+                "query": "cobalt heron amber marsh labour ecology",
                 "top_k": 1,
                 "retrieval_method": "dense",
                 "categories": ["research"],
@@ -183,6 +198,18 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             },
         )
         assert filtered_out.data["result_count"] == 0
+
+        exported = await client.call_tool("export_bundle", {}, timeout=1800)
+        assert exported.data["source_count"] == 1
+        assert exported.data["bundle_name"].endswith(".research-rag.zip")
+        exported_bundle = Path(exported.data["bundle_path"])
+        reference_chunk_id = hit["chunk_id"]
+        imported = await client.call_tool(
+            "import_bundle",
+            {"bundle_name": exported.data["bundle_name"], "activate": True},
+            timeout=1800,
+        )
+        assert imported.data["status"] == "already_present"
 
         reranked = await client.call_tool(
             "search",
@@ -223,6 +250,49 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             {"query": "cobalt heron", "top_k": 1},
         )
         assert restored_search.data["result_count"] == 1
+
+    imported_project = project.parent / "portable-import-project"
+    imported_project.mkdir()
+    imported_portable = imported_project / ".research-rag"
+    imported_portable.mkdir()
+    shutil.copy2(
+        project / ".research-rag" / "project.json",
+        imported_portable / "project.json",
+    )
+    imported_bundles = imported_portable / "bundles"
+    imported_bundles.mkdir()
+    copied_bundle = imported_bundles / exported_bundle.name
+    shutil.copy2(exported_bundle, copied_bundle)
+    shutil.copy2(
+        exported_bundle.with_suffix(exported_bundle.suffix + ".sha256"),
+        copied_bundle.with_suffix(copied_bundle.suffix + ".sha256"),
+    )
+    import_transport = StdioTransport(
+        command=str(executable),
+        args=["--project-root", str(imported_project)],
+        log_file=imported_project / "research-import-stderr.log",
+    )
+    async with Client(
+        import_transport,
+        timeout=1800,
+        init_timeout=1800,
+    ) as imported_client:
+        reconstructed = await imported_client.call_tool(
+            "import_bundle",
+            {"bundle_name": copied_bundle.name, "activate": True},
+            timeout=1800,
+        )
+        assert reconstructed.data["status"] == "imported"
+        imported_status = await imported_client.call_tool("status", {})
+        assert imported_status.data["stale"] is False
+        assert imported_status.data["generation_upgrade_required"] is False
+        imported_search = await imported_client.call_tool(
+            "search",
+            {"query": "cobalt heron amber marsh", "top_k": 1},
+            timeout=1800,
+        )
+        assert imported_search.data["hits"][0]["chunk_id"] == reference_chunk_id
+        assert (imported_project / "sources" / "evidence.pdf").is_file()
 
     offline_transport = StdioTransport(
         command=str(executable),
