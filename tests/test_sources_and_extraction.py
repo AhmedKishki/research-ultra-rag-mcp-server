@@ -18,11 +18,14 @@ from research_ultra_rag_mcp.extraction import (
     ExtractionError,
     _marker_annotations,
     _pdf_line_text,
+    _quality_flags,
     _TextBlock,
     extract_sources,
+    has_searchable_alphanumeric_content,
     normalize_inline_text,
     normalize_reading_text,
     text_corruption_reasons,
+    text_health_reasons,
 )
 from research_ultra_rag_mcp.sources import SourcePolicyError, scan_sources
 from research_ultra_rag_mcp.ultrarag import create_vanilla_transport
@@ -115,6 +118,39 @@ def test_english_oriented_corruption_policy_preserves_valid_symbols() -> None:
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "… — – • § † ‡",
+        "∑ × ÷ ≈ → ∞",
+        "🙂 🚀 🧠",
+    ],
+)
+def test_symbol_only_text_has_an_inspectable_health_reason(text: str) -> None:
+    assert not has_searchable_alphanumeric_content(text)
+    assert text_health_reasons(text) == ["symbol_only"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "W–(M–C–M′)–W′",
+        "https://example.org/10.1000/test",
+        "Café workers’ organisations analyse political economy.",
+        "x² + y₃ = 42",
+    ],
+)
+def test_text_with_unicode_alphanumeric_content_is_searchable(text: str) -> None:
+    assert has_searchable_alphanumeric_content(text)
+    assert text_health_reasons(text) == []
+
+
+def test_symbol_filter_preserves_formula_and_existing_page_number_guard() -> None:
+    assert _quality_flags("W–(M–C–M′)–W′", "prose") == []
+    assert _quality_flags("… — ∑ × 🙂", "figure") == ["extraction_artifact"]
+    assert _quality_flags("[ 499 ]", "prose") == ["extraction_artifact"]
+
+
+@pytest.mark.parametrize(
     ("text", "reason"),
     [
         ("Readable prose with two broken symbols: ��", "replacement_characters"),
@@ -179,6 +215,63 @@ def test_corrupt_epub_units_are_excluded_with_locator_diagnostics(
 
 def test_source_with_only_corrupt_text_fails_extraction(project: Path) -> None:
     write_epub(project / "sources" / "broken.epub", CORRUPT_TEXT)
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    with pytest.raises(ExtractionError, match="no readable English-oriented text"):
+        extract_sources(scan_sources(config).selected, {})
+
+
+def test_symbol_only_epub_unit_is_excluded_with_locator_diagnostics(
+    project: Path,
+) -> None:
+    path = project / "sources" / "mixed-symbols.epub"
+    book = epub.EpubBook()
+    book.set_identifier("mixed-symbols")
+    book.set_title("Mixed Symbols")
+    book.set_language("en")
+    clean = epub.EpubHtml(title="Clean", file_name="clean.xhtml", lang="en")
+    clean.content = "<p>Readable English research evidence.</p>"
+    symbols = epub.EpubHtml(title="Symbols", file_name="symbols.xhtml", lang="en")
+    symbols.content = "<p>… — ∑ × 🙂</p>"
+    book.add_item(clean)
+    book.add_item(symbols)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", clean, symbols]
+    epub.write_epub(str(path), book)
+
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    documents, units = extract_sources(scan_sources(config).selected, {})
+
+    assert [unit["contents"] for unit in units] == [
+        "Readable English research evidence."
+    ]
+    assert documents[0]["excluded_corrupt_unit_count"] == 1
+    diagnostic = documents[0]["excluded_corrupt_units"][0]
+    assert diagnostic["locator"] == {
+        "type": "epub_section",
+        "section_index": 3,
+        "section_title": "",
+        "href": "symbols.xhtml",
+    }
+    assert diagnostic["reasons"] == ["symbol_only"]
+    assert "… — ∑ × 🙂" not in json.dumps(diagnostic, ensure_ascii=False)
+
+
+def test_source_with_only_symbol_text_fails_extraction(project: Path) -> None:
+    path = project / "sources" / "only-symbols.epub"
+    book = epub.EpubBook()
+    book.set_identifier("only-symbols")
+    book.set_title("Only Symbols")
+    book.set_language("en")
+    symbols = epub.EpubHtml(title="Symbols", file_name="symbols.xhtml", lang="en")
+    symbols.content = "<p>… — ∑ × 🙂</p>"
+    book.add_item(symbols)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", symbols]
+    epub.write_epub(str(path), book)
+
     config = resolve_config(project, vanilla_executable=sys.executable)
 
     with pytest.raises(ExtractionError, match="no readable English-oriented text"):

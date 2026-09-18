@@ -29,8 +29,9 @@ appear at the end of this document.
   project bundles.
 - Durable CPU ingestion checkpoints: bounded calls can be repeated after a
   client timeout, cancellation, service restart, or ordinary time-budget return.
-- English-oriented corrupt-text rejection with source locators and reason codes;
-  unreadable units are excluded without guessing replacement text.
+- English-oriented corrupt-text and symbol-only rejection with source locators
+  and reason codes; unreadable units are excluded without guessing replacement
+  text.
 - Immutable, project-local generations that become active only after both
   indexes pass.
 
@@ -206,7 +207,10 @@ signals of a broken PDF character map or is incompatible with the selected
 English-oriented policy. Diagnostics retain only the source locator and reason
 codes, not the rejected garbage. If no readable unit remains in a source, the
 build fails so the original can be repaired or OCRed. Reviewed metadata is not
-overridden by this automatic classifier.
+overridden by this automatic classifier. Ingestion also excludes nonempty chunks
+that contain no Unicode alphanumeric content. Ordinary text, numeric content,
+and formulas containing at least one letter or digit are not classified as
+symbol-only; the existing extraction-artifact checks still apply.
 
 ## Use the UI
 
@@ -488,7 +492,8 @@ must contain a non-stopword query token; dense candidates require cosine
 similarity of at least `0.72`; known extraction artifacts are rejected before
 optional reranking. Corrupt-text checks also run during retrieval, so older
 generations stop returning rejected text before re-ingestion removes it from
-their successors. The pinned embedding model is
+their successors. The same retrieval guard excludes symbol-only chunks from
+older generations immediately. The pinned embedding model is
 `BAAI/bge-small-en-v1.5` (384 dimensions), and the optional reranker is
 `Xenova/ms-marco-MiniLM-L-6-v2`.
 

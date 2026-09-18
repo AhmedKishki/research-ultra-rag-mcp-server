@@ -88,6 +88,37 @@ class FakeUltraRAG:
         return sorted(self.passages, key=score, reverse=True)[:top_k]
 
 
+class SymbolChunkUltraRAG(FakeUltraRAG):
+    async def chunk(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        assert chunk_size > chunk_overlap
+        self.chunk_calls += 1
+        unit = read_jsonl(input_path)[0]
+        write_jsonl(
+            output_path,
+            [
+                {
+                    "id": 0,
+                    "doc_id": unit["id"],
+                    "title": unit["title"],
+                    "contents": unit["contents"],
+                },
+                {
+                    "id": 1,
+                    "doc_id": unit["id"],
+                    "title": unit["title"],
+                    "contents": "— • ∎",
+                },
+            ],
+        )
+
+
 class FakeDenseBackend:
     def __init__(self) -> None:
         self.chunks: list[dict[str, object]] = []
@@ -305,7 +336,7 @@ class ManyChunkUltraRAG(FakeUltraRAG):
         )
 
 
-def test_empty_upstream_chunks_are_counted_without_losing_a_unit() -> None:
+def test_unsearchable_upstream_chunks_are_counted_without_losing_a_unit() -> None:
     document = {
         "document_id": "doc_test",
         "source_path": "sources/test.pdf",
@@ -321,16 +352,24 @@ def test_empty_upstream_chunks_are_counted_without_losing_a_unit() -> None:
         "document_id": "doc_test",
         "locator": {"type": "pdf_page", "page": 1, "page_label": "1"},
     }
-    chunks, discarded = _enrich_chunks(
+    chunks, discarded_empty, discarded_symbol_only = _enrich_chunks(
         [
             {"doc_id": unit["id"], "contents": "Evidence remains searchable."},
             {"doc_id": unit["id"], "contents": ""},
+            {"doc_id": unit["id"], "contents": "— • ∎"},
+            {"doc_id": unit["id"], "contents": "W–(M–C–M′)–W′"},
+            {"doc_id": unit["id"], "contents": "2026 ± 4"},
         ],
         [unit],
         [document],
     )
-    assert len(chunks) == 1
-    assert discarded == 1
+    assert [chunk["text"] for chunk in chunks] == [
+        "Evidence remains searchable.",
+        "W–(M–C–M′)–W′",
+        "2026 ± 4",
+    ]
+    assert discarded_empty == 1
+    assert discarded_symbol_only == 1
 
     second_unit = {
         "id": "doc_test:pdf-page:000002",
@@ -340,7 +379,7 @@ def test_empty_upstream_chunks_are_counted_without_losing_a_unit() -> None:
     with pytest.raises(ResearchError, match="extraction units"):
         _enrich_chunks(
             [
-                {"doc_id": unit["id"], "contents": ""},
+                {"doc_id": unit["id"], "contents": "— • ∎"},
                 {"doc_id": second_unit["id"], "contents": "Other page evidence."},
             ],
             [unit, second_unit],
@@ -370,13 +409,19 @@ def test_legacy_automatic_metadata_uses_runtime_corruption_guard() -> None:
     assert "corrupt_extracted_title" in public["metadata_warnings"]
     assert "corrupt_extracted_authors" in public["metadata_warnings"]
 
+    legacy["title"] = "— • ∎"
+    legacy["authors"] = ["— • ∎", "Ada Example"]
+    symbol_only = _public_document(legacy)
+    assert symbol_only["title"] == "safe-name"
+    assert symbol_only["authors"] == ["Ada Example"]
+
     legacy["metadata_provenance"] = {
         "title": "reviewed_override",
         "authors": "reviewed_override",
     }
     reviewed = _public_document(legacy)
-    assert reviewed["title"] == CORRUPT_TEXT
-    assert reviewed["authors"][0] == CORRUPT_TEXT
+    assert reviewed["title"] == "— • ∎"
+    assert reviewed["authors"][0] == "— • ∎"
 
 
 async def _assert_research_generation_and_structured_search(project: Path) -> None:
@@ -530,6 +575,32 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
 
 def test_research_generation_and_structured_search(project: Path) -> None:
     asyncio.run(_assert_research_generation_and_structured_search(project))
+
+
+async def _assert_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = SymbolChunkUltraRAG()
+    dense = FakeDenseBackend()
+    service = ResearchService(config, ultrarag, dense=dense)  # type: ignore[arg-type]
+
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    assert result["discarded_symbol_only_chunk_count"] == 1
+    generation_root = Path(result["generation_root"])
+    manifest = json.loads(
+        (generation_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["discarded_symbol_only_chunk_count"] == 1
+    assert manifest["build_metrics"]["discarded_symbol_only_chunk_count"] == 1
+    chunks = read_jsonl(generation_root / manifest["files"]["chunks"])
+    assert [chunk["text"] for chunk in chunks] == ["Stable research evidence."]
+    assert [chunk["text"] for chunk in dense.chunks] == ["Stable research evidence."]
+    assert ultrarag.passages == ["Stable research evidence."]
+
+
+def test_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None:
+    asyncio.run(_assert_symbol_only_chunks_do_not_reach_indexes(project))
 
 
 async def _assert_agent_reviewed_source_exclusion(project: Path) -> None:
@@ -1205,10 +1276,20 @@ async def _assert_legacy_corrupt_chunks_are_rejected_immediately(
     corrupt_chunk["document_chunk_index"] = 1
     for field in ("contents", "embedding_text", "text"):
         corrupt_chunk[field] = CORRUPT_TEXT
-    chunks = [clean_chunk, corrupt_chunk]
+    symbol_chunk = dict(chunks[0])
+    symbol_chunk["chunk_id"] = "symbol-only"
+    symbol_chunk["id"] = "symbol-only"
+    symbol_chunk["document_chunk_index"] = 2
+    for field in ("contents", "embedding_text", "text"):
+        symbol_chunk[field] = "— • ∎"
+    chunks = [clean_chunk, corrupt_chunk, symbol_chunk]
     write_jsonl(chunks_path, chunks)
-    ultrarag.passages = [CORRUPT_TEXT, str(clean_chunk["contents"])]
-    dense.chunks = [corrupt_chunk]
+    ultrarag.passages = [
+        CORRUPT_TEXT,
+        str(symbol_chunk["contents"]),
+        str(clean_chunk["contents"]),
+    ]
+    dense.chunks = [corrupt_chunk, symbol_chunk]
 
     for retrieval_method in ("bm25", "dense", "hybrid"):
         search = await service.search(
@@ -1217,13 +1298,19 @@ async def _assert_legacy_corrupt_chunks_are_rejected_immediately(
             retrieval_method=retrieval_method,
             rerank=True,
         )
-        assert all(hit["chunk_id"] != chunk_id for hit in search["hits"])
+        assert all(
+            hit["chunk_id"] not in {chunk_id, "symbol-only"} for hit in search["hits"]
+        )
         if retrieval_method in {"bm25", "hybrid"}:
             assert search["rejected_candidates"]["bm25_corrupt_text"] == 1
+            assert search["rejected_candidates"]["bm25_extraction_artifact"] == 1
         if retrieval_method in {"dense", "hybrid"}:
             assert search["rejected_candidates"]["dense_corrupt_text"] == 1
+            assert search["rejected_candidates"]["dense_extraction_artifact"] == 1
     with pytest.raises(ResearchError, match="corrupt extracted text"):
         await service.get_passage(chunk_id)
+    with pytest.raises(ResearchError, match="extraction artifact"):
+        await service.get_passage("symbol-only")
     passage = await service.get_passage("clean-neighbor", context_chunks=1)
     assert [item["chunk_id"] for item in passage["context"]] == ["clean-neighbor"]
 

@@ -34,7 +34,7 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`,
   `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.9.0`
+- Version: `0.9.1`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
@@ -297,6 +297,10 @@ Update tests and documentation when changing them.
   locator/reason diagnostics for rejected units, never guessed repairs or their
   garbage text. Reviewed metadata remains authoritative. Apply the same guard
   at retrieval time for older generations.
+- Exclude every nonempty chunk that contains no Unicode alphanumeric content,
+  both while ingesting and at retrieval time for older generations. Text,
+  numbers, and formulas containing at least one letter or digit are not
+  classified as symbol-only; the other extraction-artifact rules still apply.
 - Inspect the first five text-bearing PDF pages for identity. Keep physical page
   and available page-label locators.
 - Use coordinate blocks to restore column order, remove repeated margins/page
@@ -337,6 +341,8 @@ in this repository so vanilla can continue tracking upstream safely.
   generation and leave the previous current generation intact.
 - Empty upstream chunk records may be discarded only when their extraction unit
   still has at least one searchable chunk; record the discarded count.
+- Symbol-only upstream chunk records may be discarded only when their extraction
+  unit still has at least one searchable chunk; record the discarded count.
 - Retain explicit limitations when a feature is not implemented.
 
 ## Validation

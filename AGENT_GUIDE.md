@@ -45,7 +45,9 @@ state observed earlier in a long session.
   download a second model on first use.
 
 Category and keyword filters use AND semantics. Document IDs use membership
-semantics. Extraction artifacts are rejected. Scores rank candidates; they are
+semantics. Extraction artifacts and nonempty chunks containing no Unicode
+alphanumeric content are rejected. Text, numbers, and formulas containing at
+least one letter or digit are not symbol-only. Scores rank candidates; they are
 not confidence, truth probabilities, or comparable across queries.
 
 ## Reading a hit
@@ -88,6 +90,10 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
 - Corrupt extraction units are omitted whole, with locator/reason diagnostics
   but without retained garbage text. Retrieval also filters corrupt chunks from
   older generations. Never reconstruct, repair, or invent rejected wording.
+- Symbol-only chunks are omitted during ingestion and guarded at retrieval for
+  older generations. A chunk with at least one Unicode letter or digit is not
+  symbol-only, including an alphanumeric formula or numeric content; other
+  extraction-artifact checks still apply.
 - Read `generation_changed`, reuse/rebuild counts, vector counts, and phase
   timings from the ingestion response before reporting what occurred.
 - Use `set_source_metadata` for reviewed bibliography, categories, and

@@ -43,6 +43,7 @@ from .extraction import (
     ExtractionError,
     extract_epub_spine_item,
     extract_scanned_pdf_page,
+    has_searchable_alphanumeric_content,
     normalize_inline_text,
     normalize_reading_text,
     pdf_page_count,
@@ -50,6 +51,7 @@ from .extraction import (
     prepare_scanned_pdf,
     scan_pdf_page,
     text_corruption_reasons,
+    text_health_reasons,
 )
 from .generation import (
     load_reuse_snapshot,
@@ -80,8 +82,8 @@ from .storage import (
 from .ultrarag import VanillaUltraRAG
 
 SCHEMA_VERSION = 5
-CLEANING_POLICY_VERSION = 1
-EXTRACTION_POLICY_VERSION = 4
+CLEANING_POLICY_VERSION = 2
+EXTRACTION_POLICY_VERSION = 5
 ARTIFACT_POLICY_VERSION = 2
 INGESTION_CHECKPOINT_VERSION = 1
 DEFAULT_WORK_BUDGET_SECONDS = 45
@@ -282,16 +284,14 @@ def _public_document(document: dict[str, Any]) -> dict[str, Any]:
         ]
     provenance = dict(result.get("metadata_provenance") or {})
     warnings = list(result.get("metadata_warnings") or [])
-    if provenance.get("title") != "reviewed_override" and text_corruption_reasons(
+    if provenance.get("title") != "reviewed_override" and text_health_reasons(
         result["title"]
     ):
         result["title"] = Path(str(result.get("source_path") or "source")).stem
         warnings.append("corrupt_extracted_title")
     if provenance.get("authors") != "reviewed_override":
         clean_authors = [
-            author
-            for author in result["authors"]
-            if not text_corruption_reasons(author)
+            author for author in result["authors"] if not text_health_reasons(author)
         ]
         if len(clean_authors) != len(result["authors"]):
             warnings.append("corrupt_extracted_authors")
@@ -304,12 +304,13 @@ def _enrich_chunks(
     raw_chunks: list[dict[str, Any]],
     units: list[dict[str, Any]],
     documents: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int]:
     units_by_id = {str(item["id"]): item for item in units}
     documents_by_id = {str(item["document_id"]): item for item in documents}
     document_ordinals: defaultdict[str, int] = defaultdict(int)
     enriched: list[dict[str, Any]] = []
     discarded_empty_chunks = 0
+    discarded_symbol_only_chunks = 0
 
     for raw in raw_chunks:
         unit_id = str(raw.get("doc_id") or "")
@@ -323,6 +324,9 @@ def _enrich_chunks(
         text = normalize_reading_text(str(raw.get("contents") or ""))
         if not text:
             discarded_empty_chunks += 1
+            continue
+        if not has_searchable_alphanumeric_content(text):
+            discarded_symbol_only_chunks += 1
             continue
 
         ordinal = document_ordinals[document_id]
@@ -377,7 +381,14 @@ def _enrich_chunks(
             "No searchable chunks were produced for extraction units: "
             + ", ".join(missing_units)
         )
-    return enriched, discarded_empty_chunks
+    return enriched, discarded_empty_chunks, discarded_symbol_only_chunks
+
+
+def _is_extraction_artifact(chunk: dict[str, Any]) -> bool:
+    quality_flags = {str(item) for item in chunk.get("quality_flags", [])}
+    return "extraction_artifact" in quality_flags or not (
+        has_searchable_alphanumeric_content(str(chunk.get("text") or ""))
+    )
 
 
 class ResearchService:
@@ -1210,6 +1221,7 @@ class ResearchService:
                             "reused": True,
                             "extraction_stage": "complete",
                             "discarded_empty_chunks": 0,
+                            "discarded_symbol_only_chunks": 0,
                         }
                         atomic_write_json(state_path, state)
                         checkpoint["extracted_source_paths"].append(relative)
@@ -1227,6 +1239,7 @@ class ResearchService:
                             "empty_units": 0,
                             "removed_repeated_margin_blocks": 0,
                             "discarded_empty_chunks": 0,
+                            "discarded_symbol_only_chunks": 0,
                         }
                         checkpoint["extraction_work_total"] = (
                             int(checkpoint.get("extraction_work_total") or 0)
@@ -1251,6 +1264,7 @@ class ResearchService:
                             "rejected_units": [],
                             "empty_units": 0,
                             "discarded_empty_chunks": 0,
+                            "discarded_symbol_only_chunks": 0,
                         }
                         checkpoint["extraction_work_total"] = (
                             int(checkpoint.get("extraction_work_total") or 0)
@@ -1342,9 +1356,7 @@ class ResearchService:
                         )
                     retained: list[dict[str, Any]] = []
                     for unit in batch:
-                        reasons = text_corruption_reasons(
-                            str(unit.get("contents") or "")
-                        )
+                        reasons = text_health_reasons(str(unit.get("contents") or ""))
                         if reasons:
                             state["rejected_units"].append(
                                 {
@@ -1378,7 +1390,7 @@ class ResearchService:
                     if not units:
                         raise ExtractionError(
                             "Source produced no readable English-oriented text after "
-                            f"corrupt extraction units were excluded: {source.path}"
+                            f"unhealthy extraction units were excluded: {source.path}"
                         )
                     document = read_json(artifact_root / "document.json")
                     rejected = list(state.get("rejected_units") or [])
@@ -1446,7 +1458,8 @@ class ResearchService:
                             str(document["document_id"])
                         ]
                     ]
-                    discarded = 0
+                    discarded_empty = 0
+                    discarded_symbol_only = 0
                     checkpoint["reused_chunk_count"] = int(
                         checkpoint.get("reused_chunk_count") or 0
                     ) + len(chunks)
@@ -1501,13 +1514,16 @@ class ResearchService:
                                 artifact_root / "chunking" / f"{index:08d}.jsonl"
                             )
                         )
-                    chunks, discarded = _enrich_chunks(raw_chunks, units, [document])
+                    chunks, discarded_empty, discarded_symbol_only = _enrich_chunks(
+                        raw_chunks, units, [document]
+                    )
                     checkpoint["rebuilt_chunk_count"] = int(
                         checkpoint.get("rebuilt_chunk_count") or 0
                     ) + len(chunks)
                     state["chunking_stage"] = "complete"
                 atomic_write_jsonl(artifact_root / "chunks.jsonl", chunks)
-                state["discarded_empty_chunks"] = discarded
+                state["discarded_empty_chunks"] = discarded_empty
+                state["discarded_symbol_only_chunks"] = discarded_symbol_only
                 atomic_write_json(artifact_root / "state.json", state)
                 self._add_phase_time(
                     checkpoint,
@@ -1526,6 +1542,7 @@ class ResearchService:
                 units: list[dict[str, Any]] = []
                 chunks: list[dict[str, Any]] = []
                 discarded_empty_chunks = 0
+                discarded_symbol_only_chunks = 0
                 for relative in selected_paths:
                     artifact_root = self._source_artifact_root(staging_root, relative)
                     document = read_json(artifact_root / "document.json")
@@ -1538,6 +1555,9 @@ class ResearchService:
                     discarded_empty_chunks += int(
                         state.get("discarded_empty_chunks") or 0
                     )
+                    discarded_symbol_only_chunks += int(
+                        state.get("discarded_symbol_only_chunks") or 0
+                    )
                 extracted_path = staging_root / "corpus" / "extracted-units.jsonl"
                 chunks_path = staging_root / "chunks" / "chunks.jsonl"
                 atomic_write_jsonl(extracted_path, units)
@@ -1546,6 +1566,9 @@ class ResearchService:
                 checkpoint["extraction_unit_count"] = len(units)
                 checkpoint["chunk_count"] = len(chunks)
                 checkpoint["discarded_empty_chunk_count"] = discarded_empty_chunks
+                checkpoint["discarded_symbol_only_chunk_count"] = (
+                    discarded_symbol_only_chunks
+                )
                 checkpoint["excluded_corrupt_unit_count"] = sum(
                     int(document.get("excluded_corrupt_unit_count") or 0)
                     for document in documents
@@ -1802,6 +1825,9 @@ class ResearchService:
                     "excluded_corrupt_unit_count": int(
                         checkpoint.get("excluded_corrupt_unit_count") or 0
                     ),
+                    "discarded_symbol_only_chunk_count": int(
+                        checkpoint.get("discarded_symbol_only_chunk_count") or 0
+                    ),
                     "phase_timings_seconds": phase_timings,
                 }
                 records = source_records()
@@ -1833,6 +1859,9 @@ class ResearchService:
                     "content_kind_counts": content_kind_counts,
                     "discarded_empty_chunk_count": int(
                         checkpoint.get("discarded_empty_chunk_count") or 0
+                    ),
+                    "discarded_symbol_only_chunk_count": int(
+                        checkpoint.get("discarded_symbol_only_chunk_count") or 0
                     ),
                     "excluded_corrupt_unit_count": int(
                         checkpoint.get("excluded_corrupt_unit_count") or 0
@@ -1930,6 +1959,9 @@ class ResearchService:
                     "content_kind_counts": content_kind_counts,
                     "discarded_empty_chunk_count": int(
                         checkpoint.get("discarded_empty_chunk_count") or 0
+                    ),
+                    "discarded_symbol_only_chunk_count": int(
+                        checkpoint.get("discarded_symbol_only_chunk_count") or 0
                     ),
                     "excluded_corrupt_unit_count": int(
                         checkpoint.get("excluded_corrupt_unit_count") or 0
@@ -2398,8 +2430,7 @@ class ResearchService:
                 continue
             chunk_id = str(chunk["chunk_id"])
             used.add(chunk_id)
-            quality_flags = {str(item) for item in chunk.get("quality_flags", [])}
-            if "extraction_artifact" in quality_flags:
+            if _is_extraction_artifact(chunk):
                 rejected["extraction_artifact"] += 1
                 continue
             if text_corruption_reasons(str(chunk.get("text") or "")):
@@ -2573,8 +2604,7 @@ class ResearchService:
                         "The dense index returned a chunk absent from the current "
                         f"chunk store: {dense_hit.chunk_id}"
                     )
-                quality_flags = {str(item) for item in chunk.get("quality_flags", [])}
-                if "extraction_artifact" in quality_flags:
+                if _is_extraction_artifact(chunk):
                     dense_quality_rejected += 1
                     continue
                 if text_corruption_reasons(str(chunk.get("text") or "")):
@@ -2843,6 +2873,11 @@ class ResearchService:
                     "The source for this chunk is currently excluded from retrieval; "
                     "include the source before requesting its passage"
                 )
+            if _is_extraction_artifact(target):
+                raise ResearchError(
+                    "The requested chunk is an extraction artifact and is not "
+                    "available; re-ingest to remove it from the generation"
+                )
             if text_corruption_reasons(str(target.get("text") or "")):
                 raise ResearchError(
                     "The requested chunk contains corrupt extracted text and is "
@@ -2853,6 +2888,7 @@ class ResearchService:
                     item
                     for item in chunks
                     if item.get("document_id") == target["document_id"]
+                    and not _is_extraction_artifact(item)
                     and not text_corruption_reasons(str(item.get("text") or ""))
                 ),
                 key=lambda item: int(item["document_chunk_index"]),

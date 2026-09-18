@@ -270,6 +270,22 @@ def text_corruption_reasons(value: str) -> list[str]:
     return reasons
 
 
+def has_searchable_alphanumeric_content(value: str) -> bool:
+    """Return whether normalized text contains a Unicode letter or number."""
+
+    return any(character.isalnum() for character in normalize_inline_text(value))
+
+
+def text_health_reasons(value: str) -> list[str]:
+    """Identify extraction text that is corrupt or has no searchable content."""
+
+    reasons = text_corruption_reasons(value)
+    normalized = normalize_inline_text(value)
+    if normalized and not has_searchable_alphanumeric_content(normalized):
+        reasons.append("symbol_only")
+    return reasons
+
+
 def _normalize_text_list(values: list[Any]) -> list[str]:
     return [
         normalized
@@ -503,13 +519,13 @@ def _base_metadata(
         if candidate_doi and not doi:
             doi = candidate_doi
             doi_source = invalid_title_source
-    if title_source != "reviewed_override" and text_corruption_reasons(resolved_title):
+    if title_source != "reviewed_override" and text_health_reasons(resolved_title):
         resolved_title = source.path.stem
         title_source = "filename"
         warnings.append("corrupt_extracted_title")
     if author_source != "reviewed_override":
         clean_authors = [
-            author for author in resolved_authors if not text_corruption_reasons(author)
+            author for author in resolved_authors if not text_health_reasons(author)
         ]
         if len(clean_authors) != len(resolved_authors):
             warnings.append("corrupt_extracted_authors")
@@ -1044,10 +1060,11 @@ def _quality_flags(text: str, kind: str) -> list[str]:
     """Mark only high-confidence extraction debris for retrieval rejection."""
 
     normalized = normalize_inline_text(text)
-    alphanumeric = sum(character.isalnum() for character in normalized)
     alphabetic = sum(character.isalpha() for character in normalized)
     flags: list[str] = []
-    if not normalized or alphanumeric == 0 or (kind == "prose" and alphabetic < 3):
+    if not has_searchable_alphanumeric_content(normalized) or (
+        kind == "prose" and alphabetic < 3
+    ):
         flags.append("extraction_artifact")
     return flags
 
@@ -1660,7 +1677,7 @@ def extract_sources(
         retained: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
         for unit in extracted:
-            reasons = text_corruption_reasons(str(unit.get("contents") or ""))
+            reasons = text_health_reasons(str(unit.get("contents") or ""))
             if reasons:
                 rejected.append(
                     {
@@ -1688,7 +1705,7 @@ def extract_sources(
         document["extracted_units"] = len(retained)
         if not retained:
             raise ExtractionError(
-                "Source produced no readable English-oriented text after corrupt "
+                "Source produced no readable English-oriented text after unhealthy "
                 f"extraction units were excluded: {source.path}"
             )
         documents.append(document)
