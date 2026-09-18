@@ -55,8 +55,11 @@ For research questions:
 
 PDF hits include physical page numbers and available page labels. EPUBs have
 section locators because reflowable EPUB files do not have stable page numbers.
-Use set_source_metadata for user-reviewed titles, authors, years, DOI values,
-categories, and keywords; then ingest again to apply the changes.
+Automatic bibliography is best-effort. Review provenance, confidence, and
+warnings; if a title, author, year, or DOI is uncertain or wrong, inspect the
+original and use set_source_metadata for the reviewed value instead of relying
+on a document-specific extraction rule. Use it for reviewed categories and
+keywords as well, then ingest again to apply the changes.
 
 Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
 BM25 lexical retrieval; FastEmbed creates semantic vectors stored in embedded

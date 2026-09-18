@@ -150,24 +150,21 @@ def test_pdf_front_matter_resolves_title_authors_year_and_doi(project: Path) -> 
     assert "conflicting_candidates" not in source["metadata_warnings"]
 
 
-def test_explicit_pdf_byline_beats_subtitle_and_standalone_year_beats_file_date(
-    project: Path,
-) -> None:
-    path = project / "sources" / "anatomy.pdf"
+def test_explicit_pdf_byline_outranks_name_like_subtitle(project: Path) -> None:
+    path = project / "sources" / "report.pdf"
     document = pymupdf.open()
-    document.set_metadata({"creationDate": "D:20260918000000Z"})
     page = document.new_page()
-    page.insert_text((72, 90), "Anatomy of an AI System", fontsize=24)
+    page.insert_text((72, 90), "Systems and Society", fontsize=24)
     page.insert_text(
         (72, 125),
-        "The Amazon Echo as an anatomical map of human labor, data and planetary resources",
+        "A study of labor, infrastructure and material resources",
         fontsize=9,
     )
-    page.insert_text((72, 150), "By Kate Crawford and Vladan Joler", fontsize=10)
-    page.insert_text((72, 172), "(2018)", fontsize=10)
+    page.insert_text((72, 150), "By Ada Example and Ben Example", fontsize=10)
+    page.insert_text((72, 172), "Copyright 2024", fontsize=10)
     page.insert_textbox(
         pymupdf.Rect(72, 220, 530, 500),
-        "Body prose about the material resources and labor behind an AI system.",
+        "Body prose about the material resources and labor behind a system.",
         fontsize=10,
     )
     document.save(path)
@@ -177,9 +174,9 @@ def test_explicit_pdf_byline_beats_subtitle_and_standalone_year_beats_file_date(
     documents, _units = extract_sources(scan_sources(config).selected, {})
     source = documents[0]
 
-    assert source["title"] == "Anatomy of an AI System"
-    assert source["authors"] == ["Kate Crawford", "Vladan Joler"]
-    assert source["year"] == 2018
+    assert source["title"] == "Systems and Society"
+    assert source["authors"] == ["Ada Example", "Ben Example"]
+    assert source["year"] == 2024
     assert source["metadata_provenance"]["authors"] == "pdf_front_matter"
     assert source["metadata_provenance"]["year"] == "pdf_front_matter"
 

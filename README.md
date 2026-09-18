@@ -169,8 +169,9 @@ Useful prompts include:
 - “Compare how these sources explain …; distinguish agreement from conflict.”
 - “Get the neighboring passages around chunk `chk_…` before interpreting it.”
 - “Open the original at the returned path and page before quoting it.”
-- “List sources with missing or low-confidence author/title metadata so I can
-  review them.”
+- “List sources with missing or low-confidence title, author, year, or DOI
+  metadata. Treat automatic metadata as provisional; show me questionable
+  values and use `set_source_metadata` only after I review them.”
 - “Exclude `duplicate.pdf` as a reviewed duplicate of `preferred.pdf`; do not
   delete either file.”
 - “Restore `duplicate.pdf`, then re-ingest if it is absent from the current
@@ -446,6 +447,11 @@ Bibliographic fields resolve independently. PDF precedence is reviewed override
 stem for title only. EPUB precedence is reviewed override → validated OPF
 metadata → visible title/byline → filename stem for title only. Authors are
 never inferred from filenames, and DOI-like titles are moved to the DOI field.
+
+Automatic bibliography is deliberately best-effort and uses only general
+signals. It contains no document-, author-, or publisher-specific exceptions.
+Correct an uncertain or wrong field with reviewed metadata and re-ingest; the
+reviewed value then has highest precedence.
 
 Hybrid search uses weighted reciprocal-rank fusion with `k=60`. BM25 candidates
 must contain a non-stopword query token; dense candidates require cosine

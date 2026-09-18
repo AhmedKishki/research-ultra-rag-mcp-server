@@ -57,7 +57,6 @@ _AUTHOR_EXCLUSIONS = re.compile(
     re.IGNORECASE,
 )
 _YEAR = re.compile(r"\b(18\d{2}|19\d{2}|20\d{2}|21\d{2})\b")
-_STANDALONE_YEAR = re.compile(r"^\(?\s*(18\d{2}|19\d{2}|20\d{2}|21\d{2})\s*\)?$")
 _PDF_DATE_YEAR = re.compile(r"^(?:D:)?(18\d{2}|19\d{2}|20\d{2}|21\d{2})")
 _DATED_LINE = re.compile(
     r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
@@ -515,7 +514,6 @@ def _front_matter_identity(
     embedded_authors = _pdf_author_list(metadata)
     visible_title = ""
     visible_authors: list[str] = []
-    visible_year: int | None = None
     text_bearing_pages = [page for page in pages if page[0]][:5]
     first_page_text = (
         "\n".join(block.text for block in text_bearing_pages[0][0])
@@ -606,13 +604,6 @@ def _front_matter_identity(
                 if author_names := _author_names(author_block.text):
                     visible_authors = author_names
                     break
-        for block in blocks:
-            normalized = normalize_inline_text(block.text)
-            if title_bottom < block.bbox[1] <= title_bottom + 360 and (
-                match := _STANDALONE_YEAR.fullmatch(normalized)
-            ):
-                visible_year = int(match.group(1))
-                break
         break
 
     warnings: list[str] = []
@@ -654,24 +645,20 @@ def _front_matter_identity(
 
     year: int | None = None
     year_source = "missing"
-    if visible_year is not None:
-        year = visible_year
-        year_source = "pdf_front_matter"
-    else:
-        for line in publication_text.splitlines():
-            normalized = normalize_inline_text(line)
-            has_publication_cue = bool(
-                re.search(
-                    r"(?:©|copyright|published|volume|number|issue)",
-                    normalized,
-                    re.IGNORECASE,
-                )
-                or (len(normalized) <= 100 and _DATED_LINE.search(normalized))
+    for line in publication_text.splitlines():
+        normalized = normalize_inline_text(line)
+        has_publication_cue = bool(
+            re.search(
+                r"(?:©|copyright|published|volume|number|issue)",
+                normalized,
+                re.IGNORECASE,
             )
-            if has_publication_cue and (match := _YEAR.search(normalized)):
-                year = int(match.group(1))
-                year_source = "pdf_front_matter"
-                break
+            or (len(normalized) <= 100 and _DATED_LINE.search(normalized))
+        )
+        if has_publication_cue and (match := _YEAR.search(normalized)):
+            year = int(match.group(1))
+            year_source = "pdf_front_matter"
+            break
     if year is None:
         for field in ("creationDate", "modDate"):
             if match := _PDF_DATE_YEAR.search(

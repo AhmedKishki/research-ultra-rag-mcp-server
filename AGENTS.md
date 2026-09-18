@@ -275,6 +275,10 @@ Update tests and documentation when changing them.
   high-confidence visible front matter, validated embedded metadata, then the
   filename stem for title only. EPUB precedence is reviewed override, validated
   OPF metadata, visible title/byline, then the filename stem for title only.
+- Keep automatic metadata rules generic and conservative. Never add a source-,
+  title-, author-, or publisher-specific extraction exception to fix one
+  document. Expose uncertainty through provenance and warnings, then use a
+  reviewed `set_source_metadata` override for the exceptional document.
 - Never infer authors from filenames. Reject DOI/URL/export-junk titles, move a
   detected DOI to its own field, and expose per-field provenance/confidence plus
   review warnings.

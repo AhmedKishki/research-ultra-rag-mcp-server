@@ -52,6 +52,11 @@ not confidence, truth probabilities, or comparable across queries.
 - `title`, `authors`, `year`, `doi`: resolved bibliography.
 - `metadata_provenance`, `metadata_confidence`, `metadata_warnings`: how that
   bibliography was obtained and where review may be needed.
+- Treat automatically extracted bibliography as a best-effort starting point,
+  not an authority. If a title, author, year, or DOI is missing, uncertain, or
+  wrong, inspect the original, ask the user when needed, and save the reviewed
+  value with `set_source_metadata`. Do not expect ingestion heuristics to know
+  document- or publisher-specific conventions.
 - `content_kind`, `annotations`, `quality_flags`: prose/list/table/figure context
   and preserved structured extraction information.
 - `match_kind`: lexical, semantic, or hybrid.
@@ -75,8 +80,9 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
   failure record.
 - Read `generation_changed`, reuse/rebuild counts, vector counts, and phase
   timings from the ingestion response before reporting what occurred.
-- Use `set_source_metadata` only for reviewed bibliography, categories, and
-  keywords. Re-ingest to apply it.
+- Use `set_source_metadata` for reviewed bibliography, categories, and
+  keywords instead of requesting special-case extraction logic. Re-ingest to
+  apply it.
 - Exclusion is explicit, reversible, and immediately enforced without deleting
   the source. Re-ingest to omit it physically from new indexes.
 - A chunk ID belongs to the generation that returned it and may change after a
