@@ -83,7 +83,7 @@ from .ultrarag import VanillaUltraRAG
 
 SCHEMA_VERSION = 5
 CLEANING_POLICY_VERSION = 2
-EXTRACTION_POLICY_VERSION = 5
+EXTRACTION_POLICY_VERSION = 6
 ARTIFACT_POLICY_VERSION = 2
 INGESTION_CHECKPOINT_VERSION = 1
 DEFAULT_WORK_BUDGET_SECONDS = 45
@@ -251,7 +251,11 @@ def _citation(document: dict[str, Any], locator: dict[str, Any]) -> str:
     if locator.get("type") == "pdf_page":
         location = f"p. {locator.get('page_label') or locator.get('page')}"
     else:
-        section = locator.get("section_title") or locator.get("href")
+        section = (
+            locator.get("href_with_fragment")
+            or locator.get("section_title")
+            or locator.get("href")
+        )
         location = (
             f"section {section}"
             if section
@@ -2484,6 +2488,8 @@ class ResearchService:
         document_ids: list[str] | None = None,
         retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
         rerank: bool = False,
+        result_view: str = "passages",
+        passages_per_reference: int = 2,
     ) -> dict[str, Any]:
         query = query.strip()
         if not query:
@@ -2493,6 +2499,11 @@ class ResearchService:
         retrieval_method = retrieval_method.casefold().strip()
         if retrieval_method not in RETRIEVAL_METHODS:
             raise ResearchError("retrieval_method must be one of: bm25, dense, hybrid")
+        result_view = result_view.casefold().strip()
+        if result_view not in {"passages", "references"}:
+            raise ResearchError("result_view must be one of: passages, references")
+        if not 1 <= passages_per_reference <= 5:
+            raise ResearchError("passages_per_reference must be between 1 and 5")
 
         async with self._operation():
             current = self._load_current_optional()
@@ -2653,6 +2664,7 @@ class ResearchService:
                     max(top_k * 2, 10),
                 )
                 rerank_ids = ordered_ids[:rerank_count]
+                rerank_tail = ordered_ids[rerank_count:]
                 scores = await asyncio.to_thread(
                     self.dense.rerank,
                     query,
@@ -2665,17 +2677,40 @@ class ResearchService:
                     ],
                 )
                 rerank_scores = dict(zip(rerank_ids, scores, strict=True))
-                ordered_ids = sorted(
-                    rerank_ids,
-                    key=lambda chunk_id: (
-                        -rerank_scores[chunk_id],
-                        base_ranks[chunk_id],
-                        chunk_id,
-                    ),
+                ordered_ids = (
+                    sorted(
+                        rerank_ids,
+                        key=lambda chunk_id: (
+                            -rerank_scores[chunk_id],
+                            base_ranks[chunk_id],
+                            chunk_id,
+                        ),
+                    )
+                    + rerank_tail
                 )
 
+            candidate_count = len(ordered_ids)
+            candidate_distinct_reference_count = len(
+                {str(chunks_by_id[item]["document_id"]) for item in ordered_ids}
+            )
+            grouping_skipped_candidate_count = 0
+            if result_view == "references":
+                selected_ids: list[str] = []
+                selected_per_reference: defaultdict[str, int] = defaultdict(int)
+                for chunk_id in ordered_ids:
+                    document_id = str(chunks_by_id[chunk_id]["document_id"])
+                    if selected_per_reference[document_id] >= passages_per_reference:
+                        grouping_skipped_candidate_count += 1
+                        continue
+                    selected_ids.append(chunk_id)
+                    selected_per_reference[document_id] += 1
+                    if len(selected_ids) == top_k:
+                        break
+            else:
+                selected_ids = ordered_ids[:top_k]
+
             hits: list[dict[str, Any]] = []
-            for rank, chunk_id in enumerate(ordered_ids[:top_k], 1):
+            for rank, chunk_id in enumerate(selected_ids, 1):
                 chunk = chunks_by_id[chunk_id]
                 public_document = _public_document(chunk)
                 component_ranks = {
@@ -2731,6 +2766,39 @@ class ResearchService:
                     }
                 )
 
+            reference_groups: list[dict[str, Any]] | None = None
+            if result_view == "references":
+                groups_by_document: dict[str, dict[str, Any]] = {}
+                reference_groups = []
+                for hit in hits:
+                    document_id = str(hit["document_id"])
+                    group = groups_by_document.get(document_id)
+                    if group is None:
+                        group = {
+                            "rank": len(reference_groups) + 1,
+                            "document_id": document_id,
+                            "title": hit["title"],
+                            "authors": hit["authors"],
+                            "year": hit["year"],
+                            "doi": hit["doi"],
+                            "source_path": hit["source_path"],
+                            "categories": hit["categories"],
+                            "keywords": hit["keywords"],
+                            "passage_count": 0,
+                            "passages": [],
+                        }
+                        groups_by_document[document_id] = group
+                        reference_groups.append(group)
+                    group["passages"].append(hit)
+                    group["passage_count"] += 1
+
+            distinct_reference_count = len({str(hit["document_id"]) for hit in hits})
+            relevance_limited = candidate_count < top_k
+            grouping_limited = result_view == "references" and len(hits) < min(
+                top_k,
+                candidate_count,
+            )
+
             status = await asyncio.to_thread(self._status)
             return {
                 "query": query,
@@ -2741,7 +2809,25 @@ class ResearchService:
                 "retrieval_method": retrieval_method,
                 "reranked": rerank,
                 "candidate_depth": candidate_depth,
+                "candidate_count": candidate_count,
+                "candidate_distinct_reference_count": (
+                    candidate_distinct_reference_count
+                ),
                 "requested_top_k": top_k,
+                "result_view": result_view,
+                "passages_per_reference": (
+                    passages_per_reference if result_view == "references" else None
+                ),
+                "grouping": (
+                    {
+                        "method": "document_id_passage_cap",
+                        "passages_per_reference": passages_per_reference,
+                        "skipped_candidate_count": (grouping_skipped_candidate_count),
+                    }
+                    if result_view == "references"
+                    else None
+                ),
+                "grouping_skipped_candidate_count": (grouping_skipped_candidate_count),
                 "fusion": (
                     {
                         "method": "weighted_reciprocal_rank_fusion",
@@ -2777,8 +2863,11 @@ class ResearchService:
                     RERANKER_MODEL_REVISION if rerank else None
                 ),
                 "result_count": len(hits),
-                "relevance_limited": len(hits) < top_k,
+                "distinct_reference_count": distinct_reference_count,
+                "relevance_limited": relevance_limited,
+                "grouping_limited": grouping_limited,
                 "hits": hits,
+                "reference_groups": reference_groups,
                 "notice": (
                     "Returned text is cleaned for semantic retrieval and is not "
                     "quote-safe. Open the original PDF or EPUB at the supplied "

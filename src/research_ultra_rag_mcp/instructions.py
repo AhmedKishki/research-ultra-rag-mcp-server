@@ -33,7 +33,10 @@ For research questions:
 3. Call search with the user's substantive query. Use the default hybrid method
    for ordinary research. Use bm25 alone for exact terminology or names;
    use dense alone to inspect semantic matches. Use categories, keywords, or
-   document_ids only when the user asks to narrow the collection.
+   document_ids only when the user asks to narrow the collection. The default
+   passage view preserves the global passage ranking. Use result_view=references
+   when breadth across sources matters; it keeps top_k as a total passage budget
+   and caps how many passages one reference may occupy.
 4. Treat returned hits as evidence candidates, not automatically true claims.
    The text field is cleaned semantic text and direct_quote_safe=false. Never
    present it as a direct quotation. Cite the resolved bibliography and locator,
@@ -57,7 +60,9 @@ For research questions:
    with the bundled copies, so disclose that effect before importing.
 
 PDF hits include physical page numbers and available page labels. EPUBs have
-section locators because reflowable EPUB files do not have stable page numbers.
+spine-section plus XHTML anchor or structural-block locators because reflowable
+EPUB files do not have stable page numbers. These internal locators improve
+navigation but do not make cleaned text safe for exact quotation.
 Automatic bibliography is best-effort. Review provenance, confidence, and
 warnings; if a title, author, year, or DOI is uncertain or wrong, inspect the
 original and use set_source_metadata for the reviewed value instead of relying

@@ -23,7 +23,6 @@ instructions belong in `README.md`, `AGENT_GUIDE.md`, and `AGENTS.md`.
 
 - preserve character offsets within extraction units;
 - distinguish physical PDF pages from printed page labels;
-- store EPUB CFI or equivalent stable internal anchors where available;
 - add an exact-quote verification tool;
 - add optional OCR with page-level confidence; and
 - export citations in common bibliographic styles without inventing metadata.

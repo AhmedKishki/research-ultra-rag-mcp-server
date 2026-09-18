@@ -40,6 +40,24 @@ CORRUPT_TEXT = (
 )
 
 
+def _write_custom_epub(path: Path, content: str) -> None:
+    book = epub.EpubBook()
+    book.set_identifier("custom-locator-test")
+    book.set_title("Locator Test")
+    book.set_language("en")
+    chapter = epub.EpubHtml(
+        title="Locator Chapter",
+        file_name="locator.xhtml",
+        lang="en",
+    )
+    chapter.content = content
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", chapter]
+    epub.write_epub(str(path), book)
+
+
 def test_only_pdf_and_epub_are_selected(project: Path) -> None:
     write_pdf(project / "sources" / "article.pdf", ["A cobalt research passage."])
     write_epub(project / "sources" / "book.epub", "An amber research passage.")
@@ -73,6 +91,131 @@ def test_pdf_pages_and_epub_sections_preserve_locators(project: Path) -> None:
     assert [item["locator"]["page"] for item in pdf_units] == [1, 2]
     assert any("quartz" in item["contents"] for item in epub_units)
     assert all("section_index" in item["locator"] for item in epub_units)
+    assert all("element_path" in item["locator"] for item in epub_units)
+    assert all("block_index" in item["locator"] for item in epub_units)
+
+
+def test_epub_preserves_element_and_preceding_anchors_with_stable_fallbacks(
+    project: Path,
+) -> None:
+    path = project / "sources" / "anchors.epub"
+    _write_custom_epub(
+        path,
+        (
+            "<h1>Navigation Chapter</h1>"
+            '<p id="element-anchor">Element-anchored evidence.</p>'
+            '<a id="standalone-anchor"></a>'
+            "<p>Standalone-anchor evidence.</p>"
+            "<p>Structural fallback evidence.</p>"
+        ),
+    )
+    original = path.read_bytes()
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    _documents, units = extract_sources(scan_sources(config).selected, {})
+    _repeat_documents, repeated = extract_sources(scan_sources(config).selected, {})
+
+    assert path.read_bytes() == original
+    assert [unit["id"] for unit in repeated] == [unit["id"] for unit in units]
+    assert [unit["locator"] for unit in repeated] == [unit["locator"] for unit in units]
+    assert [unit["locator"]["block_index"] for unit in units] == [1, 2, 3]
+
+    element = units[0]
+    assert element["contents"] == ("Navigation Chapter\n\nElement-anchored evidence.")
+    assert element["locator"] == {
+        "type": "epub_section",
+        "section_index": 2,
+        "section_title": "Navigation Chapter",
+        "href": "locator.xhtml",
+        "element_path": "/html[1]/body[1]/p[1]",
+        "block_index": 1,
+        "fragment": "element-anchor",
+        "href_with_fragment": "locator.xhtml#element-anchor",
+        "anchor_relation": "element",
+        "anchor_source": "id",
+    }
+
+    preceding = units[1]["locator"]
+    assert preceding["fragment"] == "standalone-anchor"
+    assert preceding["href_with_fragment"] == "locator.xhtml#standalone-anchor"
+    assert preceding["anchor_relation"] == "preceding"
+    assert preceding["anchor_source"] == "id"
+
+    fallback = units[2]["locator"]
+    assert fallback["element_path"] == "/html[1]/body[1]/p[3]"
+    assert not {
+        "fragment",
+        "href_with_fragment",
+        "anchor_relation",
+        "anchor_source",
+    }.intersection(fallback)
+
+
+def test_epub_mid_paragraph_anchor_splits_without_marker_leakage(
+    project: Path,
+) -> None:
+    path = project / "sources" / "mid-paragraph.epub"
+    _write_custom_epub(
+        path,
+        (
+            "<p>Evidence before the internal marker. "
+            '<a name="midpoint"></a>'
+            "Evidence after the internal marker.</p>"
+        ),
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    _documents, units = extract_sources(scan_sources(config).selected, {})
+
+    assert [unit["contents"] for unit in units] == [
+        "Evidence before the internal marker.",
+        "Evidence after the internal marker.",
+    ]
+    assert [unit["locator"]["block_index"] for unit in units] == [1, 2]
+    assert {unit["locator"]["element_path"] for unit in units} == {
+        "/html[1]/body[1]/p[1]"
+    }
+    assert "fragment" not in units[0]["locator"]
+    assert units[1]["locator"]["fragment"] == "midpoint"
+    assert units[1]["locator"]["href_with_fragment"] == ("locator.xhtml#midpoint")
+    assert units[1]["locator"]["anchor_relation"] == "nested"
+    assert units[1]["locator"]["anchor_source"] == "name"
+    assert "midpoint" not in " ".join(unit["contents"] for unit in units)
+
+
+def test_epub_tables_keep_document_order_and_nested_blocks_are_not_duplicated(
+    project: Path,
+) -> None:
+    path = project / "sources" / "ordered-blocks.epub"
+    _write_custom_epub(
+        path,
+        (
+            "<p>Prose before the table.</p>"
+            '<table id="evidence-table">'
+            "<tr><th>Term</th><th>Value</th></tr>"
+            "<tr><td>Labour</td><td>Visible</td></tr>"
+            "</table>"
+            "<blockquote><p>Nested quoted evidence.</p></blockquote>"
+        ),
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    _documents, units = extract_sources(scan_sources(config).selected, {})
+
+    assert [unit["contents"] for unit in units] == [
+        "Prose before the table.",
+        "Term | Value\nLabour | Visible",
+        "Nested quoted evidence.",
+    ]
+    assert [unit["content_kind"] for unit in units] == ["prose", "table", "prose"]
+    assert units[1]["locator"]["fragment"] == "evidence-table"
+    assert units[1]["locator"]["anchor_relation"] == "element"
+    assert units[1]["locator"]["element_path"] == "/html[1]/body[1]/table[1]"
+    assert units[2]["locator"]["element_path"] == ("/html[1]/body[1]/blockquote[1]")
+    assert (
+        "\n".join(unit["contents"] for unit in units).count("Nested quoted evidence.")
+        == 1
+    )
 
 
 def test_extracted_text_removes_layout_wrapping() -> None:
@@ -253,6 +396,8 @@ def test_symbol_only_epub_unit_is_excluded_with_locator_diagnostics(
         "section_index": 3,
         "section_title": "",
         "href": "symbols.xhtml",
+        "element_path": "/html[1]/body[1]/p[1]",
+        "block_index": 1,
     }
     assert diagnostic["reasons"] == ["symbol_only"]
     assert "… — ∑ × 🙂" not in json.dumps(diagnostic, ensure_ascii=False)

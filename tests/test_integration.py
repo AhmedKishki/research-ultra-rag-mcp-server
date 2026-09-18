@@ -78,6 +78,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "search": {
                 "query",
                 "top_k",
+                "result_view",
+                "passages_per_reference",
                 "categories",
                 "keywords",
                 "document_ids",
@@ -121,6 +123,15 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "dense",
         }
         assert search_properties["rerank"]["default"] is False
+        assert search_properties["result_view"]["default"] == "passages"
+        assert set(search_properties["result_view"]["enum"]) == {
+            "passages",
+            "references",
+        }
+        passages_per_reference = search_properties["passages_per_reference"]
+        assert passages_per_reference["default"] == 2
+        assert passages_per_reference["minimum"] == 1
+        assert passages_per_reference["maximum"] == 5
         work_budget = tools["ingest"].inputSchema["properties"]["work_budget_seconds"]
         assert work_budget["default"] == 45
         assert work_budget["minimum"] == 10
@@ -189,6 +200,24 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert hit["direct_quote_safe"] is False
         assert hit["text_fidelity"] == "cleaned_semantic_text"
         assert result.data["requested_top_k"] == 1
+
+        references_result = await client.call_tool(
+            "search",
+            {
+                "query": "cobalt heron amber marsh",
+                "top_k": 1,
+                "result_view": "references",
+                "passages_per_reference": 2,
+            },
+        )
+        assert references_result.data["result_view"] == "references"
+        assert references_result.data["distinct_reference_count"] == 1
+        assert references_result.data["hits"][0]["chunk_id"] == hit["chunk_id"]
+        assert len(references_result.data["reference_groups"]) == 1
+        assert (
+            references_result.data["reference_groups"][0]["passages"][0]["chunk_id"]
+            == hit["chunk_id"]
+        )
 
         dense_result = await client.call_tool(
             "search",

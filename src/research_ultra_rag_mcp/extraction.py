@@ -13,7 +13,7 @@ from typing import Any
 
 import ebooklib
 import pymupdf
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 from ebooklib import epub
 
 from .sources import SourceFile, sha256_file
@@ -87,6 +87,9 @@ _FIGURE_CAPTION = re.compile(r"^(?:fig(?:ure)?\.?)\s*(?:\d|[ivxlcdm])", re.IGNOR
 _TABLE_CAPTION = re.compile(r"^table\s*(?:\d|[ivxlcdm])", re.IGNORECASE)
 _MOJIBAKE_MARKERS = ("â€", "ï¿½", "ðŸ")
 _MOJIBAKE_LATIN1_PAIR = re.compile(r"(?:Ã|Â)[\u0080-\u00bf]")
+_EPUB_HEADING_ELEMENTS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+_EPUB_CONTENT_ELEMENTS = frozenset({"p", "li", "blockquote", "table"})
+_EPUB_SEMANTIC_ELEMENTS = _EPUB_HEADING_ELEMENTS | _EPUB_CONTENT_ELEMENTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -1561,6 +1564,165 @@ def prepare_epub_extraction(
     return record, len(book.spine)
 
 
+def _epub_fragment(tag: Tag) -> tuple[str, str] | None:
+    """Return an existing XHTML fragment and its source attribute verbatim."""
+
+    for attribute in ("id", "name"):
+        value = tag.get(attribute)
+        if value is None:
+            continue
+        fragment = (
+            " ".join(str(item) for item in value)
+            if isinstance(value, list)
+            else str(value)
+        )
+        if fragment.strip():
+            return fragment, attribute
+    return None
+
+
+def _epub_element_path(tag: Tag) -> str:
+    """Return a deterministic, human-inspectable path within one XHTML item."""
+
+    parts: list[str] = []
+    current: Tag | None = tag
+    while isinstance(current, Tag) and current.name != "[document]":
+        name = str(current.name).casefold()
+        parent = current.parent
+        same_name_index = 1
+        if isinstance(parent, Tag):
+            same_name_index = 0
+            for sibling in parent.children:
+                if isinstance(sibling, Tag) and str(sibling.name).casefold() == name:
+                    same_name_index += 1
+                if sibling is current:
+                    break
+        parts.append(f"{name}[{same_name_index}]")
+        current = parent if isinstance(parent, Tag) else None
+    return "/" + "/".join(reversed(parts))
+
+
+def _epub_semantic_blocks(
+    soup: BeautifulSoup,
+) -> list[tuple[Tag, tuple[str, str] | None]]:
+    """Return outermost semantic blocks and a nearest standalone anchor."""
+
+    tags = list(soup.find_all(True))
+    positions = {id(tag): index for index, tag in enumerate(tags)}
+    blocks = [
+        tag
+        for tag in tags
+        if str(tag.name).casefold() in _EPUB_SEMANTIC_ELEMENTS
+        and not any(
+            isinstance(parent, Tag)
+            and str(parent.name).casefold() in _EPUB_SEMANTIC_ELEMENTS
+            for parent in tag.parents
+        )
+    ]
+    block_ids = {id(tag) for tag in blocks}
+    standalone_anchors: list[tuple[int, tuple[str, str]]] = []
+    for tag in tags:
+        anchor = _epub_fragment(tag)
+        if anchor is None or id(tag) in block_ids:
+            continue
+        if any(id(parent) in block_ids for parent in tag.parents):
+            continue
+        standalone_anchors.append((positions[id(tag)], anchor))
+
+    results: list[tuple[Tag, tuple[str, str] | None]] = []
+    anchor_index = 0
+    pending_anchor: tuple[str, str] | None = None
+    for block in blocks:
+        block_position = positions[id(block)]
+        while (
+            anchor_index < len(standalone_anchors)
+            and standalone_anchors[anchor_index][0] < block_position
+        ):
+            pending_anchor = standalone_anchors[anchor_index][1]
+            anchor_index += 1
+        results.append((block, pending_anchor))
+        pending_anchor = None
+    return results
+
+
+def _epub_text_segments(
+    element: Tag,
+    initial_anchor: tuple[str, str, str] | None,
+) -> list[tuple[str, tuple[str, str, str] | None]]:
+    """Split visible block text at nested XHTML anchors without marker leakage."""
+
+    segments: list[tuple[str, tuple[str, str, str] | None]] = []
+    parts: list[str] = []
+    active_anchor = initial_anchor
+
+    def flush() -> None:
+        text = normalize_reading_text("".join(parts))
+        parts.clear()
+        if text:
+            segments.append((text, active_anchor))
+
+    for node in element.descendants:
+        if isinstance(node, Comment):
+            continue
+        if isinstance(node, Tag):
+            anchor = _epub_fragment(node)
+            if anchor is not None:
+                flush()
+                active_anchor = (anchor[0], "nested", anchor[1])
+            name = str(node.name).casefold()
+            if name == "br":
+                parts.append("\n")
+            elif name in _EPUB_CONTENT_ELEMENTS:
+                parts.append("\n\n")
+            continue
+        if isinstance(node, NavigableString):
+            parts.append(str(node))
+    flush()
+    return segments
+
+
+def _epub_table_text(table: Tag) -> str:
+    rows: list[str] = []
+    for row in table.find_all("tr"):
+        cells = [
+            normalize_inline_text(cell.get_text(" ", strip=True))
+            for cell in row.find_all(["th", "td"])
+        ]
+        if any(cells):
+            rows.append(" | ".join(cells))
+    return "\n".join(rows)
+
+
+def _epub_locator(
+    *,
+    section_index: int,
+    section_title: str,
+    href: str,
+    element: Tag,
+    block_index: int,
+    anchor: tuple[str, str, str] | None,
+) -> dict[str, Any]:
+    locator: dict[str, Any] = {
+        "type": "epub_section",
+        "section_index": section_index,
+        "section_title": section_title,
+        "href": href,
+        "element_path": _epub_element_path(element),
+        "block_index": block_index,
+    }
+    if anchor is not None:
+        fragment, relation, source = anchor
+        locator.update(
+            {
+                "fragment": fragment,
+                "href_with_fragment": f"{href}#{fragment}",
+                "anchor_relation": relation,
+                "anchor_source": source,
+            }
+        )
+    return locator
+
+
 def extract_epub_spine_item(
     source: SourceFile,
     document_record: dict[str, Any],
@@ -1586,72 +1748,138 @@ def extract_epub_spine_item(
         if heading is not None
         else ""
     )
-    locator = {
-        "type": "epub_section",
-        "section_index": spine_index + 1,
-        "section_title": section_title,
-        "href": str(item.get_name() or ""),
-    }
-    prose_parts: list[str] = []
-    tables: list[str] = []
-    for element in soup.find_all(
-        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "blockquote", "table"]
-    ):
-        if not isinstance(element, Tag):
-            continue
-        if element.name == "table":
-            rows = []
-            for row in element.find_all("tr"):
-                cells = [
-                    normalize_inline_text(cell.get_text(" ", strip=True))
-                    for cell in row.find_all(["th", "td"])
-                ]
-                if any(cells):
-                    rows.append(" | ".join(cells))
-            if rows:
-                tables.append("\n".join(rows))
-        elif element.find_parent("table") is None:
-            value = normalize_reading_text(element.get_text("\n", strip=True))
-            if value:
-                prose_parts.append(value)
     units: list[dict[str, Any]] = []
     document_id = str(document_record["document_id"])
     title = str(document_record["title"])
-    region_index = 0
-    if prose_parts:
-        region_index += 1
-        text = "\n\n".join(prose_parts)
+    href = str(item.get_name() or "")
+    block_index = 0
+    pending_heading_parts: list[str] = []
+    pending_heading_anchor: tuple[str, str, str] | None = None
+    pending_heading_element: Tag | None = None
+
+    def append_unit(
+        text: str,
+        *,
+        element: Tag,
+        anchor: tuple[str, str, str] | None,
+        content_kind: str,
+    ) -> None:
+        nonlocal block_index
+        block_index += 1
+        locator = _epub_locator(
+            section_index=spine_index + 1,
+            section_title=section_title,
+            href=href,
+            element=element,
+            block_index=block_index,
+            anchor=anchor,
+        )
         units.append(
             {
                 "id": (
                     f"{document_id}:epub-section:{spine_index + 1:06d}:"
-                    f"region:{region_index:03d}"
+                    f"block:{block_index:06d}"
                 ),
                 "document_id": document_id,
                 "title": title,
                 "contents": text,
-                "content_kind": "prose",
+                "content_kind": content_kind,
                 "annotations": [],
-                "quality_flags": _quality_flags(text, "prose"),
+                "quality_flags": _quality_flags(text, content_kind),
                 "locator": locator,
             }
         )
-    for table in tables:
-        region_index += 1
-        units.append(
-            {
-                "id": (
-                    f"{document_id}:epub-section:{spine_index + 1:06d}:"
-                    f"region:{region_index:03d}"
+
+    for element, preceding_fragment in _epub_semantic_blocks(soup):
+        element_name = str(element.name).casefold()
+        element_fragment = _epub_fragment(element)
+        initial_anchor = (
+            (element_fragment[0], "element", element_fragment[1])
+            if element_fragment is not None
+            else (
+                (preceding_fragment[0], "preceding", preceding_fragment[1])
+                if preceding_fragment is not None
+                else None
+            )
+        )
+        if element_name in _EPUB_HEADING_ELEMENTS:
+            heading_segments = _epub_text_segments(element, initial_anchor)
+            pending_heading_parts.extend(text for text, _anchor in heading_segments)
+            if pending_heading_anchor is None:
+                pending_heading_anchor = next(
+                    (
+                        anchor
+                        for _text, anchor in heading_segments
+                        if anchor is not None
+                    ),
+                    initial_anchor,
+                )
+            pending_heading_element = element
+            continue
+
+        if element_name == "table":
+            text = _epub_table_text(element)
+            if not text:
+                continue
+            anchor = initial_anchor
+            if anchor is None:
+                nested_anchor = next(
+                    (
+                        found
+                        for descendant in element.find_all(True)
+                        if (found := _epub_fragment(descendant)) is not None
+                    ),
+                    None,
+                )
+                if nested_anchor is not None:
+                    anchor = (nested_anchor[0], "nested", nested_anchor[1])
+            if anchor is None and pending_heading_anchor is not None:
+                anchor = (
+                    pending_heading_anchor[0],
+                    "preceding",
+                    pending_heading_anchor[2],
+                )
+            pending_heading_parts.clear()
+            pending_heading_anchor = None
+            pending_heading_element = None
+            append_unit(text, element=element, anchor=anchor, content_kind="table")
+            continue
+
+        segments = _epub_text_segments(element, initial_anchor)
+        if not segments:
+            continue
+        if pending_heading_parts:
+            first_text, first_anchor = segments[0]
+            segments[0] = (
+                "\n\n".join([*pending_heading_parts, first_text]),
+                first_anchor
+                or (
+                    (
+                        pending_heading_anchor[0],
+                        "preceding",
+                        pending_heading_anchor[2],
+                    )
+                    if pending_heading_anchor is not None
+                    else None
                 ),
-                "document_id": document_id,
-                "title": title,
-                "contents": table,
-                "content_kind": "table",
-                "annotations": [],
-                "quality_flags": _quality_flags(table, "table"),
-                "locator": locator,
-            }
+            )
+        pending_heading_parts.clear()
+        pending_heading_anchor = None
+        pending_heading_element = None
+        for text, anchor in segments:
+            append_unit(
+                text,
+                element=element,
+                anchor=anchor,
+                content_kind="prose",
+            )
+
+    if pending_heading_parts and pending_heading_element is not None:
+        append_unit(
+            "\n\n".join(pending_heading_parts),
+            element=pending_heading_element,
+            anchor=pending_heading_anchor,
+            content_kind="prose",
         )
     return units, not units
 

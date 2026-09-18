@@ -28,6 +28,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument(
+        "--result-view",
+        choices=("passages", "references"),
+        default="passages",
+        help=(
+            "Return the flat passage ranking or group selected passages by source "
+            "reference (default: passages)."
+        ),
+    )
+    parser.add_argument(
+        "--passages-per-reference",
+        type=int,
+        default=2,
+        help=(
+            "Maximum passages from one source in references view (1-5); --top-k "
+            "remains the total passage budget."
+        ),
+    )
+    parser.add_argument(
         "--retrieval-method",
         choices=("hybrid", "bm25", "dense"),
         default="hybrid",
@@ -85,6 +103,8 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"Project root is not a directory: {project}")
     if not 1 <= args.top_k <= 50:
         raise RuntimeError("--top-k must be between 1 and 50")
+    if not 1 <= args.passages_per_reference <= 5:
+        raise RuntimeError("--passages-per-reference must be between 1 and 5")
     if args.force_recompute and not args.ingest:
         raise RuntimeError("--force-recompute requires --ingest")
 
@@ -129,6 +149,8 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
                 {
                     "query": args.query,
                     "top_k": args.top_k,
+                    "result_view": args.result_view,
+                    "passages_per_reference": args.passages_per_reference,
                     "retrieval_method": args.retrieval_method,
                     "rerank": args.rerank,
                 },

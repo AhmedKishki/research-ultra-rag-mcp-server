@@ -22,9 +22,9 @@ appear at the end of this document.
 - Recursive ingestion of regular `.pdf` and `.epub` files only. Markdown and
   all other formats are ignored.
 - Resolved titles, authors, years, DOIs, metadata provenance, and original-file
-  page or section locators.
+  PDF page or EPUB internal locators.
 - BM25 lexical search, dense semantic search, hybrid search, metadata filters,
-  and optional CPU reranking.
+  optional CPU reranking, and an opt-in reference-grouped result view.
 - Reviewed metadata, reversible source inclusion/exclusion, and portable
   project bundles.
 - Durable CPU ingestion checkpoints: bounded calls can be repeated after a
@@ -175,6 +175,8 @@ selected, removes its partial staging data, and records a small failure report.
 Useful prompts include:
 
 - “Find the strongest source passages supporting the claim that …”
+- “Search broadly across references; return at most two passages from any one
+  source within the total passage budget.”
 - “Search for evidence that contradicts or qualifies this claim: …”
 - “Compare how these sources explain …; distinguish agreement from conflict.”
 - “Get the neighboring passages around chunk `chk_…` before interpreting it.”
@@ -195,6 +197,16 @@ ordering pass.
 Search can correctly return fewer than `top_k`, including zero, when candidates
 fail relevance gates. A rank or similarity score is an ordering signal, not a
 truth or confidence probability.
+
+The default `result_view="passages"` is the unchanged global passage ranking.
+Use `result_view="references"` when one prolific source would otherwise occupy
+the result budget. It scans the relevance-gated candidate ordering, admits at
+most `passages_per_reference` passages from each `document_id`, and keeps
+`top_k` as the total number of passages returned. The response reports explicit
+returned and candidate-pool reference counts; it does not merge editions by
+title, DOI, or filename. `relevance_limited` reports a candidate-pool shortfall;
+`grouping_limited` separately reports when the per-reference cap prevents the
+view from filling that passage budget.
 
 Adding, removing, or changing a source or reviewed metadata makes the selected
 generation stale; it does not change search results until a new generation
@@ -275,12 +287,14 @@ uv run research-ultra-rag-verify \
 ```
 
 Choose `--retrieval-method bm25|dense|hybrid`, add `--rerank`, change
-`--top-k`, or add `--offline` when all required caches exist. Success prints a
-JSON object with `"status": "passed"`, before/after status, optional ingestion
-metrics, and the search result. Common first-run failures are an unavailable
-network/model download, an unsupported Python version, a missing or corrupt
-PDF/EPUB, or `--offline` before the runtime/model cache exists. With `--ingest`,
-the verifier automatically repeats checkpointed calls until ingestion finishes.
+`--top-k`, or use `--result-view references --passages-per-reference 2` for
+source-diverse results. Add `--offline` when all required caches exist. Success
+prints a JSON object with `"status": "passed"`, before/after status, optional
+ingestion metrics, and the search result. Common first-run failures are an
+unavailable network/model download, an unsupported Python version, a missing or
+corrupt PDF/EPUB, or `--offline` before the runtime/model cache exists. With
+`--ingest`, the verifier automatically repeats checkpointed calls until
+ingestion finishes.
 
 ## Where project data is stored
 
@@ -387,7 +401,7 @@ duplication is intentional.
 |---|---|---|---|
 | `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, upgrade reasons, model-cache path, last build metrics, and any `ingestion_progress`. |
 | `ingest` | `chunk_size=384` (50–384 GPT-2 tokens); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false`; `work_budget_seconds=45` (10–300) | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. Repeat matching calls while the result is `in_progress`; `ready` and `unchanged` are terminal. |
-| `search` | required `query`; `top_k=8` (1–50); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false` | Read | Retrieve relevance-limited evidence. Every requested category and keyword must be present; document IDs are an any-of selection. |
+| `search` | required `query`; `top_k=8` (1–50 total passages); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false`; `result_view="passages"`; `passages_per_reference=2` (1–5) | Read | Retrieve relevance-limited evidence. The optional reference view caps passages per `document_id` and returns `reference_groups`; filters retain their existing semantics. |
 | `list_sources` | `categories=null`; `keywords=null` | Read | Inspect indexed bibliography or filter it by reviewed metadata. |
 | `get_passage` | required `chunk_id`; `context_chunks=1` (0–5 on each side) | Read | Inspect nearby cleaned passages from the same source and generation. |
 | `set_source_metadata` | required source-relative `source_path`; required `metadata` object | Write | Save reviewed `title`, `authors`, `year`, `doi`, `categories`, and/or `keywords`; re-ingest to apply them to a generation. Omitted fields remove previous overrides. |
@@ -400,9 +414,12 @@ A representative abbreviated search response is:
 ```json
 {
   "query": "supply chains and labour precarity",
+  "result_view": "passages",
   "requested_top_k": 8,
   "result_count": 1,
+  "distinct_reference_count": 1,
   "relevance_limited": true,
+  "grouping_limited": false,
   "hits": [
     {
       "rank": 1,
@@ -426,7 +443,8 @@ Researchers normally use `title`, `authors`, `source_path`, and `locator` to
 identify the original; `text` to assess semantic relevance; `match_kind` to see
 which route found it; and component ranks/scores to understand ordering. BM25
 does not expose a comparable raw score in this integration, so it reports rank
-only.
+only. Reference view retains the selected passages in `hits` and additionally
+groups them beneath `reference_groups` in first-best-passage order.
 
 ## How it works under the hood
 
@@ -497,12 +515,22 @@ older generations immediately. The pinned embedding model is
 `BAAI/bge-small-en-v1.5` (384 dimensions), and the optional reranker is
 `Xenova/ms-marco-MiniLM-L-6-v2`.
 
+Reference grouping is applied only after retrieval, relevance gates, fusion,
+and optional reranking. It groups strictly by stable `document_id`, preserves
+the ranked order of admitted passages, and reports how many candidates were
+skipped by the per-reference cap. A checked-in graded source-level judgment
+fixture guards the default cap against both single-source crowding and blind
+maximal diversification; it is a regression evaluation, not a claim of
+project-specific retrieval quality.
+
 ## Limitations and troubleshooting
 
 - Scanned PDFs require OCR before ingestion. Password-protected PDFs are
   rejected.
 - PDF locators use physical pages plus a page label when available. Reflowable
-  EPUBs have section locators, not stable page numbers.
+  EPUBs have spine-section plus exact existing fragment or deterministic XHTML
+  block locators, not stable page numbers. These improve navigation but are not
+  quote offsets or synthesized CFIs.
 - The embedding and reranking models are English-oriented.
 - The text-health policy is intentionally English-oriented and can exclude
   legitimate predominantly non-Latin source text. It does not perform OCR or

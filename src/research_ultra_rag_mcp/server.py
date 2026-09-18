@@ -23,7 +23,7 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.9.1"
+SERVER_VERSION = "0.10.0"
 T = TypeVar("T")
 
 
@@ -104,7 +104,10 @@ SearchQuery: TypeAlias = Annotated[
 TopK: TypeAlias = Annotated[
     int,
     Field(
-        description="Maximum number of ranked evidence passages to return (1-50).",
+        description=(
+            "Maximum total number of ranked evidence passages to return (1-50). "
+            "This remains a passage budget in both passage and reference views."
+        ),
         ge=1,
         le=50,
     ),
@@ -143,6 +146,27 @@ RetrievalMethod: TypeAlias = Annotated[
             "Retrieval mode: hybrid combines BM25 and dense results, bm25 favors "
             "exact terms, and dense favors semantic similarity."
         )
+    ),
+]
+ResultView: TypeAlias = Annotated[
+    Literal["passages", "references"],
+    Field(
+        description=(
+            "Response view: passages preserves the flat ranked passage list; "
+            "references additionally groups the selected best passages by source "
+            "reference without changing the total top_k passage budget."
+        )
+    ),
+]
+PassagesPerReference: TypeAlias = Annotated[
+    int,
+    Field(
+        description=(
+            "Maximum passages selected from one source reference in references "
+            "view (1-5). The overall response still returns at most top_k passages."
+        ),
+        ge=1,
+        le=5,
     ),
 ]
 Rerank: TypeAlias = Annotated[
@@ -350,6 +374,8 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
     async def search(
         query: SearchQuery,
         top_k: TopK = 8,
+        result_view: ResultView = "passages",
+        passages_per_reference: PassagesPerReference = 2,
         categories: CategoryFilter = None,
         keywords: KeywordFilter = None,
         document_ids: DocumentIdFilter = None,
@@ -361,15 +387,20 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         Optional filters require every requested category or keyword to be
         present. Hybrid is the default; BM25 and dense retrieval can be inspected
         separately. Optional CPU reranking is slower and lazily loads another
-        local model. Results may be fewer than top_k when relevance gates reject
-        weak candidates. Returned text is not safe for direct quotation; use the
-        original source path and locator.
+        local model. The default passage view preserves the flat ranking. The
+        reference view groups selected passages by source and caps passages from
+        each reference while top_k remains the total passage budget. Results may
+        be fewer than top_k when relevance gates reject weak candidates. Returned
+        text is not safe for direct quotation; use the original source path and
+        locator.
         """
 
         return await _tool_call(
             lambda: service().search(
                 query,
                 top_k=top_k,
+                result_view=result_view,
+                passages_per_reference=passages_per_reference,
                 categories=categories,
                 keywords=keywords,
                 document_ids=document_ids,

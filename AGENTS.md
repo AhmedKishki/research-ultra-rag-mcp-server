@@ -34,7 +34,7 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`,
   `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.9.1`
+- Version: `0.10.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
@@ -208,7 +208,8 @@ across processes so no caller observes a partial index.
   generation with verified reuse; `force_recompute` bypasses reuse but may
   resume its own matching checkpoint.
 - `search`: hybrid-by-default retrieval with selectable BM25/dense modes,
-  optional reranking, and structured evidence.
+  optional reranking, and passage-ranked or reference-grouped structured
+  evidence.
 - `list_sources`: inspect indexed documents and metadata.
 - `get_passage`: retrieve neighboring chunks from the same document.
 - `set_source_metadata`: update reviewed metadata for the next generation.
@@ -234,6 +235,14 @@ Update tests and documentation when changing them.
   are unrelated.
 - Candidate depth: at least 20, normally `top_k * 4`, bounded at 200 and by the
   current chunk count.
+- `top_k` is always a total returned-passage budget. The optional reference view
+  scans the complete relevance-gated candidate ordering, admits at most two
+  passages per `document_id` by default, and groups those passages without
+  aggregating scores or rewarding documents for producing more chunks.
+- Reference grouping is presentation-time MCP orchestration. It must not alter
+  indexes or the default passage ordering. Keep its cap explicit, report both
+  returned and candidate-pool reference counts, and preserve the unreranked
+  candidate tail after a reranked prefix so useful references remain reachable.
 - Chunking: UltraRAG token chunker with the GPT-2 tiktoken encoding, default and
   maximum 384 tokens, overlap 64. The cap stays below the embedding model's
   512-token input limit despite tokenizer differences; do not raise it without
@@ -303,6 +312,10 @@ Update tests and documentation when changing them.
   classified as symbol-only; the other extraction-artifact rules still apply.
 - Inspect the first five text-bearing PDF pages for identity. Keep physical page
   and available page-label locators.
+- For EPUBs, retain the spine section identity and a deterministic XHTML block
+  position for every semantic unit. Preserve an existing element ID or named
+  anchor as an exact fragment when available; never label a synthetic block
+  path as an EPUB CFI or imply quotation-level precision.
 - Use coordinate blocks to restore column order, remove repeated margins/page
   numbers, and distinguish prose, lists, tables, and figures. Do not infer visual
   relationships not expressed by captions, legends, or labels.

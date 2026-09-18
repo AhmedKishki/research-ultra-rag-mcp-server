@@ -43,6 +43,11 @@ state observed earlier in a long session.
   `>= 0.72`.
 - `rerank=true`: optional CPU cross-encoder after normal gates; slower and may
   download a second model on first use.
+- `result_view="passages"`: preserve the global passage ranking.
+- `result_view="references"`: use the same ranked candidate pool but cap each
+  `document_id` at `passages_per_reference` (default `2`) within the unchanged
+  total `top_k` passage budget. Use this when several useful references matter
+  more than several passages from one reference.
 
 Category and keyword filters use AND semantics. Document IDs use membership
 semantics. Extraction artifacts and nonempty chunks containing no Unicode
@@ -55,6 +60,11 @@ not confidence, truth probabilities, or comparable across queries.
 - `text`: cleaned semantic text for comprehension/paraphrase, not quotation.
 - `direct_quote_safe`: always `false` under this extraction contract.
 - `source_path` + `locator`: where to open the original.
+- `distinct_reference_count`: how many separate indexed references contributed
+  returned passages. In reference view, inspect `reference_groups` for each
+  reference's best admitted passages.
+- `relevance_limited` / `grouping_limited`: distinguish a candidate-pool
+  shortfall from a reference cap that prevents filling the passage budget.
 - `title`, `authors`, `year`, `doi`: resolved bibliography.
 - `metadata_provenance`, `metadata_confidence`, `metadata_warnings`: how that
   bibliography was obtained and where review may be needed.

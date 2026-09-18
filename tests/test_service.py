@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from research_ultra_rag_mcp.extraction import ExtractionError
 from research_ultra_rag_mcp.service import (
     ResearchError,
     ResearchService,
+    _citation,
     _enrich_chunks,
     _public_document,
 )
@@ -33,6 +35,9 @@ CORRUPT_TEXT = (
     "ᵜ᮷䘈ᇎ䇱ਁ ⧠ˈ䜘࠶൪ൠᡰᴹᵳ⭡⊑ḃර⿱㩕Աъࡂ䖜㠣᭯ "
     "ᓌˈ⭡᭯ ᓌ᢯ᣵޘ䜘؞༽䍴䠁ˈᴰ㓸䙐ᡀ⊑ḃ⋫⨶ᡀᵜ⽮Պॆ "
     "ˈᒦᕅਁ ⧟ຳнޜǄᴹ∂ᓏ⢙൪ൠ 䳮�"
+)
+GROUPED_SEARCH_QRELS = (
+    Path(__file__).parent / "fixtures" / "grouped_search_source_qrels.json"
 )
 
 
@@ -336,6 +341,46 @@ class ManyChunkUltraRAG(FakeUltraRAG):
         )
 
 
+class JudgedGroupedSearchUltraRAG(FakeUltraRAG):
+    def __init__(self, qrels: dict[str, object]) -> None:
+        super().__init__()
+        sources = qrels["sources"]
+        assert isinstance(sources, list)
+        self.term_counts_by_title = {
+            str(source["title"]): list(source["candidate_term_counts"])
+            for source in sources
+        }
+
+    async def chunk(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        assert chunk_size > chunk_overlap
+        self.chunk_calls += 1
+        unit = read_jsonl(input_path)[0]
+        title = str(unit["title"])
+        term_counts = self.term_counts_by_title[title]
+        write_jsonl(
+            output_path,
+            (
+                {
+                    "id": index,
+                    "doc_id": unit["id"],
+                    "title": title,
+                    "contents": (
+                        f"{'Evidence ' * int(term_count)}"
+                        f"Judged passage {index + 1} from {title}."
+                    ),
+                }
+                for index, term_count in enumerate(term_counts)
+            ),
+        )
+
+
 def test_unsearchable_upstream_chunks_are_counted_without_losing_a_unit() -> None:
     document = {
         "document_id": "doc_test",
@@ -422,6 +467,23 @@ def test_legacy_automatic_metadata_uses_runtime_corruption_guard() -> None:
     reviewed = _public_document(legacy)
     assert reviewed["title"] == "— • ∎"
     assert reviewed["authors"][0] == "— • ∎"
+
+
+def test_epub_citation_prefers_exact_existing_fragment() -> None:
+    document = {
+        "title": "Anchored Book",
+        "authors": ["Ada Example"],
+        "year": 2026,
+    }
+    locator = {
+        "type": "epub_section",
+        "section_index": 4,
+        "section_title": "Long Chapter",
+        "href": "chapter-4.xhtml",
+        "href_with_fragment": "chapter-4.xhtml#paragraph-12",
+    }
+
+    assert _citation(document, locator).endswith("section chapter-4.xhtml#paragraph-12")
 
 
 async def _assert_research_generation_and_structured_search(project: Path) -> None:
@@ -700,6 +762,224 @@ def test_reciprocal_rank_fusion_rewards_agreement() -> None:
     assert ordered[0] == "shared"
     assert scores["shared"] > scores["bm25-only"]
     assert scores["bm25-only"] > scores["dense-only"]
+
+
+def _source_level_metrics(
+    result: dict[str, object],
+    grades: dict[str, int],
+    *,
+    cutoff: int,
+) -> dict[str, float]:
+    ranked_sources = list(
+        dict.fromkeys(
+            str(hit["source_path"])
+            for hit in result["hits"]  # type: ignore[index]
+        )
+    )
+    relevant = {source for source, grade in grades.items() if grade > 0}
+    returned_relevant = relevant.intersection(ranked_sources)
+    precision = len(returned_relevant) / len(ranked_sources) if ranked_sources else 0.0
+    recall = len(returned_relevant) / len(relevant) if relevant else 0.0
+
+    def discounted_gain(values: list[int]) -> float:
+        return sum(
+            (2**grade - 1) / math.log2(rank + 1) for rank, grade in enumerate(values, 1)
+        )
+
+    actual = [grades[source] for source in ranked_sources[:cutoff]]
+    ideal = sorted(grades.values(), reverse=True)[:cutoff]
+    ideal_gain = discounted_gain(ideal)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "ndcg": discounted_gain(actual) / ideal_gain if ideal_gain else 0.0,
+    }
+
+
+async def _assert_document_grouped_search_uses_judged_candidate_pool(
+    project: Path,
+) -> None:
+    qrels = json.loads(GROUPED_SEARCH_QRELS.read_text(encoding="utf-8"))
+    sources = qrels["sources"]
+    for source in sources:
+        write_pdf(
+            project / source["source_path"],
+            [f"Source material for {source['title']}"],
+            title=source["title"],
+        )
+
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        JudgedGroupedSearchUltraRAG(qrels),
+        dense=FakeDenseBackend(),
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+    search_arguments = {
+        "top_k": int(qrels["top_k"]),
+        "retrieval_method": "dense",
+    }
+    default_passages = await service.search(qrels["query"], **search_arguments)
+    explicit_passages = await service.search(
+        qrels["query"],
+        result_view="passages",
+        **search_arguments,
+    )
+    grouped = await service.search(
+        qrels["query"],
+        result_view="references",
+        passages_per_reference=int(qrels["passages_per_reference"]),
+        **search_arguments,
+    )
+    one_passage = await service.search(
+        qrels["query"],
+        top_k=1,
+        retrieval_method="dense",
+        result_view="references",
+        passages_per_reference=int(qrels["passages_per_reference"]),
+    )
+    dominant_document_only = await service.search(
+        qrels["query"],
+        top_k=int(qrels["top_k"]),
+        retrieval_method="dense",
+        result_view="references",
+        passages_per_reference=int(qrels["passages_per_reference"]),
+        document_ids=[str(default_passages["hits"][0]["document_id"])],
+    )
+    cap_one = await service.search(
+        qrels["query"],
+        result_view="references",
+        passages_per_reference=1,
+        **search_arguments,
+    )
+    reranked = await service.search(
+        qrels["query"],
+        result_view="references",
+        passages_per_reference=int(qrels["passages_per_reference"]),
+        rerank=True,
+        **search_arguments,
+    )
+
+    assert explicit_passages == default_passages
+    assert default_passages["result_view"] == "passages"
+    assert default_passages["passages_per_reference"] is None
+    assert default_passages["reference_groups"] is None
+    assert default_passages["distinct_reference_count"] == 1
+    assert [hit["source_path"] for hit in default_passages["hits"]] == [
+        "sources/a.pdf"
+    ] * 4
+
+    assert grouped["result_view"] == "references"
+    assert grouped["result_count"] == 4
+    assert grouped["candidate_count"] == 13
+    assert grouped["candidate_distinct_reference_count"] == 4
+    assert grouped["distinct_reference_count"] == 3
+    assert grouped["grouping"] == {
+        "method": "document_id_passage_cap",
+        "passages_per_reference": 2,
+        "skipped_candidate_count": 8,
+    }
+    assert grouped["grouping_skipped_candidate_count"] == 8
+    assert one_passage["grouping_skipped_candidate_count"] == 0
+    assert one_passage["grouping"]["skipped_candidate_count"] == 0
+    assert dominant_document_only["result_count"] == 2
+    assert dominant_document_only["relevance_limited"] is False
+    assert dominant_document_only["grouping_limited"] is True
+    assert [hit["source_path"] for hit in grouped["hits"]] == [
+        "sources/a.pdf",
+        "sources/a.pdf",
+        "sources/b.pdf",
+        "sources/c.pdf",
+    ]
+    assert [group["source_path"] for group in grouped["reference_groups"]] == [
+        "sources/a.pdf",
+        "sources/b.pdf",
+        "sources/c.pdf",
+    ]
+    assert [group["passage_count"] for group in grouped["reference_groups"]] == [
+        2,
+        1,
+        1,
+    ]
+    assert [
+        passage["chunk_id"]
+        for group in grouped["reference_groups"]
+        for passage in group["passages"]
+    ] == [hit["chunk_id"] for hit in grouped["hits"]]
+
+    grades = {
+        source["source_path"]: int(source["relevance_grade"]) for source in sources
+    }
+    flat_metrics = _source_level_metrics(
+        default_passages,
+        grades,
+        cutoff=int(qrels["top_k"]),
+    )
+    grouped_metrics = _source_level_metrics(
+        grouped,
+        grades,
+        cutoff=int(qrels["top_k"]),
+    )
+    cap_one_metrics = _source_level_metrics(
+        cap_one,
+        grades,
+        cutoff=int(qrels["top_k"]),
+    )
+    assert flat_metrics["precision"] == 1.0
+    assert flat_metrics["recall"] == pytest.approx(1 / 3)
+    assert grouped_metrics == {
+        "precision": 1.0,
+        "recall": 1.0,
+        "ndcg": 1.0,
+    }
+    assert cap_one_metrics["precision"] == 0.75
+    assert cap_one_metrics["recall"] == grouped_metrics["recall"]
+    assert cap_one_metrics["ndcg"] == grouped_metrics["ndcg"]
+    assert grouped_metrics["recall"] > flat_metrics["recall"]
+    assert grouped_metrics["ndcg"] > flat_metrics["ndcg"]
+
+    assert [hit["source_path"] for hit in reranked["hits"]] == [
+        "sources/a.pdf",
+        "sources/a.pdf",
+        "sources/b.pdf",
+        "sources/c.pdf",
+    ]
+    assert reranked["candidate_count"] == 13
+    assert reranked["hits"][0]["rerank_score"] is not None
+    assert reranked["hits"][2]["rerank_score"] is None
+    assert reranked["hits"][3]["rerank_score"] is None
+
+
+def test_document_grouped_search_uses_judged_candidate_pool(project: Path) -> None:
+    asyncio.run(_assert_document_grouped_search_uses_judged_candidate_pool(project))
+
+
+async def _assert_grouped_search_parameter_validation(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    with pytest.raises(
+        ResearchError,
+        match="result_view must be one of: passages, references",
+    ):
+        await service.search("evidence", result_view="documents")
+    for invalid_cap in (0, 6):
+        with pytest.raises(
+            ResearchError,
+            match="passages_per_reference must be between 1 and 5",
+        ):
+            await service.search(
+                "evidence",
+                result_view="references",
+                passages_per_reference=invalid_cap,
+            )
+
+
+def test_grouped_search_parameter_validation(project: Path) -> None:
+    asyncio.run(_assert_grouped_search_parameter_validation(project))
 
 
 async def _assert_relevance_gates_allow_abstention(project: Path) -> None:
