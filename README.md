@@ -265,35 +265,42 @@ PDF/EPUB, or `--offline` before the runtime/model cache exists.
 ```text
 my-research-project/
 ├── sources/                              untouched PDF/EPUB originals
-├── .research-rag/                        portable project-owned state
-│   ├── project.json                      stable ID, name, source setting
-│   ├── source-metadata.json              reviewed metadata, when present
-│   ├── source-exclusions.json            reviewed decisions, when present
-│   └── bundles/                          exported/import-ready archives
-└── .ultrarag/research/                   disposable project-local runtime
-    ├── current.json                      selected generation pointer
-    ├── project.lock
-    ├── logs/
-    ├── failures/                         small failed-build records
-    ├── staging/                          temporary; empty after completion
-    ├── ultrarag-runtime/
-    └── generations/<generation-id>/
-        ├── manifest.json
-        ├── corpus/extracted-units.jsonl
-        ├── chunks/chunks.jsonl
-        ├── portable/embeddings.npy
-        └── indexes/
-            ├── bm25/
-            └── qdrant/
+└── .research-rag/                        all research-RAG project state
+    ├── project.json                      stable ID, name, source setting
+    ├── source-metadata.json              reviewed metadata, when present
+    ├── source-exclusions.json            reviewed decisions, when present
+    ├── bundles/                          exported/import-ready archives
+    └── runtime/                          disposable derived state
+        ├── current.json                  selected generation pointer
+        ├── project.lock
+        ├── logs/
+        ├── failures/                     small failed-build records
+        ├── staging/                      temporary; empty after completion
+        ├── ultrarag-runtime/
+        └── generations/<generation-id>/
+            ├── manifest.json
+            ├── corpus/extracted-units.jsonl
+            ├── chunks/chunks.jsonl
+            ├── portable/embeddings.npy
+            └── indexes/
+                ├── bm25/
+                └── qdrant/
 
 ~/.cache/research-ultra-rag-mcp/models/  shared model binaries only
 ```
 
-`sources/` remains the authority for exact quotation. `.research-rag/` contains
-small portable identity and reviewed decisions plus any deliberately exported
-bundles. `.ultrarag/research/` can be regenerated from sources and portable
-state. Document text, embeddings, indexes, query/runtime state, and logs never
-cross project roots; only immutable model binaries are shared.
+`sources/` remains the authority for exact quotation. `.research-rag/` is the
+single root for this server's project state. Its top-level JSON files and
+`bundles/` are portable; `runtime/` can be regenerated from the sources and
+portable state. Document text, embeddings, indexes, query/runtime state, and
+logs never cross project roots; only immutable model binaries are shared.
+
+On first use after upgrading, an existing `.ultrarag/research/` directory is
+moved automatically to `.research-rag/runtime/`. If both locations already
+contain runtime data, startup stops rather than choosing one. Other
+`.ultrarag/` contents belonging to different tools are not changed. Stop all
+running research MCP and UI processes before the first launch with the upgraded
+package so no process continues writing to the legacy location.
 
 `current.json` points to the one generation used by search. Earlier successful
 generations remain on disk, but are not searched. Automatic generation pruning
@@ -341,10 +348,10 @@ To move to another device:
 > responsible for having the right to redistribute every bundled source.**
 
 For Git, commit `.research-rag/project.json`, reviewed metadata/exclusions, and
-only legally shareable sources. Ignore `.ultrarag/`. Track PDFs, EPUBs, and
-bundle archives with Git LFS. Usually share either standalone originals for
-regeneration or a source-containing bundle, not both, unless duplication is
-intentional.
+only legally shareable sources. Ignore `.research-rag/runtime/`. Track PDFs,
+EPUBs, and bundle archives with Git LFS. Usually share either standalone
+originals for regeneration or a source-containing bundle, not both, unless
+duplication is intentional.
 
 ```gitattributes
 *.pdf filter=lfs diff=lfs merge=lfs -text

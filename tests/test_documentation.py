@@ -62,5 +62,6 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
     assert "vanilla-ultra-rag-mcp" not in lowered
     assert "every `ingest` is a complete rebuild" not in lowered
     assert ".ultrarag/research/models" not in readme
+    assert ".research-rag/runtime/" in readme
     assert "raw-extraction.jsonl" not in readme
     assert "ultrarag-chunks.jsonl" not in readme

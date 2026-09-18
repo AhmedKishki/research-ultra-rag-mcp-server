@@ -414,6 +414,14 @@ def test_initialized_source_directory_can_be_reused(project: Path) -> None:
     assert configured_source_directory(project) == "library"
 
 
+def test_new_project_keeps_all_research_state_under_one_root(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    assert config.portable_root == project / ".research-rag"
+    assert config.state_root == project / ".research-rag" / "runtime"
+    assert not (project / ".ultrarag").exists()
+
+
 def test_portable_project_identity_is_stable_and_legacy_review_state_migrates(
     project: Path,
 ) -> None:
@@ -442,6 +450,10 @@ def test_portable_project_identity_is_stable_and_legacy_review_state_migrates(
         ),
         encoding="utf-8",
     )
+    (legacy / "current.json").write_text(
+        json.dumps({"schema_version": 1, "generation_id": "legacy-generation"}),
+        encoding="utf-8",
+    )
 
     first = resolve_config(project, vanilla_executable=sys.executable)
     second = resolve_config(project, vanilla_executable=sys.executable)
@@ -463,6 +475,43 @@ def test_portable_project_identity_is_stable_and_legacy_review_state_migrates(
             "sources"
         ]
     )
+    assert first.state_root == project / ".research-rag" / "runtime"
+    assert (
+        json.loads(first.current_path.read_text(encoding="utf-8"))["generation_id"]
+        == "legacy-generation"
+    )
+    assert not legacy.exists()
+    assert not (project / ".ultrarag").exists()
+
+
+def test_conflicting_legacy_and_consolidated_runtime_is_refused(
+    project: Path,
+) -> None:
+    legacy = project / ".ultrarag" / "research"
+    consolidated = project / ".research-rag" / "runtime"
+    legacy.mkdir(parents=True)
+    consolidated.mkdir(parents=True)
+    (legacy / "current.json").write_text("legacy", encoding="utf-8")
+    (consolidated / "current.json").write_text("consolidated", encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="both"):
+        resolve_config(project, vanilla_executable=sys.executable)
+
+
+def test_legacy_migration_preserves_other_ultrarag_state(project: Path) -> None:
+    legacy = project / ".ultrarag" / "research"
+    unrelated = project / ".ultrarag" / "vanilla-ui" / "settings.json"
+    legacy.mkdir(parents=True)
+    unrelated.parent.mkdir(parents=True)
+    (legacy / "current.json").write_text("legacy", encoding="utf-8")
+    unrelated.write_text("unrelated", encoding="utf-8")
+
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    assert (config.state_root / "current.json").read_text(encoding="utf-8") == (
+        "legacy"
+    )
+    assert unrelated.read_text(encoding="utf-8") == "unrelated"
 
 
 def test_projects_share_only_the_configured_model_cache(tmp_path: Path) -> None:
@@ -507,9 +556,9 @@ def test_offline_mode_can_read_an_existing_legacy_model_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    legacy = project / ".ultrarag" / "research" / "models"
-    legacy.mkdir(parents=True)
-    (legacy / "cached-model.bin").write_bytes(b"cached")
+    old_cache = project / ".ultrarag" / "research" / "models"
+    old_cache.mkdir(parents=True)
+    (old_cache / "cached-model.bin").write_bytes(b"cached")
     empty_shared = tmp_path / "empty-global-cache"
     monkeypatch.setattr(
         "research_ultra_rag_mcp.config.user_cache_path",
@@ -522,8 +571,10 @@ def test_offline_mode_can_read_an_existing_legacy_model_cache(
         offline=True,
     )
 
-    assert config.model_cache_root == legacy
-    assert (legacy / "cached-model.bin").read_bytes() == b"cached"
+    migrated_cache = project / ".research-rag" / "runtime" / "models"
+    assert config.model_cache_root == migrated_cache
+    assert (migrated_cache / "cached-model.bin").read_bytes() == b"cached"
+    assert not old_cache.exists()
 
 
 def test_pdf_symlink_is_rejected(project: Path, tmp_path: Path) -> None:

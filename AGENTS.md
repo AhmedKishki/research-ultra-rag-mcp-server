@@ -34,7 +34,7 @@ repository to support this project.
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`,
   `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.8.0`
+- Version: `0.8.1`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
@@ -54,8 +54,9 @@ repository to support this project.
 - Ingestion selects only regular PDF and EPUB files beneath the configured
   sources directory.
 - Reject source symlinks and path traversal.
-- Store portable identity/review state beneath `<project>/.research-rag` and all
-  disposable runtime state beneath `<project>/.ultrarag/research`.
+- Store every project-owned research-RAG artifact beneath
+  `<project>/.research-rag`: portable identity/review state at its root and all
+  disposable derived state beneath `.research-rag/runtime`.
 - Share only immutable model binaries through the configured user cache. Never
   place documents, metadata, chunks, vectors, indexes, bundles, logs, or query
   state in global storage.
@@ -177,9 +178,14 @@ when `--source-directory` is omitted; an explicit differing value must fail.
 Disposable local state lives at:
 
 ```text
-<project>/.ultrarag/research/current.json
-<project>/.ultrarag/research/project.lock
+<project>/.research-rag/runtime/current.json
+<project>/.research-rag/runtime/project.lock
 ```
+
+`resolve_config` performs a guarded one-time move from the legacy
+`.ultrarag/research` location. Never create new research state there. Refuse to
+guess when both old and new locations contain runtime payloads. Migration must
+run only after older research MCP and UI processes have stopped.
 
 Changed builds use a unique directory under `staging/`, then move a verified
 generation beneath `generations/` before switching `current.json`. Successful

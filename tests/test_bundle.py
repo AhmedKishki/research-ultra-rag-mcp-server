@@ -194,7 +194,7 @@ async def _assert_bundle_validation(project: Path, tmp_path: Path) -> None:
     )
     with pytest.raises(ResearchError, match="checksum verification failed"):
         await _service(checksum_target).import_bundle(corrupt.name)
-    assert not (checksum_target / ".ultrarag" / "research" / "current.json").exists()
+    assert not (checksum_target / ".research-rag" / "runtime" / "current.json").exists()
 
     malformed_target = tmp_path / "malformed-target"
     _clone_project_identity(project, malformed_target)

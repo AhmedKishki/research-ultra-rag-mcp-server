@@ -78,7 +78,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         model_cache_root=args.model_cache_root,
         offline=args.offline,
     )
-    log_path = project / ".ultrarag" / "research" / "logs" / "verify-stderr.log"
+    log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(
         config,
         log_file=log_path,

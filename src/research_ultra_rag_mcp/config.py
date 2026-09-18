@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
-import shutil
 import sys
 import uuid
 from dataclasses import dataclass
@@ -120,11 +120,103 @@ def _contains_files(path: Path) -> bool:
     return path.is_dir() and any(item.is_file() for item in path.rglob("*"))
 
 
+def _has_payload(path: Path) -> bool:
+    return path.is_dir() and any(
+        item.is_file() or item.is_symlink() for item in path.rglob("*")
+    )
+
+
+def _remove_empty_tree(path: Path) -> None:
+    for child in sorted(
+        path.rglob("*"), key=lambda item: len(item.parts), reverse=True
+    ):
+        child.rmdir()
+    path.rmdir()
+
+
+def _review_state_files(
+    runtime_root: Path,
+    project_state_root: Path,
+) -> list[tuple[Path, Path]]:
+    result: list[tuple[Path, Path]] = []
+    for name in ("source-metadata.json", "source-exclusions.json"):
+        legacy = runtime_root / name
+        destination = project_state_root / name
+        if not legacy.exists():
+            continue
+        if not legacy.is_file() or legacy.is_symlink():
+            raise ConfigurationError(f"Legacy review state is not a file: {legacy}")
+        if destination.is_symlink() or (
+            destination.exists()
+            and (
+                not destination.is_file()
+                or not filecmp.cmp(legacy, destination, shallow=False)
+            )
+        ):
+            raise ConfigurationError(
+                "Conflicting reviewed state exists in both the legacy and "
+                f"consolidated locations: {name}"
+            )
+        result.append((legacy, destination))
+    return result
+
+
+def _move_review_state(runtime_root: Path, project_state_root: Path) -> None:
+    files = _review_state_files(runtime_root, project_state_root)
+    for legacy, destination in files:
+        if destination.exists():
+            legacy.unlink()
+        else:
+            os.replace(legacy, destination)
+
+
+def _migrate_legacy_runtime(
+    project: Path,
+    project_state_root: Path,
+    runtime_root: Path,
+) -> None:
+    """Move the former .ultrarag/research tree beneath .research-rag once."""
+
+    legacy_root = project / ".ultrarag" / "research"
+    if legacy_root.is_symlink():
+        raise ConfigurationError(
+            f"Legacy research state cannot be a symlink: {legacy_root}"
+        )
+    if legacy_root.exists() and not legacy_root.is_dir():
+        raise ConfigurationError(
+            f"Legacy research state is not a directory: {legacy_root}"
+        )
+
+    if legacy_root.is_dir():
+        _review_state_files(legacy_root, project_state_root)
+        if runtime_root.exists() and _has_payload(runtime_root):
+            if _has_payload(legacy_root):
+                raise ConfigurationError(
+                    "Research runtime state exists in both .ultrarag/research and "
+                    ".research-rag/runtime; resolve the duplicate state before "
+                    "starting the server."
+                )
+            _remove_empty_tree(legacy_root)
+        else:
+            if runtime_root.exists():
+                _remove_empty_tree(runtime_root)
+            os.replace(legacy_root, runtime_root)
+
+    if runtime_root.is_dir():
+        _move_review_state(runtime_root, project_state_root)
+
+    legacy_parent = project / ".ultrarag"
+    if legacy_parent.is_dir():
+        try:
+            legacy_parent.rmdir()
+        except OSError:
+            pass
+
+
 def _initialize_portable_project(
     project: Path,
     portable_root: Path,
     source_directory: str,
-    state_root: Path,
 ) -> tuple[str, str]:
     """Create or validate the small, Git-friendly project descriptor."""
 
@@ -177,13 +269,6 @@ def _initialize_portable_project(
         )
         os.replace(temporary, descriptor_path)
 
-    legacy_files = {
-        state_root / "source-metadata.json": portable_root / "source-metadata.json",
-        state_root / "source-exclusions.json": portable_root / "source-exclusions.json",
-    }
-    for legacy, portable in legacy_files.items():
-        if legacy.is_file() and not portable.exists():
-            shutil.copy2(legacy, portable)
     return project_id, project_name
 
 
@@ -210,12 +295,12 @@ def resolve_config(
             f"Source directory escapes the project root: {source_directory}"
         )
 
-    state = (project / ".ultrarag" / "research").resolve()
-    if not _within(state, project):
-        raise ConfigurationError(f"Research state escapes the project root: {state}")
     portable = (project / ".research-rag").resolve()
     if not _within(portable, project):
         raise ConfigurationError(f"Portable state escapes the project root: {portable}")
+    state = (portable / "runtime").resolve()
+    if not _within(state, portable):
+        raise ConfigurationError(f"Research runtime escapes its project state: {state}")
 
     executable = (
         Path(
@@ -231,6 +316,9 @@ def resolve_config(
 
     if log_level not in {"debug", "info", "warn", "error"}:
         raise ConfigurationError(f"Unsupported log level: {log_level}")
+
+    portable.mkdir(parents=True, exist_ok=True)
+    _migrate_legacy_runtime(project, portable, state)
 
     cache = (
         Path(runtime_cache_root).expanduser().resolve()
@@ -263,7 +351,6 @@ def resolve_config(
         project,
         portable,
         normalized_source_directory,
-        state,
     )
 
     return ResearchConfig(

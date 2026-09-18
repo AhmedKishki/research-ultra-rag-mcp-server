@@ -134,14 +134,14 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert ingested.data["default_retrieval_method"] == "hybrid"
 
         current = json.loads(
-            (project / ".ultrarag" / "research" / "current.json").read_text(
+            (project / ".research-rag" / "runtime" / "current.json").read_text(
                 encoding="utf-8"
             )
         )
         generation_root = (
             project
-            / ".ultrarag"
-            / "research"
+            / ".research-rag"
+            / "runtime"
             / "generations"
             / current["generation_id"]
         )

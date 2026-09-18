@@ -1,7 +1,7 @@
 SERVER_INSTRUCTIONS = """\
 This server manages one project-scoped research knowledge base made only from
 original PDF and EPUB sources. It stores all derived data beneath the configured
-project's .ultrarag/research directory and never ingests Markdown files.
+project's .research-rag/runtime directory and never ingests Markdown files.
 
 Upstream credit: this server builds on UltraRAG, a joint project of THUNLP,
 NEUIR, OpenBMB, AI9stars, and the UltraRAG contributors. Canonical source:

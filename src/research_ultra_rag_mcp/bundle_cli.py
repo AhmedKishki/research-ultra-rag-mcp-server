@@ -121,7 +121,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     )
     transport = create_research_transport(
         config,
-        log_file=project / ".ultrarag" / "research" / "logs" / "bundle-stderr.log",
+        log_file=config.logs_root / "bundle-stderr.log",
     )
     async with Client(transport, timeout=1800, init_timeout=1800) as client:
         if args.operation == "export":
