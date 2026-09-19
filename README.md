@@ -64,7 +64,9 @@ use. Model binaries are shared by default at
 `~/.cache/research-ultra-rag-mcp/models`, while document data remains isolated
 inside each project. Override the model location with
 `--model-cache-root /absolute/cache/path` or
-`RESEARCH_ULTRARAG_MODEL_CACHE_ROOT`.
+`RESEARCH_ULTRARAG_MODEL_CACHE_ROOT`. Select the dense index backend with
+`--dense-backend auto|exact|qdrant` or `RESEARCH_ULTRARAG_DENSE_BACKEND`;
+`auto` (the default) uses the exact scan for corpora at or below the threshold.
 
 Use `--offline` only after the runtime and required model files have been
 downloaded. In offline mode, an existing legacy project-local model cache can
@@ -170,7 +172,7 @@ project-local staging. Each call has a soft 45-second work budget and returns a
 checkpointed `in_progress` result when more work remains. Repeat the same call
 to continue. A single expensive page, first model download, or BM25 finalization
 can exceed that soft budget. The server switches `current.json` only after the
-complete BM25 and Qdrant indexes verify. Cancellation and timeout retain the
+complete BM25 and dense indexes verify. Cancellation and timeout retain the
 last atomic checkpoint; a non-resumable failure leaves the previous generation
 selected, removes its partial staging data, and records a small failure report.
 
@@ -436,11 +438,11 @@ copies it safely into that directory, then invokes the same MCP import.
 A bundle contains every original PDF/EPUB—including excluded sources—the
 project descriptor, reviewed metadata/exclusions, generation manifest, cleaned
 semantic units/chunks, and float32 embeddings in stable chunk order. It excludes
-live BM25/Qdrant databases, locks, logs, temporary files, runtime files, and
+live BM25 and dense index directories, locks, logs, temporary files, runtime files, and
 model caches. Import validates archive paths and entry types, checksums,
 project ID, schemas, embedding compatibility, and every original. It refuses to
 overwrite an existing path with different bytes. It reconstructs complete BM25
-and Qdrant indexes without re-extraction or re-embedding, then changes
+and dense indexes without re-extraction or re-embedding, then changes
 `current.json` last when activation is requested.
 
 To move to another device:
@@ -556,7 +558,7 @@ research extraction ── bibliography + layout + original locators
         ▼
 UltraRAG GPT-2 token chunking
         ├──────────────► UltraRAG BM25
-        └──► FastEmbed CPU vectors ──► embedded project-local Qdrant
+        └──► FastEmbed CPU vectors ──► project-local dense index
                                       │
                          weighted rank fusion
                                       │
@@ -569,10 +571,15 @@ resolves bibliography, cleans layout artifacts, and preserves locators.
 UltraRAG performs GPT-2 token chunking and BM25 indexing/search. FastEmbed
 produces revision-pinned CPU embeddings, and ingestion audits every chunk
 against the model's token limit so a silently truncated dense vector is counted
-and reported rather than invisible. Embedded Qdrant stores vectors with
-only lean lookup payloads (`chunk_id`, `document_id`, and `source_id`) inside
-the generation; canonical passage content and locators stay in `chunks.jsonl`,
-while document metadata and provenance stay in the manifest. A compact SQLite
+and reported rather than invisible. The default dense backend scans the
+portable float32 vectors exactly, so a generation is searchable without
+building or maintaining an ANN structure; above a documented corpus threshold
+the server selects the embedded Qdrant backend instead, and every manifest
+records which backend built its index. Both backends keep only vectors and
+identifiers — the embedded ANN backend stores vectors with lean lookup payloads
+(`chunk_id`, `document_id`, and `source_id`) — so canonical passage content and
+locators stay in `chunks.jsonl`, while document metadata and provenance stay in
+the manifest. A compact SQLite
 sidecar stores only IDs, content hashes, vector ordinals, and JSONL byte offsets
 so query and reuse paths load selected records without copying corpus text into
 another artifact. Weighted
@@ -583,8 +590,8 @@ answer generation.
 Generations are immutable. Reviewed metadata lives outside them as portable
 project state and is overlaid at read time. Search, source listing, neighboring
 passages, citations, and category/keyword filters therefore use the current
-reviewed values immediately without rewriting chunk, BM25, vector, or Qdrant
-files. For dense filtering, current metadata is resolved to document IDs within
+reviewed values immediately without rewriting chunk, BM25, vector, or dense
+index files. For dense filtering, current metadata is resolved to document IDs within
 the selected generation instead of trusting stale copied metadata.
 
 Before ingestion decides what to do, it hashes every discovered PDF/EPUB and
@@ -599,10 +606,10 @@ identity, locator, and structural fields. Reading legacy `text` or
 `embedding_text` fields is compatibility behavior, not the current artifact
 format.
 Changed material is recomputed. The server always reconstructs complete new
-BM25 and Qdrant indexes for a changed generation and atomically switches the
+BM25 and dense indexes for a changed generation and atomically switches the
 pointer only after verification. Source hashes, fixed eight-page PDF
 scan/extraction batches, EPUB spine sections, extraction-unit chunking,
-64-passage embedding batches, and 64-point Qdrant uploads commit restartable
+64-passage embedding batches, and 64-point dense uploads commit restartable
 atomic units; UltraRAG BM25 is a restartable finalization step. Every source is
 hashed again before activation.
 `force_recompute=true` bypasses reuse while still resuming its own matching
@@ -682,6 +689,10 @@ project-specific retrieval quality.
   resumable, but one expensive page, initial model download, or BM25 step can
   exceed the soft per-call budget.
 - Cleaned text is not an exact-quote verification surface.
+- The exact dense backend is a linear scan: its query cost grows with chunk
+  count, so `auto` switches to the embedded ANN backend above 200,000 chunks
+  (`--dense-backend qdrant` forces it earlier, and forces the exact scan
+  below the threshold with `--dense-backend exact`).
 - Earlier successful generations are retained; automatic pruning is absent.
 
 If the server appears stuck when run directly, it is waiting for an MCP client.

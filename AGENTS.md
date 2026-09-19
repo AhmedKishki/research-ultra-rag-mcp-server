@@ -99,8 +99,11 @@ concrete options, never as an open question. For every decision:
   IDs are permanent across incompatible generations.
 - Keep BM25 and dense indexes in the same immutable generation, and never select
   the generation unless both indexes validate successfully.
-- Keep dense vectors and Qdrant payloads project-local; do not introduce a
+- Keep dense vectors and any dense index project-local; do not introduce a
   required external database service.
+- Record the dense backend in each generation manifest and dispatch retrieval
+  from that record. Never rebuild an existing generation with a different
+  backend, and never assume a fixed dense index directory name.
 - Search results must identify `text` as cleaned semantic text with
   `direct_quote_safe=false`; direct quotations must come from the original.
 - Keep MCP stdout reserved for protocol messages.
@@ -130,7 +133,7 @@ research-ultra-rag-mcp
 ├── portable project bundles
 ├── immutable generations
 ├── FastEmbed CPU embeddings
-├── project-local Qdrant dense index
+├── project-local dense index (exact scan by default)
 ├── reciprocal-rank fusion
 ├── optional CPU cross-encoder reranking
 └── persistent stdio MCP -> vanilla-ultra-rag-mcp
@@ -151,8 +154,8 @@ changes the boundary for research work:
 
 - PDF/EPUB extraction, project isolation, immutable storage, metadata, and
   locators are implemented here.
-- Retrieval combines UltraRAG CPU BM25 with a project-local FastEmbed/Qdrant
-  dense index. This extension owns fusion, filters, scores, and provenance.
+- Retrieval combines UltraRAG CPU BM25 with a project-local FastEmbed dense
+  index. This extension owns fusion, filters, scores, and provenance.
 - `search` returns visible, structured semantic evidence instead of anonymous
   passage strings. It is explicitly not an exact-quotation surface.
 - The calling AI agent is the generation stage and must cite the returned
@@ -176,8 +179,9 @@ citation contract, tests, and user-visible model configuration.
 - `bundle.py`: deterministic export and hostile-archive-safe import staging.
 - `bundle_cli.py`: terminal export/import client.
 - `storage.py`: atomic JSON state and JSONL artifacts.
-- `dense.py`: pinned FastEmbed models, local Qdrant indexing/filtering, and
-  optional cross-encoder reranking.
+- `dense.py`: pinned FastEmbed models, both local dense backends (exact scan
+  and embedded ANN) with document filtering, and optional cross-encoder
+  reranking.
 - `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
 - `transport.py`: the single research stdio transport builder used by UI and
@@ -224,7 +228,8 @@ Changed builds use a unique directory under `staging/`, then move a verified
 generation beneath `generations/` before switching `current.json`. Successful
 generations retain only the manifest, cleaned extraction units, final chunks,
 portable float32 vectors, a text-free SQLite offset lookup, BM25 index, and
-Qdrant index. UltraRAG raw chunks are temporary staging data, and raw coordinate
+dense index selected for that generation. UltraRAG raw chunks are temporary
+staging data, and raw coordinate
 records are not generated. Bounded
 calls, cancellations, and timeouts retain an atomic `checkpoint.json` and only
 committed work; incompatible inputs supersede that checkpoint with a small
@@ -259,7 +264,8 @@ across processes so no caller observes a partial index.
   It uses the same exact-one-selector rule.
 - `export_bundle`: export a fresh generation and all original sources beneath
   the project's portable bundle directory.
-- `import_bundle`: validate a project-owned bundle, reconstruct BM25/Qdrant from
+- `import_bundle`: validate a project-owned bundle, reconstruct BM25 and the
+  recorded dense backend from
   chunks/vectors, and install non-conflicting originals plus portable state.
   Switch current last when activation is requested; otherwise keep the pointer
   while imported metadata/exclusions immediately govern matching retrieval.
@@ -272,7 +278,9 @@ Update tests and documentation when changing them.
 - Default method: `hybrid`; diagnostic methods: `bm25` and `dense`.
 - Lexical path: pinned vanilla gateway -> UltraRAG BM25.
 - Dense path: FastEmbed `BAAI/bge-small-en-v1.5`, ONNX Runtime CPU, 384
-  dimensions, cosine distance, embedded Qdrant collection `research_chunks`.
+  dimensions, cosine distance, and a project-local index the manifest
+  records: the exact scan by default, or the embedded Qdrant collection
+  `research_chunks` above the documented threshold.
   Artifact revision: `52398278842ec682c6f32300af41344b1c0b0bb2`.
 - Fusion: weighted reciprocal-rank fusion with `k=60`, BM25 weight `1.25`, and
   dense weight `1.0`. Do not combine raw BM25 and cosine values; their scales
@@ -296,10 +304,10 @@ Update tests and documentation when changing them.
   candidates. Artifact revision:
   `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. It must remain opt-in because of
   latency and its extra model.
-- Qdrant owns only vectors and a lean lookup payload containing `chunk_id`,
-  `document_id`, and `source_id`. `chunks.jsonl` remains the canonical passage
-  and locator store; document metadata and provenance remain canonical in the
-  manifest.
+- A dense index owns only vectors and identifiers (`chunk_id`, `document_id`,
+  `source_id`). `chunks.jsonl` remains the canonical passage and locator store;
+  document metadata and provenance remain canonical in the manifest, so filtering
+  resolves current metadata to document IDs at query time.
 - The generation-local SQLite artifact lookup contains only identifiers,
   ordinals, content hashes, and byte offsets into canonical chunk/unit JSONL.
   It must never duplicate passage or extraction text. Use it for candidate
@@ -312,7 +320,7 @@ Update tests and documentation when changing them.
 - Category and keyword lists use AND semantics; document IDs use membership
   semantics. Resolve current reviewed filters to matching document IDs, use
   those IDs for dense retrieval, and verify results against canonical documents
-  rather than copying mutable metadata into Qdrant.
+  rather than copying mutable metadata into a dense index.
 - Raw BM25 scores are unavailable from the pinned UltraRAG tool. Report its
   rank, never synthesize a score. Dense/fusion/reranker scores are ranking
   signals, not calibrated confidence or truth probabilities.
@@ -396,7 +404,7 @@ Update tests and documentation when changing them.
   differs from the current reviewed overlay. Report that the overlay is active.
   A source absent from the selected generation still requires ingestion before
   any of its metadata can appear in retrieval.
-- Do not copy mutable category or keyword values into Qdrant. Translate current
+- Do not copy mutable category or keyword values into a dense index. Translate current
   reviewed filters through selected-generation document IDs and verify them
   against the overlaid canonical documents and chunk records.
 - Omitted fields remove their prior reviewed overrides. If an old generation
@@ -421,15 +429,15 @@ Update tests and documentation when changing them.
   artifacts retain automatic bibliography beneath the reviewed overlay. Reuse
   a vector only when canonical `contents`, model revision, and dimension match
   exactly. Legacy text fields may be read only to upgrade an older generation.
-- Always reconstruct complete BM25 and Qdrant indexes for a changed generation;
+- Always reconstruct complete BM25 and dense indexes for a changed generation;
   never update selected indexes in place. `force_recompute=true` disables all
   document, chunk, and vector reuse.
 - Check the soft work budget only between atomic units: source hashes, fixed
   eight-page PDF scan/extraction batches, EPUB spine sections, extraction-unit
-  chunking, 64-text embedding batches, and 64-point Qdrant uploads. Treat BM25
+  chunking, 64-text embedding batches, and 64-point dense uploads. Treat BM25
   finalization as one restartable unit and re-hash all sources before activation.
 
-Do not move the Qdrant implementation into the vanilla gateway or patch
+Do not move the dense backend implementations into the vanilla gateway or patch
 UltraRAG for this feature. The research-specific integration deliberately lives
 in this repository so vanilla can continue tracking upstream safely.
 
@@ -472,7 +480,7 @@ and same-origin changes belong in `ui-ultra-rag-mcp` and must pass that
 package's own tests before updating the pinned commit here.
 
 For source or retrieval changes, the integration test must still launch the
-real vanilla stdio server, build BM25 and Qdrant indexes, run hybrid and dense
+real vanilla stdio server, build BM25 and dense indexes, run hybrid and dense
 search, retrieve the known passage, and prove that a neighboring Markdown file
 was excluded. It must then restart offline and repeat hybrid reranked search from
 the caches. Unit tests must cover RRF and failure atomicity without depending on

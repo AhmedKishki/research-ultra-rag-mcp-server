@@ -646,6 +646,16 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--dense-backend",
+        choices=("auto", "exact", "qdrant"),
+        default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
+        help=(
+            "Dense index backend for new generations. 'auto' uses an exact scan "
+            "over the portable vectors below the documented corpus threshold and "
+            "the embedded ANN index above it."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         choices=("debug", "info", "warn", "error"),
         default="warn",
@@ -667,6 +677,7 @@ def main() -> None:
             model_cache_root=args.model_cache_root,
             offline=args.offline,
             log_level=args.log_level,
+            dense_backend=args.dense_backend,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc

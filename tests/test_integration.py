@@ -186,7 +186,13 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             (generation_root / "manifest.json").read_text(encoding="utf-8")
         )
         assert manifest["retrieval"]["dense"]["point_count"] == 1
-        assert (generation_root / "indexes" / "qdrant").is_dir()
+        # The default `auto` backend is the exact scan below the corpus
+        # threshold, and the manifest records which backend owns the index.
+        assert manifest["retrieval"]["dense"]["dense_backend"] == (
+            "portable-exact-vectors"
+        )
+        assert manifest["files"]["dense_index"] == "indexes/vectors"
+        assert (generation_root / "indexes" / "vectors" / "index.json").is_file()
 
         ready = await client.call_tool("status", {})
         assert ready.data["hybrid_ready"] is True

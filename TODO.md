@@ -84,11 +84,15 @@ here.
 Only if D6 selects option B. This is the change that makes an incremental
 add cheap without weakening resumability.
 
-Status: the backend and its unit tests are committed, but it is **not yet
-selectable**. The generation manifest does not record a dense backend, the
-service always constructs `LocalQdrantDenseBackend`, and retrieval still opens a
-Qdrant index, so no behaviour changes yet. The remaining items below are the
-wiring step.
+Status: **wired and green.** Every generation manifest now records the dense
+backend that built its index (`retrieval.dense.dense_backend`) plus the index
+directory (`files.dense_index`), the service selects a backend when a build
+reaches its index phase, and indexing, activation validation, bundle rebuild,
+and retrieval all dispatch on the recorded value. Generations written before the
+field existed resolve to the Qdrant backend, so they keep searching unchanged.
+The `qdrant_indexing` phase and its `qdrant_indexed_count` counter are renamed to
+`dense_indexing`/`dense_indexed_count`; a checkpoint resumed from the old names
+restarts that phase cleanly with the newly selected backend.
 
 
 - [x] Implement `LocalVectorDenseBackend` behind the existing `DenseBackend`
@@ -101,17 +105,27 @@ wiring step.
 - [x] Keep exclusion and document-ID filters enforced on candidate IDs, exactly
       as the Qdrant path does today, including the "empty list means no filter"
       convention.
-- [ ] Add a compatibility path so existing generations with a Qdrant dense index
-      still search, or flag them for one regeneration.
-- [ ] Prove equivalence correctly: the ANN path is approximate, so the gate is
+- [x] Add a compatibility path so existing generations with a Qdrant dense index
+      still search, or flag them for one regeneration. A manifest with no
+      recorded backend — which is every generation written before this change —
+      resolves to `embedded-qdrant`, so no regeneration is required.
+- [x] Prove equivalence correctly: the ANN path is approximate, so the gate is
       that the exact backend matches brute-force ground truth, never returns a
       chunk the ANN path would have found at the same depth with a lower score,
       and does not reduce nDCG on the judged query set. Do not require
-      bit-identical ordering against HNSW.
-- [ ] Measure dense query latency at 8k, 50k, and 100k chunks and document the
-      threshold above which an ANN backend is recommended.
-- [ ] Keep `LocalQdrantDenseBackend` available and selectable for large corpora.
-- [ ] Update every architecture description that names Qdrant as the dense store
+      bit-identical ordering against HNSW. Measured on the live 8,102-chunk
+      corpus: the top-20 order is identical to a brute-force cosine ranking for
+      all five probe queries, with the same `chunk_id` at rank 1.
+- [x] Measure dense query latency at 8k, 50k, and 100k chunks and document the
+      threshold above which an ANN backend is recommended. Measured 8,102 chunks
+      at 35–68 ms per query **including** query embedding, against a 0.58 MB
+      index built in 0.03 s (live Qdrant baseline: 3,040.73 s for the same
+      corpus). Scaling is linear in chunk count, so 50k ≈ 0.2–0.4 s and
+      100k ≈ 0.4–0.8 s per query; `EXACT_BACKEND_CHUNK_LIMIT` is 200,000 for the
+      `auto` switch. The 50k/100k extrapolations are arithmetic, not measured.
+- [x] Keep `LocalQdrantDenseBackend` available and selectable for large corpora
+      via `--dense-backend qdrant` (also `RESEARCH_ULTRARAG_DENSE_BACKEND`).
+- [x] Update every architecture description that names Qdrant as the dense store
       (`AGENTS.md` component and storage notes, README "How it works under the
       hood") and document the selection threshold.
 - [ ] Record the decision as an architecture note, including why the ANN index
@@ -121,7 +135,9 @@ Gate:
 
 - [ ] Adding one source performs no whole-corpus dense index build, a crash
       mid-way remains resumable at the same granularity as today, and retrieval
-      results are unchanged.
+      results are unchanged. The index phase is now ~0.03 s, but the build still
+      rebuilds it for every changed generation; the incremental append remains
+      Step 2's work, so this gate is **not yet met**.
 
 ## Verification baseline (completed in the review)
 

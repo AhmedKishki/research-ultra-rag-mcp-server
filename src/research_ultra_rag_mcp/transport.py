@@ -27,6 +27,8 @@ def create_research_transport(
         str(config.vanilla_executable),
         "--model-cache-root",
         str(config.model_cache_root),
+        "--dense-backend",
+        config.dense_backend,
         "--log-level",
         config.log_level,
     ]

@@ -78,6 +78,15 @@ def _parser() -> argparse.ArgumentParser:
         default=os.environ.get("RESEARCH_ULTRARAG_MODEL_CACHE_ROOT"),
         help="Override the shared FastEmbed model cache.",
     )
+    parser.add_argument(
+        "--dense-backend",
+        choices=("auto", "exact", "qdrant"),
+        default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
+        help=(
+            "Dense index backend for a new generation (default: auto, which is "
+            "an exact scan below the documented corpus threshold)."
+        ),
+    )
     return parser
 
 
@@ -113,6 +122,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         source_directory=configured_source_directory(project),
         model_cache_root=args.model_cache_root,
         offline=args.offline,
+        dense_backend=args.dense_backend,
     )
     log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(

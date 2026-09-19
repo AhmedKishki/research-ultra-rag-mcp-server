@@ -30,6 +30,7 @@ class ResearchConfig:
     model_cache_root: Path
     offline: bool
     log_level: str
+    dense_backend: str = "auto"
 
     @property
     def generations_root(self) -> Path:
@@ -289,6 +290,7 @@ def resolve_config(
     model_cache_root: str | Path | None = None,
     offline: bool = False,
     log_level: str = "warn",
+    dense_backend: str = "auto",
 ) -> ResearchConfig:
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
@@ -324,6 +326,13 @@ def resolve_config(
 
     if log_level not in {"debug", "info", "warn", "error"}:
         raise ConfigurationError(f"Unsupported log level: {log_level}")
+
+    normalized_dense_backend = dense_backend.strip().casefold()
+    if normalized_dense_backend not in {"auto", "exact", "qdrant"}:
+        raise ConfigurationError(
+            "Unsupported dense backend: "
+            f"{dense_backend!r}; expected auto, exact, or qdrant"
+        )
 
     portable.mkdir(parents=True, exist_ok=True)
     _migrate_legacy_runtime(project, portable, state)
@@ -373,6 +382,7 @@ def resolve_config(
         model_cache_root=configured_model_cache,
         offline=offline,
         log_level=log_level,
+        dense_backend=normalized_dense_backend,
     )
 
 

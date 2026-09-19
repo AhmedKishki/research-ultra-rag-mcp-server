@@ -23,7 +23,11 @@ EMBEDDING_MAXIMUM_TOKENS = 512
 RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 RERANKER_MODEL_REVISION = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
 COLLECTION_NAME = "research_chunks"
+QDRANT_BACKEND_NAME = "embedded-qdrant"
 EXACT_BACKEND_NAME = "portable-exact-vectors"
+# Above this many chunks the exact scan stops being the right default and an ANN
+# backend earns its build cost. See PLAN.md P1-13/Step A for the measurements.
+EXACT_BACKEND_CHUNK_LIMIT = 200_000
 EXACT_INDEX_FILENAME = "index.json"
 EXACT_DOCUMENTS_FILENAME = "documents.json"
 _EXACT_VECTORS_RELATIVE = Path("portable") / "embeddings.npy"
@@ -337,6 +341,7 @@ class LocalQdrantDenseBackend:
         )
         return {
             "backend": "Qdrant local mode",
+            "dense_backend": QDRANT_BACKEND_NAME,
             "collection": COLLECTION_NAME,
             "distance": "cosine",
             "embedding_runtime": "FastEmbed ONNX Runtime (CPU)",
@@ -671,8 +676,14 @@ class LocalVectorDenseBackend:
         self._pending_chunk_ids = []
         self._pending_document_ids = []
         self._loaded.pop(index_path.resolve(), None)
+        self.validate_index(
+            index_path,
+            expected_count=expected_count,
+            dimension=dimension,
+        )
         return {
             "backend": "portable float32 vectors (exact cosine scan)",
+            "dense_backend": EXACT_BACKEND_NAME,
             "collection": None,
             "distance": "cosine",
             "embedding_runtime": "FastEmbed ONNX Runtime (CPU)",

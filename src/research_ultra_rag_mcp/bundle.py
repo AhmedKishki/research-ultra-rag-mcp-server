@@ -42,12 +42,13 @@ _GENERATION_EXPORT_FILES = (
     "portable/embeddings.npy",
     "manifest.json",
 )
-_EXPECTED_GENERATION_PATHS = {
-    "extracted_units": "corpus/extracted-units.jsonl",
-    "chunks": "chunks/chunks.jsonl",
-    "bm25_index": "indexes/bm25",
-    "dense_index": "indexes/qdrant",
-    "portable_embeddings": "portable/embeddings.npy",
+_EXPECTED_GENERATION_PATHS: dict[str, frozenset[str]] = {
+    "extracted_units": frozenset({"corpus/extracted-units.jsonl"}),
+    "chunks": frozenset({"chunks/chunks.jsonl"}),
+    "bm25_index": frozenset({"indexes/bm25"}),
+    # The directory name records which dense backend built the index.
+    "dense_index": frozenset({"indexes/qdrant", "indexes/vectors"}),
+    "portable_embeddings": frozenset({"portable/embeddings.npy"}),
 }
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -405,7 +406,7 @@ def _validate_generation_manifest(
         not isinstance(files, dict)
         or set(files) != set(_EXPECTED_GENERATION_PATHS)
         or any(
-            files.get(field) != expected
+            files.get(field) not in expected
             for field, expected in _EXPECTED_GENERATION_PATHS.items()
         )
     ):

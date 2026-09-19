@@ -1248,6 +1248,25 @@ an incremental add, and the corpus it indexes is 12.4 MB.
 Recommendation: **B**. Reversible: yes — the backend is a policy field, not a
 schema.
 
+Outcome (2026-09-19, Step A part 2): implemented as chosen. The backend name is
+stored per generation (`retrieval.dense.dense_backend`, with the index directory
+in `files.dense_index`), dispatch reads that record, and manifests written before
+the field resolve to `embedded-qdrant`. `--dense-backend auto|exact|qdrant`
+(default `auto`, `RESEARCH_ULTRARAG_DENSE_BACKEND`) picks the build backend;
+`auto` selects the exact scan at or below `EXACT_BACKEND_CHUNK_LIMIT`
+(200,000 chunks) and the ANN backend above it. Measured on the live
+`ai-and-fetishism` generation (8,102 chunks): exact index build **0.03 s** and
+0.58 MB versus the recorded Qdrant baseline of **3,040.73 s**; dense query
+latency 35–68 ms including query embedding; top-20 identical to a brute-force
+cosine ranking for all five probe queries. The `qdrant_indexing` checkpoint phase
+is renamed `dense_indexing`, and a checkpoint resumed under the old name restarts
+that phase with the newly selected backend. Two consequences recorded rather than
+hidden: 50k/100k latency figures are arithmetic extrapolations from the 8,102
+measurement, not measurements, and the Step A gate ("adding one source performs
+no whole-corpus dense index build") is **not** met yet — the build still
+recreates the (now nearly free) index for every changed generation, which is
+Step 2's incremental-append work.
+
 ### D7 — Does `ingest` need scope control?
 
 Chosen: **C** (2026-09-19) — read-only `ingest` dry run.

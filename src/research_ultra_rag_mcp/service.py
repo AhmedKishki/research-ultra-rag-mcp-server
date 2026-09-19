@@ -40,12 +40,16 @@ from .dense import (
     EMBEDDING_MAXIMUM_TOKENS,
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
+    EXACT_BACKEND_CHUNK_LIMIT,
+    EXACT_BACKEND_NAME,
+    QDRANT_BACKEND_NAME,
     RERANKER_MODEL,
     RERANKER_MODEL_REVISION,
     DenseBackend,
     DenseSearchHit,
     DenseTokenAuditUnavailable,
     LocalQdrantDenseBackend,
+    LocalVectorDenseBackend,
 )
 from .extraction import (
     ExtractionError,
@@ -119,6 +123,11 @@ MINIMUM_CANDIDATES = 20
 MAXIMUM_CANDIDATES = 200
 RERANK_MAX_CANDIDATES = 50
 MAXIMUM_WITHHELD_EXAMPLES = 5
+# The generation-relative directory each dense backend writes its index into.
+DENSE_INDEX_PATHS = {
+    QDRANT_BACKEND_NAME: "indexes/qdrant",
+    EXACT_BACKEND_NAME: "indexes/vectors",
+}
 RETRIEVAL_POLICY_FINGERPRINT = value_fingerprint(
     {
         "default_method": DEFAULT_RETRIEVAL_METHOD,
@@ -708,9 +717,28 @@ class ResearchService:
     ) -> None:
         self.config = config
         self.ultrarag = ultrarag
-        self.dense = dense or LocalQdrantDenseBackend(
-            config.models_root,
-            offline=config.offline,
+        self._dense_backends: dict[str, DenseBackend]
+        if dense is not None:
+            # An injected backend serves every recorded kind, so deterministic
+            # test doubles stand in for both real backends.
+            self._dense_backends = {name: dense for name in DENSE_INDEX_PATHS}
+        else:
+            self._dense_backends = {
+                QDRANT_BACKEND_NAME: LocalQdrantDenseBackend(
+                    config.models_root,
+                    offline=config.offline,
+                ),
+                EXACT_BACKEND_NAME: LocalVectorDenseBackend(
+                    config.models_root,
+                    offline=config.offline,
+                ),
+            }
+        # The primary backend answers model-only calls; indexing, validation, and
+        # retrieval resolve the backend that the generation itself recorded.
+        self.dense = (
+            self._dense_backends[EXACT_BACKEND_NAME]
+            if config.dense_backend in {"auto", "exact"}
+            else self._dense_backends[QDRANT_BACKEND_NAME]
         )
         self._lock = asyncio.Lock()
         self._project_lock = AsyncFileLock(
@@ -731,6 +759,41 @@ class ResearchService:
                 raise ResearchError(
                     "Timed out waiting for another research process to finish"
                 ) from exc
+
+    @staticmethod
+    def _dense_backend_name(manifest: dict[str, Any] | None) -> str:
+        """Return the dense backend a generation recorded.
+
+        Generations written before the backend was recorded always used the
+        embedded Qdrant index.
+        """
+
+        if manifest:
+            dense = manifest.get("retrieval", {}).get("dense", {})
+            recorded = dense.get("dense_backend")
+            if isinstance(recorded, str) and recorded in DENSE_INDEX_PATHS:
+                return recorded
+        return QDRANT_BACKEND_NAME
+
+    def _dense_for(self, manifest: dict[str, Any] | None) -> DenseBackend:
+        """Return the dense backend that owns a generation's index."""
+
+        return self._dense_backends[self._dense_backend_name(manifest)]
+
+    def _select_build_dense_backend(self, chunk_count: int) -> str:
+        """Choose the dense backend for a new generation.
+
+        `auto` uses the exact scan while a linear scan is cheaper than
+        maintaining an ANN index, and falls back above the documented threshold.
+        """
+
+        if self.config.dense_backend == "exact":
+            return EXACT_BACKEND_NAME
+        if self.config.dense_backend == "qdrant":
+            return QDRANT_BACKEND_NAME
+        if chunk_count <= EXACT_BACKEND_CHUNK_LIMIT:
+            return EXACT_BACKEND_NAME
+        return QDRANT_BACKEND_NAME
 
     def _metadata(self) -> dict[str, dict[str, Any]]:
         try:
@@ -1229,8 +1292,12 @@ class ResearchService:
             completed = int(checkpoint.get("embedded_chunk_count") or 0)
             total = int(checkpoint.get("chunk_count") or 0)
             unit = "chunks"
-        elif phase == "qdrant_indexing":
-            completed = int(checkpoint.get("qdrant_indexed_count") or 0)
+        elif phase in {"dense_indexing", "qdrant_indexing"}:
+            completed = int(
+                checkpoint.get("dense_indexed_count")
+                or checkpoint.get("qdrant_indexed_count")
+                or 0
+            )
             total = int(checkpoint.get("chunk_count") or 0)
             unit = "chunks"
         elif phase == "source_revalidation":
@@ -1383,7 +1450,7 @@ class ResearchService:
             if not bm25_probe or not stored_probe.get(bm25_probe[0]):
                 raise RuntimeError("BM25 validation probe returned no stored passage")
             await _atomic_to_thread(
-                self.dense.validate_index,
+                self._dense_for(manifest).validate_index,
                 root / str(manifest["files"]["dense_index"]),
                 expected_count=int(manifest["chunk_count"]),
                 dimension=EMBEDDING_DIMENSION,
@@ -1595,7 +1662,7 @@ class ResearchService:
             "extracted_source_paths": [],
             "chunked_source_paths": [],
             "embedded_chunk_count": 0,
-            "qdrant_indexed_count": 0,
+            "dense_indexed_count": 0,
             "revalidation_digests": {},
             "revalidation_stats": {},
             "phase_timings_seconds": {},
@@ -2966,27 +3033,37 @@ class ResearchService:
                     "bm25_indexing",
                     time.perf_counter() - started,
                 )
-                checkpoint["phase"] = "qdrant_indexing"
-                checkpoint["qdrant_indexed_count"] = 0
+                checkpoint["phase"] = "dense_indexing"
+                checkpoint["dense_indexed_count"] = 0
                 self._write_checkpoint(staging_root, checkpoint)
                 if budget_expired():
                     return self._in_progress_result(checkpoint)
                 continue
 
-            if phase == "qdrant_indexing":
+            if phase in {"dense_indexing", "qdrant_indexing"}:
                 if portable_vectors is None:
                     portable_vectors = np.load(
                         staging_root / "portable" / "embeddings.npy",
                         allow_pickle=False,
                         mmap_mode="r",
                     )
-                dense_index_path = staging_root / "indexes" / "qdrant"
-                offset = int(checkpoint.get("qdrant_indexed_count") or 0)
                 total = int(checkpoint["chunk_count"])
+                backend_name = str(checkpoint.get("dense_backend") or "")
+                if backend_name not in DENSE_INDEX_PATHS:
+                    # A checkpoint resumed from before the backend was recorded
+                    # restarts this phase cleanly with the selected backend.
+                    backend_name = self._select_build_dense_backend(total)
+                    checkpoint["dense_backend"] = backend_name
+                    checkpoint["dense_index_relative"] = DENSE_INDEX_PATHS[backend_name]
+                    checkpoint["dense_indexed_count"] = 0
+                    self._write_checkpoint(staging_root, checkpoint)
+                backend = self._dense_backends[backend_name]
+                dense_index_path = staging_root / DENSE_INDEX_PATHS[backend_name]
+                offset = int(checkpoint.get("dense_indexed_count") or 0)
                 if offset == 0:
                     shutil.rmtree(dense_index_path, ignore_errors=True)
                     await _atomic_to_thread(
-                        self.dense.initialize_index,
+                        backend.initialize_index,
                         dense_index_path,
                         EMBEDDING_DIMENSION,
                     )
@@ -2996,7 +3073,7 @@ class ResearchService:
                     )
                     started = time.perf_counter()
                     await _atomic_to_thread(
-                        self.dense.upload_index_batch,
+                        backend.upload_index_batch,
                         batch,
                         dense_index_path,
                         portable_vectors[offset : offset + len(batch)],
@@ -3004,16 +3081,16 @@ class ResearchService:
                     )
                     self._add_phase_time(
                         checkpoint,
-                        "qdrant_indexing",
+                        "dense_indexing",
                         time.perf_counter() - started,
                     )
-                    checkpoint["qdrant_indexed_count"] = offset + len(batch)
+                    checkpoint["dense_indexed_count"] = offset + len(batch)
                     self._write_checkpoint(staging_root, checkpoint)
                     if budget_expired():
                         return self._in_progress_result(checkpoint)
                     continue
                 dense_metadata = await _atomic_to_thread(
-                    self.dense.finalize_index,
+                    backend.finalize_index,
                     dense_index_path,
                     expected_count=total,
                     dimension=EMBEDDING_DIMENSION,
@@ -3271,7 +3348,10 @@ class ResearchService:
                         "extracted_units": "corpus/extracted-units.jsonl",
                         "chunks": "chunks/chunks.jsonl",
                         "bm25_index": "indexes/bm25",
-                        "dense_index": "indexes/qdrant",
+                        "dense_index": str(
+                            checkpoint.get("dense_index_relative")
+                            or DENSE_INDEX_PATHS[QDRANT_BACKEND_NAME]
+                        ),
                         "portable_embeddings": "portable/embeddings.npy",
                     },
                     "build_metrics": build_metrics,
@@ -3699,7 +3779,7 @@ class ResearchService:
                     self._loaded_generation = None
                     await self.ultrarag.build_bm25(chunks_path, bm25_path)
                     await asyncio.to_thread(
-                        self.dense.build_from_vectors,
+                        self._dense_for(staged.manifest).build_from_vectors,
                         chunks,
                         dense_path,
                         vectors_path,
@@ -4088,7 +4168,7 @@ class ResearchService:
                 if candidate_depth == 0 or dense_document_filter == set():
                     return []
                 return await asyncio.to_thread(
-                    self.dense.search,
+                    self._dense_for(manifest).search,
                     generation_root / manifest["files"]["dense_index"],
                     query,
                     candidate_depth,

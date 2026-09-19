@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,7 @@ import pytest
 from conftest import write_epub, write_pdf
 
 import research_ultra_rag_mcp.service as service_module
-from research_ultra_rag_mcp.config import resolve_config
+from research_ultra_rag_mcp.config import ConfigurationError, resolve_config
 from research_ultra_rag_mcp.dense import (
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
@@ -136,8 +137,11 @@ class SymbolChunkUltraRAG(FakeUltraRAG):
 
 
 class FakeDenseBackend:
-    def __init__(self) -> None:
+    def __init__(self, dense_backend: str = "portable-exact-vectors") -> None:
         self.chunks: list[dict[str, object]] = []
+        # Mirrors what `auto` selects for a small corpus so manifest assertions
+        # match the real default. Pass a name to emulate the other backend.
+        self.dense_backend = dense_backend
         self.fail_build = False
         self.build_calls = 0
         self.embed_calls = 0
@@ -223,6 +227,7 @@ class FakeDenseBackend:
         )
         return {
             "backend": "fake Qdrant",
+            "dense_backend": self.dense_backend,
             "embedding_model": EMBEDDING_MODEL,
             "embedding_model_revision": EMBEDDING_MODEL_REVISION,
             "embedding_dimension": 384,
@@ -1234,6 +1239,118 @@ def test_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None:
     asyncio.run(_assert_symbol_only_chunks_do_not_reach_indexes(project))
 
 
+def test_dense_backend_selection_honors_the_threshold_and_config(
+    project: Path,
+) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    limit = service_module.EXACT_BACKEND_CHUNK_LIMIT
+
+    assert service._select_build_dense_backend(0) == "portable-exact-vectors"
+    assert service._select_build_dense_backend(limit) == "portable-exact-vectors"
+    assert service._select_build_dense_backend(limit + 1) == "embedded-qdrant"
+
+    forced_qdrant = ResearchService(  # type: ignore[arg-type]
+        replace(config, dense_backend="qdrant"),
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    assert forced_qdrant._select_build_dense_backend(1) == "embedded-qdrant"
+
+    forced_exact = ResearchService(  # type: ignore[arg-type]
+        replace(config, dense_backend="exact"),
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    assert forced_exact._select_build_dense_backend(limit + 1) == (
+        "portable-exact-vectors"
+    )
+
+    with pytest.raises(ConfigurationError, match="Unsupported dense backend"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            dense_backend="lancedb",
+        )
+
+
+def test_generation_records_its_dense_backend_and_dispatch_follows_it(
+    project: Path,
+) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    qdrant_double = FakeDenseBackend()
+    exact_double = FakeDenseBackend()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=qdrant_double,
+    )
+    # Both recorded kinds resolve to the single injected double by default, so
+    # replace the mapping to observe dispatch itself.
+    service._dense_backends = {
+        "embedded-qdrant": qdrant_double,
+        "portable-exact-vectors": exact_double,
+    }
+
+    # A generation with no recorded backend predates the two-backend contract.
+    assert service._dense_for(None) is qdrant_double
+    assert service._dense_for({"retrieval": {"dense": {}}}) is qdrant_double
+    assert (
+        service._dense_for(
+            {"retrieval": {"dense": {"dense_backend": "embedded-qdrant"}}}
+        )
+        is qdrant_double
+    )
+    assert (
+        service._dense_for(
+            {"retrieval": {"dense": {"dense_backend": "portable-exact-vectors"}}}
+        )
+        is exact_double
+    )
+    # An unrecognized or malformed record falls back to the legacy backend.
+    assert (
+        service._dense_for({"retrieval": {"dense": {"dense_backend": "faiss"}}})
+        is qdrant_double
+    )
+    assert (
+        service._dense_for({"retrieval": {"dense": {"dense_backend": 7}}})
+        is qdrant_double
+    )
+
+
+def test_ingest_records_the_exact_backend_and_its_index_path(project: Path) -> None:
+    async def exercise() -> None:
+        write_pdf(project / "sources" / "article.pdf", ["Stable cobalt evidence."])
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+
+        result = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        manifest = json.loads(
+            (Path(result["generation_root"]) / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert manifest["retrieval"]["dense"]["dense_backend"] == (
+            "portable-exact-vectors"
+        )
+        assert manifest["files"]["dense_index"] == "indexes/vectors"
+        status = await service.status()
+        assert status["retrieval"]["dense"]["dense_backend"] == (
+            "portable-exact-vectors"
+        )
+
+    asyncio.run(exercise())
+
+
 async def _assert_dense_token_audit_flags_truncation(project: Path) -> None:
     write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
     config = resolve_config(project, vanilla_executable=sys.executable)
@@ -1826,7 +1943,16 @@ async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> No
     previous_stat = second_path.stat()
     second_path.unlink()
     write_pdf(second_path, ["Cedar evidence in a second source."], title="Second")
-    assert second_path.stat().st_size == previous_stat.st_size
+    # This case needs a byte change that preserves the file size, but pymupdf
+    # embeds a varying timestamp whose compressed length can shift the total by a
+    # few bytes, so retry until the replacement matches the original size.
+    for _ in range(20):
+        if second_path.stat().st_size == previous_stat.st_size:
+            break
+        second_path.unlink()
+        write_pdf(second_path, ["Cedar evidence in a second source."], title="Second")
+    else:  # pragma: no cover
+        pytest.skip("pymupdf produced no same-size replacement PDF")
     os.utime(
         second_path,
         ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns),
@@ -2668,7 +2794,7 @@ async def _assert_final_revalidation_catches_same_stat_mutation(
             work_budget_seconds=0,
         )
         if (
-            result["phase"] == "qdrant_indexing"
+            result["phase"] == "dense_indexing"
             and result["progress"]["completed"] == result["progress"]["total"]
         ):
             break

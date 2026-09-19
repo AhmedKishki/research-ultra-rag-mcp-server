@@ -128,10 +128,10 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
 - `ingest` hashes every source. An exact input match returns the selected
   generation unchanged. Otherwise it safely reuses compatible unchanged
   documents, chunks, and exact-text vectors while building complete new BM25
-  and Qdrant indexes. Work is durably checkpointed between bounded units;
+  and dense indexes. Work is durably checkpointed between bounded units;
   `status.ingestion_progress` reports an unfinished build. `force_recompute=true`
   bypasses reuse but may resume its own matching checkpoint.
-- `current.json` changes only after BM25 and Qdrant both succeed. Prior and
+- `current.json` changes only after BM25 and the dense index both succeed. Prior and
   successful generations remain on disk. Cancellation and timeout retain a
   resumable checkpoint; incompatible inputs supersede it with a small diagnostic,
   and non-resumable failures leave only a small failure record.
