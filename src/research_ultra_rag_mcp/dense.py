@@ -12,6 +12,8 @@ from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client import QdrantClient, models
 from tokenizers import Tokenizer
 
+from .storage import StorageError, atomic_write_json, read_json
+
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_MODEL_REVISION = "52398278842ec682c6f32300af41344b1c0b0bb2"
 EMBEDDING_DIMENSION = 384
@@ -21,6 +23,10 @@ EMBEDDING_MAXIMUM_TOKENS = 512
 RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 RERANKER_MODEL_REVISION = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
 COLLECTION_NAME = "research_chunks"
+EXACT_BACKEND_NAME = "portable-exact-vectors"
+EXACT_INDEX_FILENAME = "index.json"
+EXACT_DOCUMENTS_FILENAME = "documents.json"
+_EXACT_VECTORS_RELATIVE = Path("portable") / "embeddings.npy"
 
 
 class DenseTokenAuditUnavailable(RuntimeError):
@@ -95,6 +101,52 @@ class DenseBackend(Protocol):
     ) -> list[float]: ...
 
 
+def _load_embedder(cache_root: Path, *, offline: bool) -> TextEmbedding:
+    """Load the pinned CPU embedding model from the shared model cache."""
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return TextEmbedding(
+        model_name=EMBEDDING_MODEL,
+        cache_dir=str(cache_root),
+        cuda=False,
+        local_files_only=offline,
+        revision=EMBEDDING_MODEL_REVISION,
+    )
+
+
+def _load_cross_encoder(cache_root: Path, *, offline: bool) -> TextCrossEncoder:
+    """Load the optional pinned CPU cross-encoder from the shared model cache."""
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    return TextCrossEncoder(
+        model_name=RERANKER_MODEL,
+        cache_dir=str(cache_root),
+        cuda=False,
+        local_files_only=offline,
+        revision=RERANKER_MODEL_REVISION,
+    )
+
+
+def _load_audit_tokenizer(embedder: TextEmbedding) -> Tokenizer:
+    """Return a non-truncating tokenizer matching the embedding model.
+
+    The embedder's own tokenizer truncates at the model limit, which would hide
+    the overflow the ingestion audit exists to measure, so the pinned tokenizer
+    file is loaded separately and truncation is disabled on that copy.
+    """
+
+    model_dir = getattr(embedder.model, "_model_dir", None)
+    tokenizer_path = Path(str(model_dir)) / "tokenizer.json" if model_dir else None
+    if tokenizer_path is None or not tokenizer_path.is_file():
+        raise DenseTokenAuditUnavailable(
+            "The embedding tokenizer is missing from the model cache: "
+            + str(tokenizer_path)
+        )
+    tokenizer = Tokenizer.from_file(str(tokenizer_path))
+    tokenizer.no_truncation()
+    return tokenizer
+
+
 class LocalQdrantDenseBackend:
     """FastEmbed CPU vectors stored in an embedded, project-local Qdrant DB."""
 
@@ -107,25 +159,17 @@ class LocalQdrantDenseBackend:
 
     def _embedder(self) -> TextEmbedding:
         if self._embedding_model is None:
-            self.model_cache_root.mkdir(parents=True, exist_ok=True)
-            self._embedding_model = TextEmbedding(
-                model_name=EMBEDDING_MODEL,
-                cache_dir=str(self.model_cache_root),
-                cuda=False,
-                local_files_only=self.offline,
-                revision=EMBEDDING_MODEL_REVISION,
+            self._embedding_model = _load_embedder(
+                self.model_cache_root,
+                offline=self.offline,
             )
         return self._embedding_model
 
     def _cross_encoder(self) -> TextCrossEncoder:
         if self._reranker is None:
-            self.model_cache_root.mkdir(parents=True, exist_ok=True)
-            self._reranker = TextCrossEncoder(
-                model_name=RERANKER_MODEL,
-                cache_dir=str(self.model_cache_root),
-                cuda=False,
-                local_files_only=self.offline,
-                revision=RERANKER_MODEL_REVISION,
+            self._reranker = _load_cross_encoder(
+                self.model_cache_root,
+                offline=self.offline,
             )
         return self._reranker
 
@@ -134,32 +178,16 @@ class LocalQdrantDenseBackend:
         return QdrantClient(path=str(index_path))
 
     def _audit_tokenizer_for_ingestion(self) -> Tokenizer:
-        """Return a non-truncating tokenizer matching the embedding model.
-
-        The embedder's own tokenizer truncates at the model limit, which would
-        hide the overflow this audit exists to measure, so the pinned tokenizer
-        file is loaded separately and truncation is disabled on that copy.
-        """
-
         if self._audit_tokenizer is None:
             try:
-                model_dir = getattr(self._embedder().model, "_model_dir", None)
+                self._audit_tokenizer = _load_audit_tokenizer(self._embedder())
+            except DenseTokenAuditUnavailable:
+                raise
             except Exception as exc:
                 raise DenseTokenAuditUnavailable(
                     "The embedding model is unavailable for the token audit: "
                     + str(exc)
                 ) from exc
-            tokenizer_path = (
-                Path(str(model_dir)) / "tokenizer.json" if model_dir else None
-            )
-            if tokenizer_path is None or not tokenizer_path.is_file():
-                raise DenseTokenAuditUnavailable(
-                    "The embedding tokenizer is missing from the model cache: "
-                    + str(tokenizer_path)
-                )
-            tokenizer = Tokenizer.from_file(str(tokenizer_path))
-            tokenizer.no_truncation()
-            self._audit_tokenizer = tokenizer
         return self._audit_tokenizer
 
     def embedding_token_counts(self, texts: list[str]) -> list[int]:
@@ -432,3 +460,389 @@ class LocalQdrantDenseBackend:
                 "FastEmbed reranker returned a different number of scores than passages"
             )
         return [float(score) for score in scores]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExactIndex:
+    """A loaded exact index: memory-mapped vectors plus per-row identity."""
+
+    vectors: np.ndarray[Any, np.dtype[np.float32]]
+    chunk_ids: tuple[str, ...]
+    document_ids: tuple[str, ...]
+    norms: np.ndarray[Any, np.dtype[np.float32]]
+
+
+def _read_index_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = read_json(path)
+    except StorageError as exc:
+        raise ValueError(f"Invalid {label}: {path}") from exc
+    if not isinstance(value, dict):
+        raise TypeError(f"{label} must be a JSON object: {path}")
+    return value
+
+
+class LocalVectorDenseBackend:
+    """Exact dense search over a generation's portable float32 vectors.
+
+    The generation already stores one float32 row per chunk in stable chunk
+    order, so a dense index needs only a small descriptor plus per-row identity
+    for filtering, and search is an exact cosine scan. That removes the
+    whole-corpus index build and its per-point device cost at the corpus sizes
+    this server targets, and it makes dense scoring exactly reproducible.
+
+    An index lives at `<generation>/indexes/<name>` and references the portable
+    vector file relative to the generation root, so the descriptor stays valid
+    across a bundle export and import.
+    """
+
+    def __init__(self, model_cache_root: Path, *, offline: bool = False) -> None:
+        self.model_cache_root = model_cache_root
+        self.offline = offline
+        self._embedding_model: TextEmbedding | None = None
+        self._reranker: TextCrossEncoder | None = None
+        self._audit_tokenizer: Tokenizer | None = None
+        self._loaded: dict[Path, tuple[int, _ExactIndex]] = {}
+        self._pending_chunk_ids: list[str] = []
+        self._pending_document_ids: list[str] = []
+
+    def _embedder(self) -> TextEmbedding:
+        if self._embedding_model is None:
+            self._embedding_model = _load_embedder(
+                self.model_cache_root,
+                offline=self.offline,
+            )
+        return self._embedding_model
+
+    def _cross_encoder(self) -> TextCrossEncoder:
+        if self._reranker is None:
+            self._reranker = _load_cross_encoder(
+                self.model_cache_root,
+                offline=self.offline,
+            )
+        return self._reranker
+
+    def _audit_tokenizer_for_ingestion(self) -> Tokenizer:
+        if self._audit_tokenizer is None:
+            try:
+                self._audit_tokenizer = _load_audit_tokenizer(self._embedder())
+            except DenseTokenAuditUnavailable:
+                raise
+            except Exception as exc:
+                raise DenseTokenAuditUnavailable(
+                    "The embedding model is unavailable for the token audit: "
+                    + str(exc)
+                ) from exc
+        return self._audit_tokenizer
+
+    def embedding_token_counts(self, texts: list[str]) -> list[int]:
+        """Return the embedding tokenizer length of each text, untruncated."""
+
+        if not texts:
+            return []
+        tokenizer = self._audit_tokenizer_for_ingestion()
+        try:
+            return [len(encoding.ids) for encoding in tokenizer.encode_batch(texts)]
+        except Exception as exc:
+            raise DenseTokenAuditUnavailable(str(exc)) from exc
+
+    def embed_texts(
+        self,
+        texts: list[str],
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        if not texts:
+            return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+        embedded = list(self._embedder().passage_embed(texts, batch_size=64))
+        vectors = np.asarray(embedded, dtype=np.float32)
+        if vectors.ndim != 2 or vectors.shape != (len(texts), EMBEDDING_DIMENSION):
+            raise RuntimeError(
+                f"Unexpected {EMBEDDING_MODEL} vector shape: {vectors.shape}"
+            )
+        if not np.isfinite(vectors).all():
+            raise RuntimeError("FastEmbed returned non-finite embedding values")
+        return vectors
+
+    def rerank(self, query: str, documents: list[str]) -> list[float]:
+        if not documents:
+            return []
+        scores = list(self._cross_encoder().rerank(query, documents, batch_size=32))
+        if len(scores) != len(documents):
+            raise RuntimeError(
+                "FastEmbed reranker returned a different number of scores than passages"
+            )
+        return [float(score) for score in scores]
+
+    @staticmethod
+    def _generation_root(index_path: Path) -> Path:
+        root = index_path.parent.parent
+        if not (root / "chunks" / "chunks.jsonl").is_file():
+            raise ValueError(
+                "An exact dense index must live at <generation>/indexes/<name>: "
+                + str(index_path)
+            )
+        return root
+
+    @staticmethod
+    def _load_portable_vectors(
+        vectors_path: Path,
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        try:
+            vectors = np.load(vectors_path, allow_pickle=False, mmap_mode="r")
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                f"Cannot load portable embeddings: {vectors_path}"
+            ) from exc
+        if vectors.dtype != np.float32:
+            raise ValueError("Portable embeddings must use float32 values")
+        if vectors.ndim != 2 or vectors.shape[1] != EMBEDDING_DIMENSION:
+            raise ValueError("Portable embeddings have an invalid shape")
+        for offset in range(0, vectors.shape[0], 4096):
+            if not np.isfinite(vectors[offset : offset + 4096]).all():
+                raise ValueError("Portable embeddings contain non-finite values")
+        return vectors
+
+    def initialize_index(self, index_path: Path, dimension: int) -> None:
+        if dimension != EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"An exact dense index requires {EMBEDDING_DIMENSION} dimensions, "
+                f"not {dimension}"
+            )
+        if index_path.exists():
+            raise ValueError(f"Exact dense index path already exists: {index_path}")
+        index_path.mkdir(parents=True)
+        self._pending_chunk_ids = []
+        self._pending_document_ids = []
+
+    def upload_index_batch(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors: np.ndarray[Any, np.dtype[np.float32]],
+        *,
+        offset: int,
+    ) -> None:
+        """Record per-row identity; the vectors are already the portable file."""
+
+        if vectors.shape != (len(chunks), EMBEDDING_DIMENSION):
+            raise ValueError("Exact dense index batch has an invalid vector shape")
+        if offset != len(self._pending_chunk_ids):
+            raise ValueError("Exact dense index batches must be uploaded in order")
+        for chunk in chunks:
+            chunk_id = str(chunk.get("chunk_id") or "")
+            document_id = str(chunk.get("document_id") or "")
+            if not chunk_id or not document_id:
+                raise ValueError(
+                    "Exact dense index chunks need a chunk_id and a document_id"
+                )
+            self._pending_chunk_ids.append(chunk_id)
+            self._pending_document_ids.append(document_id)
+
+    def finalize_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> dict[str, Any]:
+        if len(self._pending_chunk_ids) != expected_count:
+            raise ValueError(
+                f"Exact dense index expected {expected_count} chunks but "
+                f"received {len(self._pending_chunk_ids)}"
+            )
+        atomic_write_json(
+            index_path / EXACT_DOCUMENTS_FILENAME,
+            {
+                "schema_version": 1,
+                "chunk_ids": self._pending_chunk_ids,
+                "document_ids": self._pending_document_ids,
+            },
+        )
+        atomic_write_json(
+            index_path / EXACT_INDEX_FILENAME,
+            {
+                "schema_version": 1,
+                "backend": EXACT_BACKEND_NAME,
+                "dimension": dimension,
+                "count": expected_count,
+                "vectors": _EXACT_VECTORS_RELATIVE.as_posix(),
+                "documents": EXACT_DOCUMENTS_FILENAME,
+            },
+        )
+        self._pending_chunk_ids = []
+        self._pending_document_ids = []
+        self._loaded.pop(index_path.resolve(), None)
+        return {
+            "backend": "portable float32 vectors (exact cosine scan)",
+            "collection": None,
+            "distance": "cosine",
+            "embedding_runtime": "FastEmbed ONNX Runtime (CPU)",
+            "embedding_model": EMBEDDING_MODEL,
+            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_dimension": dimension,
+            "point_count": expected_count,
+        }
+
+    def build_from_vectors(
+        self,
+        chunks: list[dict[str, Any]],
+        index_path: Path,
+        vectors_path: Path,
+    ) -> dict[str, Any]:
+        expected_vectors = self._generation_root(index_path) / _EXACT_VECTORS_RELATIVE
+        if vectors_path.resolve() != expected_vectors.resolve():
+            raise ValueError(
+                "An exact dense index expects its portable vectors at "
+                + str(expected_vectors)
+            )
+        vectors = self._load_portable_vectors(vectors_path)
+        if vectors.shape != (len(chunks), EMBEDDING_DIMENSION):
+            raise ValueError(
+                "Portable embedding dimensions do not match the chunk collection"
+            )
+        self.initialize_index(index_path, EMBEDDING_DIMENSION)
+        self.upload_index_batch(chunks, index_path, vectors, offset=0)
+        return self.finalize_index(
+            index_path,
+            expected_count=len(chunks),
+            dimension=EMBEDDING_DIMENSION,
+        )
+
+    def _load_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int | None = None,
+        dimension: int | None = None,
+    ) -> _ExactIndex:
+        root = self._generation_root(index_path)
+        descriptor = _read_index_object(
+            index_path / EXACT_INDEX_FILENAME,
+            "exact dense index descriptor",
+        )
+        if descriptor.get("schema_version") != 1:
+            raise ValueError("Unsupported exact dense index schema")
+        if descriptor.get("backend") != EXACT_BACKEND_NAME:
+            raise ValueError("Exact dense index descriptor names another backend")
+        index_dimension = descriptor.get("dimension")
+        if index_dimension != EMBEDDING_DIMENSION:
+            raise ValueError(
+                f"An exact dense index requires {EMBEDDING_DIMENSION} dimensions"
+            )
+        if dimension is not None and index_dimension != dimension:
+            raise ValueError(
+                f"Exact dense index dimension {index_dimension} does not match "
+                f"{dimension}"
+            )
+        documents_path = index_path / str(descriptor.get("documents") or "")
+        documents = _read_index_object(
+            documents_path,
+            "exact dense index identity",
+        )
+        raw_chunk_ids = documents.get("chunk_ids")
+        raw_document_ids = documents.get("document_ids")
+        if not isinstance(raw_chunk_ids, list) or not isinstance(
+            raw_document_ids, list
+        ):
+            raise TypeError("Exact dense index identity lists are missing")
+        chunk_ids = tuple(str(item) for item in raw_chunk_ids)
+        document_ids = tuple(str(item) for item in raw_document_ids)
+        if not chunk_ids or len(chunk_ids) != len(document_ids):
+            raise ValueError("Exact dense index identity lists are inconsistent")
+        if expected_count is not None and len(chunk_ids) != expected_count:
+            raise RuntimeError(
+                f"Exact dense index expected {expected_count} rows, "
+                f"found {len(chunk_ids)}"
+            )
+        vectors_path = root / str(descriptor.get("vectors") or "")
+        if not vectors_path.is_file() or vectors_path.is_symlink():
+            raise ValueError(f"Exact dense index vectors are missing: {vectors_path}")
+        key = index_path.resolve()
+        modified_ns = vectors_path.stat().st_mtime_ns
+        cached = self._loaded.get(key)
+        if cached is not None and cached[0] == modified_ns:
+            return cached[1]
+        vectors = self._load_portable_vectors(vectors_path)
+        if vectors.shape != (len(chunk_ids), EMBEDDING_DIMENSION):
+            raise ValueError("Exact dense index vectors do not match its identity")
+        norms = np.linalg.norm(vectors, axis=1).astype(np.float32)
+        # A zero vector scores zero instead of dividing by zero.
+        norms[norms == 0.0] = 1.0
+        index = _ExactIndex(
+            vectors=vectors,
+            chunk_ids=chunk_ids,
+            document_ids=document_ids,
+            norms=norms,
+        )
+        self._loaded[key] = (modified_ns, index)
+        return index
+
+    def validate_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> None:
+        if not index_path.is_dir() or index_path.is_symlink():
+            raise ValueError(f"Dense index is missing or unsafe: {index_path}")
+        self._load_index(
+            index_path,
+            expected_count=expected_count,
+            dimension=dimension,
+        )
+
+    def search(
+        self,
+        index_path: Path,
+        query: str,
+        top_k: int,
+        *,
+        document_ids: list[str] | None = None,
+        excluded_document_ids: list[str] | None = None,
+    ) -> list[DenseSearchHit]:
+        if not index_path.is_dir():
+            raise ValueError(f"Dense index is missing: {index_path}")
+        index = self._load_index(index_path)
+        query_vectors = list(self._embedder().query_embed(query))
+        if len(query_vectors) != 1:
+            raise RuntimeError("FastEmbed did not return exactly one query vector")
+        query_vector = np.asarray(query_vectors[0], dtype=np.float32)
+        if query_vector.shape != (EMBEDDING_DIMENSION,):
+            raise RuntimeError(
+                f"Unexpected {EMBEDDING_MODEL} query vector shape: {query_vector.shape}"
+            )
+        query_norm = float(np.linalg.norm(query_vector))
+        if not np.isfinite(query_norm) or query_norm == 0.0:
+            raise RuntimeError("FastEmbed returned a degenerate query vector")
+
+        allowed = np.ones(len(index.chunk_ids), dtype=bool)
+        if document_ids:
+            wanted = set(document_ids)
+            allowed &= np.fromiter(
+                (item in wanted for item in index.document_ids),
+                dtype=bool,
+                count=len(index.document_ids),
+            )
+        if excluded_document_ids:
+            blocked = set(excluded_document_ids)
+            allowed &= np.fromiter(
+                (item not in blocked for item in index.document_ids),
+                dtype=bool,
+                count=len(index.document_ids),
+            )
+        rows = np.flatnonzero(allowed)
+        if rows.size == 0 or top_k <= 0:
+            return []
+
+        scores = (index.vectors @ query_vector) / (index.norms * query_norm)
+        candidate_scores = scores[rows]
+        # A stable sort keeps lower row order for equal scores.
+        order = np.argsort(-candidate_scores, kind="stable")
+        hits: list[DenseSearchHit] = []
+        for position in order[:top_k]:
+            score = float(candidate_scores[position])
+            if not np.isfinite(score):
+                raise RuntimeError("Exact dense search produced a non-finite score")
+            row = int(rows[position])
+            hits.append(DenseSearchHit(chunk_id=index.chunk_ids[row], score=score))
+        return hits

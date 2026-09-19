@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from research_ultra_rag_mcp.dense import (
+    EMBEDDING_DIMENSION,
     DenseTokenAuditUnavailable,
     LocalQdrantDenseBackend,
+    LocalVectorDenseBackend,
 )
 
 
@@ -40,6 +43,127 @@ def test_embedding_token_audit_accepts_an_empty_batch(tmp_path: Path) -> None:
     backend = LocalQdrantDenseBackend(tmp_path / "models", offline=True)
 
     assert backend.embedding_token_counts([]) == []
+
+
+class _StubQueryEmbedder:
+    """Stands in for FastEmbed so exact-search tests need no model cache."""
+
+    def __init__(self, vector: list[float]) -> None:
+        self.vector = np.asarray(vector, dtype=np.float32)
+
+    def query_embed(self, query: str) -> list[np.ndarray]:
+        return [self.vector]
+
+
+def _unit(index: int) -> list[float]:
+    vector = [0.0] * EMBEDDING_DIMENSION
+    vector[index] = 1.0
+    return vector
+
+
+def _exact_generation(tmp_path: Path) -> tuple[Path, Path, list[dict[str, object]]]:
+    root = tmp_path / "generation"
+    (root / "chunks").mkdir(parents=True)
+    (root / "chunks" / "chunks.jsonl").write_text("", encoding="utf-8")
+    (root / "portable").mkdir(parents=True)
+    chunks: list[dict[str, object]] = [
+        {"chunk_id": "c0", "document_id": "doc-a"},
+        {"chunk_id": "c1", "document_id": "doc-b"},
+        {"chunk_id": "c2", "document_id": "doc-b"},
+        {"chunk_id": "c3", "document_id": "doc-b"},
+    ]
+    diagonal = 0.70710678
+    vectors = np.asarray(
+        [
+            _unit(0),
+            _unit(1),
+            [diagonal, diagonal] + [0.0] * (EMBEDDING_DIMENSION - 2),
+            [-1.0] + [0.0] * (EMBEDDING_DIMENSION - 1),
+        ],
+        dtype=np.float32,
+    )
+    np.save(root / "portable" / "embeddings.npy", vectors)
+    return root, root / "indexes" / "dense-exact", chunks
+
+
+def test_exact_backend_builds_and_searches_by_cosine(tmp_path: Path) -> None:
+    _root, index_path, chunks = _exact_generation(tmp_path)
+    backend = LocalVectorDenseBackend(tmp_path / "models", offline=True)
+
+    metadata = backend.build_from_vectors(
+        chunks,
+        index_path,
+        index_path.parent.parent / "portable" / "embeddings.npy",
+    )
+
+    assert metadata["backend"] == "portable float32 vectors (exact cosine scan)"
+    assert metadata["point_count"] == 4
+    assert metadata["distance"] == "cosine"
+    backend.validate_index(index_path, expected_count=4, dimension=384)
+
+    backend._embedder = lambda: _StubQueryEmbedder(_unit(0))
+    hits = backend.search(index_path, "anything", 4)
+
+    assert [hit.chunk_id for hit in hits] == ["c0", "c2", "c1", "c3"]
+    assert hits[0].score == pytest.approx(1.0, abs=1e-6)
+    assert hits[1].score == pytest.approx(0.70710678, abs=1e-6)
+    assert hits[2].score == pytest.approx(0.0, abs=1e-6)
+    assert hits[3].score == pytest.approx(-1.0, abs=1e-6)
+
+
+def test_exact_backend_applies_document_filters_and_top_k(tmp_path: Path) -> None:
+    _root, index_path, chunks = _exact_generation(tmp_path)
+    backend = LocalVectorDenseBackend(tmp_path / "models", offline=True)
+    backend.build_from_vectors(
+        chunks,
+        index_path,
+        index_path.parent.parent / "portable" / "embeddings.npy",
+    )
+    backend._embedder = lambda: _StubQueryEmbedder(_unit(0))
+
+    restricted = backend.search(index_path, "q", 4, document_ids=["doc-a"])
+    assert [hit.chunk_id for hit in restricted] == ["c0"]
+
+    excluded = backend.search(index_path, "q", 4, excluded_document_ids=["doc-a"])
+    assert [hit.chunk_id for hit in excluded] == ["c2", "c1", "c3"]
+
+    # An empty filter list means "no filter", matching the Qdrant backend.
+    unfiltered = backend.search(index_path, "q", 4, document_ids=[])
+    assert len(unfiltered) == 4
+
+    unknown = backend.search(index_path, "q", 4, document_ids=["doc-missing"])
+    assert unknown == []
+
+    assert [hit.chunk_id for hit in backend.search(index_path, "q", 2)] == ["c0", "c2"]
+
+
+def test_exact_backend_rejects_inconsistent_or_misplaced_indexes(
+    tmp_path: Path,
+) -> None:
+    root, index_path, chunks = _exact_generation(tmp_path)
+    backend = LocalVectorDenseBackend(tmp_path / "models", offline=True)
+    vectors_path = root / "portable" / "embeddings.npy"
+    backend.build_from_vectors(chunks, index_path, vectors_path)
+
+    with pytest.raises(RuntimeError, match="expected 5 rows"):
+        backend.validate_index(index_path, expected_count=5, dimension=384)
+    with pytest.raises(ValueError, match="missing or unsafe"):
+        backend.validate_index(
+            tmp_path / "absent",
+            expected_count=4,
+            dimension=384,
+        )
+
+    descriptor_path = index_path / "index.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["vectors"] = "portable/absent.npy"
+    descriptor_path.write_text(json.dumps(descriptor), encoding="utf-8")
+    with pytest.raises(ValueError, match="vectors are missing"):
+        backend.validate_index(index_path, expected_count=4, dimension=384)
+
+    # An exact index must live beside the generation it describes.
+    with pytest.raises(ValueError, match="must live at"):
+        backend.build_from_vectors(chunks, tmp_path / "elsewhere", vectors_path)
 
 
 def test_local_qdrant_batches_resume_without_skips_or_duplicates(

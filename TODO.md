@@ -84,11 +84,23 @@ here.
 Only if D6 selects option B. This is the change that makes an incremental
 add cheap without weakening resumability.
 
-- [ ] Prototype a `LocalVectorDenseBackend` behind the existing `DenseBackend`
-      protocol, reading `portable/embeddings.npy` and the artifact-lookup
-      ordinals; no new dependency.
-- [ ] Keep exclusion and document-ID filters enforced on candidate IDs, exactly
-      as the Qdrant path does today.
+Status: the backend and its unit tests are committed, but it is **not yet
+selectable**. The generation manifest does not record a dense backend, the
+service always constructs `LocalQdrantDenseBackend`, and retrieval still opens a
+Qdrant index, so no behaviour changes yet. The remaining items below are the
+wiring step.
+
+
+- [x] Implement `LocalVectorDenseBackend` behind the existing `DenseBackend`
+      protocol, reading `portable/embeddings.npy` as a memory map. Deviation from
+      the original plan: it does not read the artifact-lookup sidecar, because the
+      protocol's `search(index_path)` signature cannot reach it and a per-query
+      JSONL scan would be slower. Instead the build writes a small
+      `indexes/<name>/documents.json` holding the per-row `chunk_id` and
+      `document_id` lists, so filtering needs no other file. No new dependency.
+- [x] Keep exclusion and document-ID filters enforced on candidate IDs, exactly
+      as the Qdrant path does today, including the "empty list means no filter"
+      convention.
 - [ ] Add a compatibility path so existing generations with a Qdrant dense index
       still search, or flag them for one regeneration.
 - [ ] Prove equivalence correctly: the ANN path is approximate, so the gate is
