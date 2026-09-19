@@ -21,17 +21,18 @@ appear at the end of this document.
 - A CPU-first stdio MCP server for AI agents and a local browser UI.
 - Recursive ingestion of regular `.pdf` and `.epub` files only. Markdown and
   all other formats are ignored.
-- Resolved titles, authors, years, DOIs, metadata provenance, and original-file
-  PDF page or EPUB internal locators.
+- Resolved titles, authors, years, DOIs, per-field metadata provenance and
+  warnings, and original-file PDF page or EPUB internal locators.
 - BM25 lexical search, dense semantic search, hybrid search, metadata filters,
   optional CPU reranking, and an opt-in reference-grouped result view.
-- Reviewed metadata, reversible source inclusion/exclusion, and portable
-  project bundles.
+- Reviewed metadata corrections that apply immediately to indexed sources,
+  reversible source inclusion/exclusion, and portable project bundles.
 - Durable CPU ingestion checkpoints: bounded calls can be repeated after a
   client timeout, cancellation, service restart, or ordinary time-budget return.
 - English-oriented corrupt-text and symbol-only rejection with source locators
   and reason codes; unreadable units are excluded without guessing replacement
-  text.
+  text, while foreign-script quotations are flagged with `text_notes` instead of
+  being withheld.
 - Immutable, project-local generations that become active only after both
   indexes pass.
 
@@ -170,6 +171,25 @@ complete BM25 and Qdrant indexes verify. Cancellation and timeout retain the
 last atomic checkpoint; a non-resumable failure leaves the previous generation
 selected, removes its partial staging data, and records a small failure report.
 
+`list_sources` can be called before ingestion. Its `discovered_sources` array
+lists every live PDF/EPUB with a project-scoped `source_id`, inclusion state,
+and whether it is indexed in the selected generation. A `source_id` is derived
+from the stable project ID and source-relative path: it survives changes to the
+file's bytes, but a rename or move creates a new source ID. Prefer this ID when
+an agent calls `set_source_metadata` or `set_source_inclusion`. A
+`document_id`, by contrast, identifies one content/path version used by a
+generation and can change after the source bytes or path changes.
+Calling `list_sources` idempotently registers discovered IDs in the portable
+project catalog. Its lean `known_sources` array therefore retains an ID-to-path
+handle after an original is renamed, moved, or temporarily absent; it does not
+silently transfer metadata from an old path to a new one.
+`reviewed_metadata_sources` enumerates every saved override with the same
+stable ID, including a source whose original is temporarily absent, so an agent
+can inspect, replace, or remove every persisted metadata decision.
+
+Both mutation tools require exactly one selector: `source_id` is the preferred
+form, while `source_path` remains available for compatibility.
+
 ## Research workflow
 
 Useful prompts include:
@@ -181,12 +201,13 @@ Useful prompts include:
 - “Compare how these sources explain …; distinguish agreement from conflict.”
 - “Get the neighboring passages around chunk `chk_…` before interpreting it.”
 - “Open the original at the returned path and page before quoting it.”
-- “List sources with missing or low-confidence title, author, year, or DOI
-  metadata. Treat automatic metadata as provisional; show me questionable
-  values and use `set_source_metadata` only after I review them.”
-- “Exclude `duplicate.pdf` as a reviewed duplicate of `preferred.pdf`; do not
-  delete either file.”
-- “Restore `duplicate.pdf`, then re-ingest if it is absent from the current
+- “List sources with missing metadata or extraction warnings. Treat automatic
+  metadata as provisional; show me its provenance, then use the source ID with
+  `set_source_metadata` after I review the original. Apply the correction now
+  without re-ingesting.”
+- “List the source IDs, then exclude the duplicate source ID as a reviewed
+  duplicate of the preferred source ID; do not delete either file.”
+- “Restore that source ID, then re-ingest if it is absent from the current
   generation.”
 
 Hybrid is the normal search mode. Use BM25 diagnostically for exact names,
@@ -201,25 +222,38 @@ truth or confidence probability.
 The default `result_view="passages"` is the unchanged global passage ranking.
 Use `result_view="references"` when one prolific source would otherwise occupy
 the result budget. It scans the relevance-gated candidate ordering, admits at
-most `passages_per_reference` passages from each `document_id`, and keeps
+most `passages_per_reference` passages from each stable `source_id`, and keeps
 `top_k` as the total number of passages returned. The response reports explicit
 returned and candidate-pool reference counts; it does not merge editions by
 title, DOI, or filename. `relevance_limited` reports a candidate-pool shortfall;
 `grouping_limited` separately reports when the per-reference cap prevents the
 view from filling that passage budget.
 
-Adding, removing, or changing a source or reviewed metadata makes the selected
-generation stale; it does not change search results until a new generation
-succeeds. **Re-ingest changes** verifies every source hash, reuses compatible
-documents/chunks/vectors, and reconstructs both complete indexes. **Regenerate**
-sets `force_recompute=true` and deliberately bypasses all reuse.
+Adding, removing, or changing source content—or changing source inclusion—can
+make the selected generation stale. Reviewed metadata is different: for a
+source already in the selected generation, `set_source_metadata` immediately
+updates source listings, filters, search results and citations, and neighboring
+passages. It does not rewrite the immutable generation or change chunk IDs, and
+a metadata-only difference is reported separately through the metadata overlay
+and snapshot fields rather than as stale retrieval state. Metadata for a source
+absent from the selected generation is saved but requires ingestion before that
+source can appear. **Re-ingest
+changes** verifies every source hash, reuses compatible documents/chunks/vectors,
+and reconstructs both complete indexes. **Regenerate** sets
+`force_recompute=true` and deliberately bypasses all reuse.
 
-Extraction rejects whole corrupt pages/sections when their text has strong
-signals of a broken PDF character map or is incompatible with the selected
-English-oriented policy. Diagnostics retain only the source locator and reason
-codes, not the rejected garbage. If no readable unit remains in a source, the
-build fails so the original can be repaired or OCRed. Reviewed metadata is not
-overridden by this automatic classifier. Ingestion also excludes nonempty chunks
+Extraction rejects whole corrupt pages/sections only when their text carries
+strong evidence of a broken character map: replacement characters, private-use
+or unassigned code points, or a known damaged encoding sequence. Diagnostics
+retain only the source locator and reason codes, not the rejected garbage. If no
+readable unit remains in a source, the build fails so the original can be
+repaired or OCRed. Formula-font letters (`𝑀` → `M`) and the presentation
+ligatures `ﬁ`, `ﬂ`, and `ﬀ` are folded to their plain spellings so a typed query
+matches the printed text, while accented letters, superscripts, subscripts, and
+symbols are left unchanged. Script mixing and non-Latin dominance are never
+rejection reasons; they are reported as advisory notes so a quotation in another
+language stays retrievable. Reviewed metadata is not overridden by this automatic
+classifier. Ingestion also excludes nonempty chunks
 that contain no Unicode alphanumeric content. Ordinary text, numeric content,
 and formulas containing at least one letter or digit are not classified as
 symbol-only; the existing extraction-artifact checks still apply.
@@ -244,7 +278,7 @@ The UI provides:
 - hybrid, BM25, or dense search with filters and optional reranking;
 - neighboring passage context;
 - opening a PDF in the browser or downloading an EPUB original;
-- reviewed metadata editing;
+- reviewed metadata editing that applies immediately to indexed sources;
 - reviewed source exclusion and restoration without deleting originals;
 - **Create generation** for the first normal build;
 - **Re-ingest changes** for verified reuse after project changes;
@@ -303,7 +337,8 @@ my-research-project/
 ├── sources/                              untouched PDF/EPUB originals
 └── .research-rag/                        all research-RAG project state
     ├── project.json                      stable ID, name, source setting
-    ├── source-metadata.json              reviewed metadata, when present
+    ├── source-catalog.json               durable source ID-to-path registry
+    ├── source-metadata.json              authoritative reviewed metadata overlay
     ├── source-exclusions.json            reviewed decisions, when present
     ├── bundles/                          exported/import-ready archives
     └── runtime/                          disposable derived state
@@ -319,6 +354,7 @@ my-research-project/
             ├── chunks/chunks.jsonl
             ├── portable/embeddings.npy
             └── indexes/
+                ├── artifact-lookup.sqlite3
                 ├── bm25/
                 └── qdrant/
 
@@ -399,15 +435,37 @@ duplication is intentional.
 
 | Tool | Parameters and defaults | Access | When to call it |
 |---|---|---|---|
-| `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, upgrade reasons, model-cache path, last build metrics, and any `ingestion_progress`. |
+| `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, whether `metadata_overlay_active`, any `metadata_pending_source_paths`, upgrade reasons, model-cache path, last build metrics, and any `ingestion_progress`. |
 | `ingest` | `chunk_size=384` (50–384 GPT-2 tokens); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false`; `work_budget_seconds=45` (10–300) | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. Repeat matching calls while the result is `in_progress`; `ready` and `unchanged` are terminal. |
-| `search` | required `query`; `top_k=8` (1–50 total passages); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false`; `result_view="passages"`; `passages_per_reference=2` (1–5) | Read | Retrieve relevance-limited evidence. The optional reference view caps passages per `document_id` and returns `reference_groups`; filters retain their existing semantics. |
-| `list_sources` | `categories=null`; `keywords=null` | Read | Inspect indexed bibliography or filter it by reviewed metadata. |
+| `search` | required `query`; `top_k=8` (1–50 total passages); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false`; `result_view="passages"`; `passages_per_reference=2` (1–5) | Read | Retrieve relevance-limited evidence. The optional reference view caps passages per stable `source_id` and returns `reference_groups`; filters retain their existing semantics. |
+| `list_sources` | `categories=null`; `keywords=null` | Idempotent project-state write | Inspect indexed bibliography and stable source IDs, filter by reviewed metadata, and register live IDs in the portable catalog so `known_sources` remains addressable if a file later disappears. It never changes an original or a generation. |
 | `get_passage` | required `chunk_id`; `context_chunks=1` (0–5 on each side) | Read | Inspect nearby cleaned passages from the same source and generation. |
-| `set_source_metadata` | required source-relative `source_path`; required `metadata` object | Write | Save reviewed `title`, `authors`, `year`, `doi`, `categories`, and/or `keywords`; re-ingest to apply them to a generation. Omitted fields remove previous overrides. |
-| `set_source_inclusion` | required source-relative `source_path`; required `included`; `reason=null` | Write | Exclude or restore a reviewed source without changing the original. A non-empty reason is required for exclusion. |
+| `set_source_metadata` | required `metadata` object; exactly one of stable `source_id` or source-relative `source_path` | Write | Replace the reviewed `title`, `authors`, `year`, `doi`, `categories`, and/or `keywords` override. It applies immediately when the source is indexed—even if the original is temporarily absent—and reports `effective_metadata`, `effective_immediately`, and `requires_ingest`; omitted fields remove previous overrides. |
+| `set_source_inclusion` | required `included`; exactly one of stable `source_id` or source-relative `source_path`; `reason=null` | Write | Exclude or restore a reviewed source without changing the original. A non-empty reason is required for exclusion. |
 | `export_bundle` | none | Write | Export the selected fresh, upgrade-compatible generation and all originals beneath `.research-rag/bundles/`. |
-| `import_bundle` | required `bundle_name`; `activate=true` | Write | Validate a project-local archive, install non-conflicting originals/state, reconstruct indexes, and optionally select it. |
+| `import_bundle` | required `bundle_name`; `activate=true` | Write | Validate a project-local archive, install non-conflicting originals/state, reconstruct indexes, and optionally select it. Portable state becomes authoritative immediately; when a generation is already selected, matching imported metadata and exclusions govern its retrieval even with `activate=false`, while its pointer stays unchanged. |
+
+For example, a post-ingestion metadata correction can be sent directly through
+the MCP tool:
+
+```json
+{
+  "source_id": "src_0123456789abcdef01234567",
+  "metadata": {
+    "title": "Corrected Title",
+    "authors": ["Reviewed Author"],
+    "categories": ["political economy"]
+  }
+}
+```
+
+When that source is in the selected generation, the response includes
+`"effective_immediately": true`, `"requires_ingest": false`, and the resolved
+`effective_metadata` so an agent can verify the change in the same call. The
+metadata object is the complete reviewed override, not a patch: omitting a
+field removes its previous reviewed value. An empty object restores every
+automatic value; an explicit empty value (`""`, `[]`, or `null` where accepted)
+deliberately clears that automatic field.
 
 A representative abbreviated search response is:
 
@@ -423,6 +481,8 @@ A representative abbreviated search response is:
   "hits": [
     {
       "rank": 1,
+      "source_id": "src_0123456789abcdef01234567",
+      "document_id": "doc_0123456789abcdef01234567",
       "title": "Supply Chains and the Human Condition",
       "authors": ["Anna Tsing"],
       "source_path": "sources/tsing.pdf",
@@ -439,12 +499,14 @@ A representative abbreviated search response is:
 }
 ```
 
-Researchers normally use `title`, `authors`, `source_path`, and `locator` to
-identify the original; `text` to assess semantic relevance; `match_kind` to see
-which route found it; and component ranks/scores to understand ordering. BM25
-does not expose a comparable raw score in this integration, so it reports rank
-only. Reference view retains the selected passages in `hits` and additionally
-groups them beneath `reference_groups` in first-best-passage order.
+Researchers normally use `source_id`, `title`, `authors`, `source_path`, and
+`locator` to identify the original; `text` to assess semantic relevance;
+`match_kind` to see which route found it; and component ranks/scores to
+understand ordering. `document_id` identifies the indexed source version, not
+the durable handle for metadata edits. BM25 does not expose a comparable raw
+score in this integration, so it reports rank only. Reference view retains the
+selected passages in `hits` and additionally groups them beneath
+`reference_groups` in first-best-passage order.
 
 ## How it works under the hood
 
@@ -468,22 +530,42 @@ UltraRAG GPT-2 token chunking
 The research layer selects allowed files, extracts layout-aware semantic units,
 resolves bibliography, cleans layout artifacts, and preserves locators.
 UltraRAG performs GPT-2 token chunking and BM25 indexing/search. FastEmbed
-produces revision-pinned CPU embeddings; embedded Qdrant stores vectors and
-filter payloads inside the generation. Weighted reciprocal-rank fusion combines
-BM25 weight `1.25` and dense weight `1.0`. The MCP returns structured passages;
-the calling agent performs interpretation and answer generation.
+produces revision-pinned CPU embeddings. Embedded Qdrant stores vectors with
+only lean lookup payloads (`chunk_id`, `document_id`, and `source_id`) inside
+the generation; canonical passage content and locators stay in `chunks.jsonl`,
+while document metadata and provenance stay in the manifest. A compact SQLite
+sidecar stores only IDs, content hashes, vector ordinals, and JSONL byte offsets
+so query and reuse paths load selected records without copying corpus text into
+another artifact. Weighted
+reciprocal-rank fusion combines BM25 weight `1.25` and dense weight `1.0`. The
+MCP returns structured passages; the calling agent performs interpretation and
+answer generation.
 
-Generations are immutable. Before ingestion decides what to do, it hashes every
-discovered PDF/EPUB and fingerprints metadata, exclusions, chunk settings,
-processing policies, and embedding model. An exact match is a true no-op.
+Generations are immutable. Reviewed metadata lives outside them as portable
+project state and is overlaid at read time. Search, source listing, neighboring
+passages, citations, and category/keyword filters therefore use the current
+reviewed values immediately without rewriting chunk, BM25, vector, or Qdrant
+files. For dense filtering, current metadata is resolved to document IDs within
+the selected generation instead of trusting stale copied metadata.
+
+Before ingestion decides what to do, it hashes every discovered PDF/EPUB and
+fingerprints exclusions, chunk settings, processing policies, and the embedding
+model. Reviewed metadata is intentionally excluded from generation and
+checkpoint identity because it does not change source text or ranking indexes.
+An exact match is a true no-op.
 Otherwise, compatible unchanged documents retain their extracted units and
-chunks; an exact `embedding_text` plus model fingerprint can retain its vector.
+chunks; an exact canonical `contents` value plus model fingerprint can retain
+its vector. Final chunk records keep one semantic-text field, `contents`, plus
+identity, locator, and structural fields. Reading legacy `text` or
+`embedding_text` fields is compatibility behavior, not the current artifact
+format.
 Changed material is recomputed. The server always reconstructs complete new
 BM25 and Qdrant indexes for a changed generation and atomically switches the
-pointer only after verification. Source hashes, PDF page scans/extraction, EPUB
-spine sections, extraction-unit chunking, 64-passage embedding batches, and
-64-point Qdrant uploads commit restartable atomic units; UltraRAG BM25 is a
-restartable finalization step. Every source is hashed again before activation.
+pointer only after verification. Source hashes, fixed eight-page PDF
+scan/extraction batches, EPUB spine sections, extraction-unit chunking,
+64-passage embedding batches, and 64-point Qdrant uploads commit restartable
+atomic units; UltraRAG BM25 is a restartable finalization step. Every source is
+hashed again before activation.
 `force_recompute=true` bypasses reuse while still resuming its own matching
 checkpoint.
 
@@ -494,29 +576,41 @@ payload filters, portable vectors, and exact reuse accounting. Those
 research-specific responsibilities remain thin layers around UltraRAG rather
 than changes to its source.
 
-Bibliographic fields resolve independently. PDF precedence is reviewed override
-→ high-confidence visible front matter → validated embedded metadata → filename
-stem for title only. EPUB precedence is reviewed override → validated OPF
-metadata → visible title/byline → filename stem for title only. Authors are
-never inferred from filenames, and DOI-like titles are moved to the DOI field.
+Bibliographic fields resolve independently. Automatic PDF metadata uses valid
+visible front matter before valid embedded metadata, with the filename stem as
+a title-only fallback. Automatic EPUB metadata uses valid OPF values before
+visible title/byline values, again with the filename stem as a title-only
+fallback. Reviewed values are an authoritative per-field overlay on either
+result. Authors are never inferred from filenames, and DOI-like titles are
+moved to the DOI field. Provenance names the source selected for each field;
+warnings identify concrete missing, conflicting, fallback, or corrupt values.
 
 Automatic bibliography is deliberately best-effort and uses only general
 signals. It contains no document-, author-, or publisher-specific exceptions.
-Correct an uncertain or wrong field with reviewed metadata and re-ingest; the
-reviewed value then has highest precedence.
+Correct an uncertain or wrong field with `set_source_metadata`; the reviewed
+value has highest precedence and applies immediately if the source is indexed.
+Omitted fields remove previous reviewed overrides. When an older generation
+cannot recover an automatic bibliographic value that was hidden by the removed
+override, it uses a safe missing value—or the filename for title—and reports
+`automatic_metadata_unavailable_after_override_removal`. A later ingestion can
+recover automatic metadata from the original, but is not required for supplied
+reviewed values to work.
 
 Hybrid search uses weighted reciprocal-rank fusion with `k=60`. BM25 candidates
 must contain a non-stopword query token; dense candidates require cosine
 similarity of at least `0.72`; known extraction artifacts are rejected before
 optional reranking. Corrupt-text checks also run during retrieval, so older
 generations stop returning rejected text before re-ingestion removes it from
-their successors. The same retrieval guard excludes symbol-only chunks from
-older generations immediately. The pinned embedding model is
+their successors. Every result discloses what was withheld in
+`withheld_candidates`, including the reason codes and example chunk IDs, and every
+returned passage carries `text_notes` when it mixes scripts. The same retrieval
+guard excludes symbol-only chunks from older generations immediately. The pinned
+embedding model is
 `BAAI/bge-small-en-v1.5` (384 dimensions), and the optional reranker is
 `Xenova/ms-marco-MiniLM-L-6-v2`.
 
 Reference grouping is applied only after retrieval, relevance gates, fusion,
-and optional reranking. It groups strictly by stable `document_id`, preserves
+and optional reranking. It groups strictly by stable `source_id`, preserves
 the ranked order of admitted passages, and reports how many candidates were
 skipped by the per-reference cap. A checked-in graded source-level judgment
 fixture guards the default cap against both single-source crowding and blind
@@ -532,9 +626,13 @@ project-specific retrieval quality.
   block locators, not stable page numbers. These improve navigation but are not
   quote offsets or synthesized CFIs.
 - The embedding and reranking models are English-oriented.
-- The text-health policy is intentionally English-oriented and can exclude
-  legitimate predominantly non-Latin source text. It does not perform OCR or
-  attempt encoding repair.
+- The text-health policy is intentionally English-oriented. It withholds a
+  passage only for corruption evidence and never for mixing scripts, so a
+  quotation in another language stays retrievable and is returned with
+  `text_notes`. It does not perform OCR or attempt encoding repair.
+- English is the supported language and workload. Non-English-primary corpora,
+  OCR or scanned sources, handwriting, and formula-heavy corpora are outside the
+  designed scope.
 - Duplicate decisions require agent/user review; the server never deletes the
   original.
 - Large CPU ingestions and optional reranking can be slow. Ingestion is

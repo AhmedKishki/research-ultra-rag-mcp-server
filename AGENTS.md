@@ -27,14 +27,41 @@ repository to support this project.
 - `AGENTS.md` is this engineering contract. It may document internal dependency
   boundaries, but must not become a second user manual.
 - `ROADMAP.md` contains only deferred work.
+- `PLAN.md` records review findings, their evidence, and the agreed
+  strengthening sequence. It is a review and plan document, not a description of
+  shipped behaviour.
+- `TODO.md` is the actionable checklist derived from `PLAN.md`. It may repeat
+  `PLAN.md` items as checkboxes but must not introduce capability that is absent
+  from `PLAN.md` or `ROADMAP.md`.
 - `NOTICE` contains attribution and legal notices.
+
+## Presenting decisions to the user
+
+Any question that needs a user choice must be presented as a numbered list of
+concrete options, never as an open question. For every decision:
+
+- give each option a short identifier (`A`, `B`, `C`, …), a one-line statement of
+  what it does, and the smallest change it requires;
+- state pros and cons for each option separately, covering cost, risk, and the
+  effect on the research contract;
+- state whether each option is reversible and what undoing it would take;
+- mark exactly one option as the recommendation and say why in one sentence;
+- include an explicit "no change" or "decide later" option whenever work can
+  proceed without an answer;
+- keep options mutually exclusive, and complete enough that choosing one is
+  sufficient to proceed;
+- record the options in `PLAN.md` with the same identifiers before asking, and
+  record the chosen option there afterwards, so the decision stays traceable;
+- never implement a choice that changes generation artifacts, retrievable
+  evidence, the portable-state contract, or on-disk layouts before the user has
+  chosen it.
 
 ## Current compatibility baseline
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`,
   `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.10.0`
+- Version: `0.11.0`
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
@@ -64,9 +91,12 @@ repository to support this project.
 - Keep source exclusions explicit, reversible, project-local, and immediately
   enforced by every retrieval surface. Do not add automatic duplicate guessing.
 - Do not switch `current.json` until a generation is completely indexed.
-- Preserve deterministic document IDs, chunk IDs, source paths, and locators.
-  Chunk IDs may change when content or chunking configuration changes; never
-  imply that they are permanent across incompatible generations.
+- Preserve deterministic source IDs, document IDs, chunk IDs, source paths, and
+  locators. A project-scoped `source_id` is based on the normalized
+  source-relative path, survives byte changes, and changes on rename/move. A
+  `document_id` identifies a path/content version. Chunk IDs may change when
+  content or chunking configuration changes; never imply that document or chunk
+  IDs are permanent across incompatible generations.
 - Keep BM25 and dense indexes in the same immutable generation, and never select
   the generation unless both indexes validate successfully.
 - Keep dense vectors and Qdrant payloads project-local; do not introduce a
@@ -141,6 +171,8 @@ citation contract, tests, and user-visible model configuration.
 - `config.py`: project boundary, stable identity, and executable validation.
 - `sources.py`: allowlist, source discovery, hashing, and metadata validation.
 - `extraction.py`: layout-aware PDF/EPUB extraction and bibliographic identity.
+- `artifact_lookup.py`: generation-local SQLite offsets for selective canonical
+  chunk/unit reads and exact-text vector reuse without copied corpus text.
 - `bundle.py`: deterministic export and hostile-archive-safe import staging.
 - `bundle_cli.py`: terminal export/import client.
 - `storage.py`: atomic JSON state and JSONL artifacts.
@@ -166,6 +198,7 @@ Portable, project-owned state lives at:
 
 ```text
 <project>/.research-rag/project.json
+<project>/.research-rag/source-catalog.json
 <project>/.research-rag/source-metadata.json
 <project>/.research-rag/source-exclusions.json
 <project>/.research-rag/bundles/
@@ -190,8 +223,9 @@ run only after older research MCP and UI processes have stopped.
 Changed builds use a unique directory under `staging/`, then move a verified
 generation beneath `generations/` before switching `current.json`. Successful
 generations retain only the manifest, cleaned extraction units, final chunks,
-portable float32 vectors, BM25 index, and Qdrant index. UltraRAG raw chunks are
-temporary staging data, and raw coordinate records are not generated. Bounded
+portable float32 vectors, a text-free SQLite offset lookup, BM25 index, and
+Qdrant index. UltraRAG raw chunks are temporary staging data, and raw coordinate
+records are not generated. Bounded
 calls, cancellations, and timeouts retain an atomic `checkpoint.json` and only
 committed work; incompatible inputs supersede that checkpoint with a small
 diagnostic. Non-resumable failures remove heavy staging data and leave a small
@@ -210,15 +244,25 @@ across processes so no caller observes a partial index.
 - `search`: hybrid-by-default retrieval with selectable BM25/dense modes,
   optional reranking, and passage-ranked or reference-grouped structured
   evidence.
-- `list_sources`: inspect indexed documents and metadata.
+- `list_sources`: inspect indexed documents and metadata, expose
+  `discovered_sources` before ingestion, and idempotently register those stable
+  IDs in the portable catalog so `known_sources` remains addressable after an
+  original disappears. Its MCP read-only hint must remain false because this
+  registration is a durable project-state write.
 - `get_passage`: retrieve neighboring chunks from the same document.
-- `set_source_metadata`: update reviewed metadata for the next generation.
+- `set_source_metadata`: update authoritative reviewed metadata immediately for
+  every retrieval surface when the source is in the selected generation; an
+  unindexed source still requires ingestion. Require exactly one of
+  `source_id` or `source_path`, preferring the ID for agent operations.
 - `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed
   source without modifying the source file; rebuild later to align the indexes.
+  It uses the same exact-one-selector rule.
 - `export_bundle`: export a fresh generation and all original sources beneath
   the project's portable bundle directory.
 - `import_bundle`: validate a project-owned bundle, reconstruct BM25/Qdrant from
-  chunks/vectors, install non-conflicting originals, and switch current last.
+  chunks/vectors, and install non-conflicting originals plus portable state.
+  Switch current last when activation is requested; otherwise keep the pointer
+  while imported metadata/exclusions immediately govern matching retrieval.
 
 Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 Update tests and documentation when changing them.
@@ -237,7 +281,7 @@ Update tests and documentation when changing them.
   current chunk count.
 - `top_k` is always a total returned-passage budget. The optional reference view
   scans the complete relevance-gated candidate ordering, admits at most two
-  passages per `document_id` by default, and groups those passages without
+  passages per `source_id` by default, and groups those passages without
   aggregating scores or rewarding documents for producing more chunks.
 - Reference grouping is presentation-time MCP orchestration. It must not alter
   indexes or the default passage ordering. Keep its cap explicit, report both
@@ -252,23 +296,33 @@ Update tests and documentation when changing them.
   candidates. Artifact revision:
   `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. It must remain opt-in because of
   latency and its extra model.
-- Qdrant owns only vectors and lookup/filter payloads. `chunks.jsonl` remains the
-  canonical passage/provenance store.
+- Qdrant owns only vectors and a lean lookup payload containing `chunk_id`,
+  `document_id`, and `source_id`. `chunks.jsonl` remains the canonical passage
+  and locator store; document metadata and provenance remain canonical in the
+  manifest.
+- The generation-local SQLite artifact lookup contains only identifiers,
+  ordinals, content hashes, and byte offsets into canonical chunk/unit JSONL.
+  It must never duplicate passage or extraction text. Use it for candidate
+  retrieval, neighboring passages, document-scoped reuse, and exact-text vector
+  reuse; reconstruct it from canonical artifacts when a legacy generation or
+  portable bundle does not contain it.
 - Qdrant is used instead of FAISS here because payload filtering and scored
   results are needed. FAISS remains an upstream vanilla capability. Milvus is
   intentionally not required because this server targets local project use.
 - Category and keyword lists use AND semantics; document IDs use membership
-  semantics. Store normalized filter values in Qdrant, but return reviewed
-  values from the canonical chunk store.
+  semantics. Resolve current reviewed filters to matching document IDs, use
+  those IDs for dense retrieval, and verify results against canonical documents
+  rather than copying mutable metadata into Qdrant.
 - Raw BM25 scores are unavailable from the pinned UltraRAG tool. Report its
   rank, never synthesize a score. Dense/fusion/reranker scores are ranking
   signals, not calibrated confidence or truth probabilities.
 - BM25 candidates require at least one non-stopword query token. Dense candidates
   require cosine similarity `>= 0.72`. Reject extraction artifacts before the
   optional reranker and permit fewer than `top_k`, including zero.
-- `text` and internal `embedding_text` contain only cleaned semantic content;
-  never inject paths, IDs, authors, citations, or repeated document titles into
-  each indexed passage.
+- Final chunk artifacts use one cleaned semantic-content field, `contents`;
+  `text` and `embedding_text` are read-only legacy compatibility fallbacks.
+  Never inject paths, authors, citations, or repeated document titles into each
+  indexed passage. Public results project `contents` as `text`.
 - Normalize layout wrapping before chunking, remove controls/soft hyphens, and
   join alphabetic line-end hyphen splits. Preserve all other wording and
   punctuation, but set `direct_quote_safe=false` on every public passage.
@@ -290,26 +344,61 @@ Update tests and documentation when changing them.
 
 ## Metadata and extraction contract
 
-- Resolve each field independently. PDF precedence is reviewed override,
-  high-confidence visible front matter, validated embedded metadata, then the
-  filename stem for title only. EPUB precedence is reviewed override, validated
-  OPF metadata, visible title/byline, then the filename stem for title only.
+- Resolve each field independently. Automatic PDF precedence is valid visible
+  front matter, valid embedded metadata, then the filename stem for title only.
+  Automatic EPUB precedence is valid OPF metadata, visible title/byline, then
+  the filename stem for title only. Apply reviewed metadata afterward as the
+  authoritative read-time per-field overlay.
 - Keep automatic metadata rules generic and conservative. Never add a source-,
   title-, author-, or publisher-specific extraction exception to fix one
   document. Expose uncertainty through provenance and warnings, then use a
   reviewed `set_source_metadata` override for the exceptional document.
 - Never infer authors from filenames. Reject DOI/URL/export-junk titles, move a
-  detected DOI to its own field, and expose per-field provenance/confidence plus
-  review warnings.
+  detected DOI to its own field, and expose per-field provenance plus concrete
+  review warnings. Provenance and those inspectable warnings are the complete
+  uncertainty model.
 - Apply the deterministic English-oriented text-health classifier to complete
   extraction units and automatically extracted titles/authors. Retain only
   locator/reason diagnostics for rejected units, never guessed repairs or their
   garbage text. Reviewed metadata remains authoritative. Apply the same guard
   at retrieval time for older generations.
+- Withhold text only for corruption evidence: replacement characters,
+  private-use or unassigned code points, or a known damaged encoding sequence. A
+  single replacement character counts only with corroborating corruption
+  evidence. Script mixing and non-Latin dominance are advisory `text_notes` that
+  never withhold a unit, a chunk, or a passage, because English-language
+  scholarship legitimately quotes other scripts.
+- Fold only formula-font letters (Mathematical Alphanumeric Symbols) and the
+  alphabetic presentation ligatures (fi, fl, ff) so a typed query can match the
+  printed text. Leave every other character canonical: do not apply global NFKC,
+  because it would also fold superscripts, subscripts, and symbols that carry
+  meaning in citations and notation.
+- Disclose withholding instead of hiding it. Report reason codes, counts, and
+  example chunk IDs in the search response, and record corpus-level withheld
+  counts and reasons in the generation build metrics that `status` returns.
+- Keep checkpoints durable at the finest practical granularity: one extracted
+  document, one PDF scan batch, one extraction unit, one embedding batch, and
+  one index batch. Reduce the cost of each durable write rather than widening the
+  resume granularity, so a crash never redoes more than one unit.
 - Exclude every nonempty chunk that contains no Unicode alphanumeric content,
   both while ingesting and at retrieval time for older generations. Text,
   numbers, and formulas containing at least one letter or digit are not
   classified as symbol-only; the other extraction-artifact rules still apply.
+- Treat the portable reviewed-metadata file as an authoritative read-time
+  overlay on the selected immutable generation. Apply it consistently to
+  source listings, search results, reference groups, citations, neighboring
+  passages, and category/keyword filters without rewriting generation files.
+- Do not mark a selected generation stale merely because its metadata snapshot
+  differs from the current reviewed overlay. Report that the overlay is active.
+  A source absent from the selected generation still requires ingestion before
+  any of its metadata can appear in retrieval.
+- Do not copy mutable category or keyword values into Qdrant. Translate current
+  reviewed filters through selected-generation document IDs and verify them
+  against the overlaid canonical documents and chunk records.
+- Omitted fields remove their prior reviewed overrides. If an old generation
+  cannot recover automatic bibliography hidden by a removed override, prefer a
+  safe missing/filename fallback with an explicit warning; a later ingestion
+  may recover automatic metadata from the original.
 - Inspect the first five text-bearing PDF pages for identity. Keep physical page
   and available page-label locators.
 - For EPUBs, retain the spine section identity and a deterministic XHTML block
@@ -320,18 +409,21 @@ Update tests and documentation when changing them.
   numbers, and distinguish prose, lists, tables, and figures. Do not infer visual
   relationships not expressed by captions, legends, or labels.
 - Hash all discovered sources before ingestion decides whether work is needed.
-  Exact source bytes, portable-state revisions, chunk settings, processing
-  policies, and model fingerprints are required for a no-op.
+  Exact source bytes, source-exclusion decisions, chunk settings, processing
+  policies, and model fingerprints are required for a no-op. Reviewed metadata
+  is excluded from build/checkpoint identity because it is a read-time overlay.
 - Reuse extraction units/chunks only for a source with matching bytes,
-  per-source reviewed metadata, and processing fingerprints. Reuse a vector
-  only when `embedding_text`, model revision, and dimension match exactly.
+  automatic-metadata storage policy, and processing fingerprints. Generation
+  artifacts retain automatic bibliography beneath the reviewed overlay. Reuse
+  a vector only when canonical `contents`, model revision, and dimension match
+  exactly. Legacy text fields may be read only to upgrade an older generation.
 - Always reconstruct complete BM25 and Qdrant indexes for a changed generation;
   never update selected indexes in place. `force_recompute=true` disables all
   document, chunk, and vector reuse.
-- Check the soft work budget only between atomic units: source hashes, PDF page
-  scans/extraction, EPUB spine sections, extraction-unit chunking, 64-text
-  embedding batches, and 64-point Qdrant uploads. Treat BM25 finalization as one
-  restartable unit and re-hash all sources before activation.
+- Check the soft work budget only between atomic units: source hashes, fixed
+  eight-page PDF scan/extraction batches, EPUB spine sections, extraction-unit
+  chunking, 64-text embedding batches, and 64-point Qdrant uploads. Treat BM25
+  finalization as one restartable unit and re-hash all sources before activation.
 
 Do not move the Qdrant implementation into the vanilla gateway or patch
 UltraRAG for this feature. The research-specific integration deliberately lives
@@ -352,10 +444,9 @@ in this repository so vanilla can continue tracking upstream safely.
 - Do not expose underlying vanilla tools through this server.
 - Do not silently skip a selected PDF/EPUB that fails extraction; fail the new
   generation and leave the previous current generation intact.
-- Empty upstream chunk records may be discarded only when their extraction unit
-  still has at least one searchable chunk; record the discarded count.
-- Symbol-only upstream chunk records may be discarded only when their extraction
-  unit still has at least one searchable chunk; record the discarded count.
+- Empty, symbol-only, or corrupt upstream chunk records may be discarded when
+  their source still has at least one searchable chunk; record each discarded
+  count separately. Fail the build when filtering leaves a source with none.
 - Retain explicit limitations when a feature is not implemented.
 
 ## Validation
@@ -384,6 +475,8 @@ the caches. Unit tests must cover RRF and failure atomicity without depending on
 model downloads. They must also cover no-op ingestion, additions, changes,
 removals, reviewed metadata/exclusions, same-size/same-mtime byte changes,
 forced regeneration, exact-text vector reuse, and lean final artifacts.
+They must also prove that post-ingestion metadata corrections immediately
+affect every read surface and filter mode without modifying generation files.
 
 For significant extraction changes, also test a representative real collection
 without writing into its source directory.

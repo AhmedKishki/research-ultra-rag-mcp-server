@@ -7,26 +7,38 @@ you remain responsible for interpretation, uncertainty, and final writing.
 ## Normal workflow
 
 1. Call `status` before substantive research.
-2. If no generation exists, explain that `ingest` writes persistent data,
+2. Call `list_sources` when you need source handles. Even before ingestion,
+   `discovered_sources` lists live PDFs/EPUBs and their stable `source_id`
+   values and idempotently registers them in portable project state.
+   `known_sources` retains lean identity records for registered paths even when
+   originals disappear, while `reviewed_metadata_sources` lists every saved
+   override by the same stable ID. Prefer those IDs for metadata and inclusion
+   decisions.
+3. If no generation exists, explain that `ingest` writes persistent data,
    creates a generation, and may download a model; obtain agreement when
    appropriate.
-3. If `stale=true`, explain the reported source/metadata changes. The prior
-   generation remains searchable. Ask whether to re-ingest.
-4. If `generation_upgrade_required=true`, report `upgrade_reasons` and recommend
+4. If `stale=true`, explain the reported source or inclusion changes. The prior
+   generation remains searchable. Ask whether to re-ingest. A true
+   `metadata_overlay_active` is not staleness: reviewed metadata is already
+   effective without rebuilding the generation. Metadata listed under
+   `metadata_pending_source_paths` belongs to sources outside the selected
+   generation and becomes effective after those sources are included and
+   ingested.
+5. If `generation_upgrade_required=true`, report `upgrade_reasons` and recommend
    `ingest`. The old generation remains searchable with a warning. Use
    `force_recompute=true` only when the user explicitly requests regeneration or
    compatible reuse must be bypassed.
-5. When `ingest` returns `status="in_progress"`, repeat it with identical chunk
+6. When `ingest` returns `status="in_progress"`, repeat it with identical chunk
    settings and force mode until it returns `ready` or `unchanged`. Report the
    build ID, phase, and completed/total progress when useful. A selected prior
    generation remains searchable during the staged build.
-6. Search with the actual research question. Hybrid is the normal default.
-7. Inspect several hits. Fewer than requested—or zero—can be the correct result
+7. Search with the actual research question. Hybrid is the normal default.
+8. Inspect several hits. Fewer than requested—or zero—can be the correct result
    after relevance gates.
-8. Use `get_passage` for surrounding semantic context. For a direct quotation,
+9. Use `get_passage` for surrounding semantic context. For a direct quotation,
    open the original at `source_path` and `locator`; never quote returned `text`
    as though it were an exact transcript.
-9. If two files appear to be the same work, do not count them as independent
+10. If two files appear to be the same work, do not count them as independent
    support. Explain the issue and use `set_source_inclusion` only after
    agent/user review.
 
@@ -45,20 +57,33 @@ state observed earlier in a long session.
   download a second model on first use.
 - `result_view="passages"`: preserve the global passage ranking.
 - `result_view="references"`: use the same ranked candidate pool but cap each
-  `document_id` at `passages_per_reference` (default `2`) within the unchanged
+  `source_id` at `passages_per_reference` (default `2`) within the unchanged
   total `top_k` passage budget. Use this when several useful references matter
   more than several passages from one reference.
 
 Category and keyword filters use AND semantics. Document IDs use membership
 semantics. Extraction artifacts and nonempty chunks containing no Unicode
 alphanumeric content are rejected. Text, numbers, and formulas containing at
-least one letter or digit are not symbol-only. Scores rank candidates; they are
-not confidence, truth probabilities, or comparable across queries.
+least one letter or digit are not symbol-only. A candidate is withheld only for
+corruption evidence: replacement characters, private-use or unassigned code
+points, or a known damaged encoding sequence. Script mixing never withholds a
+passage; it appears in per-hit `text_notes`, and `withheld_candidates` reports
+the reason codes and example chunk IDs for anything that was withheld. Scores
+rank candidates; they are not confidence, truth probabilities, or comparable
+across queries.
 
 ## Reading a hit
 
 - `text`: cleaned semantic text for comprehension/paraphrase, not quotation.
+- `text_notes`: advisory script notes such as `non_latin_dominant` or
+  `mixed_script_text`. They never mean the passage was unusable; they warn that
+  it mixes scripts, so read its locator before treating it as English prose.
 - `direct_quote_safe`: always `false` under this extraction contract.
+- `source_id`: the preferred project-scoped handle for metadata and inclusion
+  edits. It survives content changes but changes when the source is renamed or
+  moved.
+- `document_id`: the content/path-version identity used by the selected
+  generation. Do not treat it as the durable edit handle.
 - `source_path` + `locator`: where to open the original.
 - `distinct_reference_count`: how many separate indexed references contributed
   returned passages. In reference view, inspect `reference_groups` for each
@@ -66,13 +91,22 @@ not confidence, truth probabilities, or comparable across queries.
 - `relevance_limited` / `grouping_limited`: distinguish a candidate-pool
   shortfall from a reference cap that prevents filling the passage budget.
 - `title`, `authors`, `year`, `doi`: resolved bibliography.
-- `metadata_provenance`, `metadata_confidence`, `metadata_warnings`: how that
-  bibliography was obtained and where review may be needed.
+- `metadata_provenance` and `metadata_warnings`: which concrete source supplied
+  each field and which missing, conflicting, fallback, or corrupt values need
+  review.
 - Treat automatically extracted bibliography as a best-effort starting point,
   not an authority. If a title, author, year, or DOI is missing, uncertain, or
   wrong, inspect the original, ask the user when needed, and save the reviewed
-  value with `set_source_metadata`. Do not expect ingestion heuristics to know
-  document- or publisher-specific conventions.
+  value with `set_source_metadata`. Supply exactly one selector; prefer
+  `source_id`, with `source_path` retained for compatibility. For an indexed
+  source, the complete override immediately updates this metadata, citations,
+  filters, source listings, and neighboring passages. Check
+  `effective_immediately` and `requires_ingest` in the response; ingestion is
+  needed only if the source is absent from the selected generation. The
+  metadata object replaces the complete override: `{}` restores all automatic
+  values, while an explicit empty value clears that automatic field. Do not
+  expect ingestion heuristics to know document- or publisher-specific
+  conventions.
 - `content_kind`, `annotations`, `quality_flags`: prose/list/table/figure context
   and preserved structured extraction information.
 - `match_kind`: lexical, semantic, or hybrid.
@@ -87,6 +121,10 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
   are indexed. Markdown and other formats are ignored.
 - `.research-rag/project.json` owns the stable project ID and source-directory
   setting. Once initialized, commands reuse that setting when it is omitted.
+- A `source_id` combines that project identity with the source-relative path,
+  so replacing the file's bytes preserves it and renaming/moving the file
+  changes it. A `document_id` identifies one path/content version and can change
+  between generations.
 - `ingest` hashes every source. An exact input match returns the selected
   generation unchanged. Otherwise it safely reuses compatible unchanged
   documents, chunks, and exact-text vectors while building complete new BM25
@@ -98,8 +136,15 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
   resumable checkpoint; incompatible inputs supersede it with a small diagnostic,
   and non-resumable failures leave only a small failure record.
 - Corrupt extraction units are omitted whole, with locator/reason diagnostics
-  but without retained garbage text. Retrieval also filters corrupt chunks from
-  older generations. Never reconstruct, repair, or invent rejected wording.
+  but without retained garbage text. Retrieval also withholds corrupt chunks from
+  older generations and discloses the reason codes and example chunk IDs in
+  `withheld_candidates`. Never reconstruct, repair, or invent rejected wording.
+- Script mixing and non-Latin dominance are advisory `text_notes`, never
+  withhold reasons. A foreign-language quotation inside an English source is
+  evidence; cite its locator instead of discarding it.
+- Formula-font letters (`𝑀` → `M`) and the `ﬁ`, `ﬂ`, `ﬀ` ligatures are folded to
+  their plain spellings during cleaning, so a typed query matches the printed
+  text. Accented letters, superscripts, and subscripts are unchanged.
 - Symbol-only chunks are omitted during ingestion and guarded at retrieval for
   older generations. A chunk with at least one Unicode letter or digit is not
   symbol-only, including an alphanumeric formula or numeric content; other
@@ -107,10 +152,15 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
 - Read `generation_changed`, reuse/rebuild counts, vector counts, and phase
   timings from the ingestion response before reporting what occurred.
 - Use `set_source_metadata` for reviewed bibliography, categories, and
-  keywords instead of requesting special-case extraction logic. Re-ingest to
-  apply it.
+  keywords instead of requesting special-case extraction logic. It is a
+  replace-all override: omitted fields remove prior reviewed values. An indexed
+  source updates immediately without changing its chunk IDs or immutable index
+  files. If an old generation cannot recover automatic bibliography hidden by
+  a removed override, it returns a safe fallback and warning until a later
+  ingestion can extract the automatic value again.
 - Exclusion is explicit, reversible, and immediately enforced without deleting
-  the source. Re-ingest to omit it physically from new indexes.
+  the source. Call `set_source_inclusion` with exactly one selector, preferably
+  `source_id`; re-ingest to omit it physically from new indexes.
 - A chunk ID belongs to the generation that returned it and may change after a
   rebuild.
 
@@ -124,7 +174,11 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
   `.research-rag/bundles` directory. It validates the stable project ID,
   archive paths/types, checksums, schemas, models, and source conflicts.
 - Import replaces local reviewed metadata/exclusions with the bundled copies,
-  even when `activate=false`; it never overwrites differing source bytes.
+  even when `activate=false`; compatible metadata immediately overlays the
+  still-selected generation, while imported exclusions immediately govern its
+  retrieval surfaces. Both also govern future ingestion. The response
+  discloses the unchanged pointer and live portable-state replacement. Import
+  never overwrites differing source bytes.
 - Never attempt to work around a project-ID or source-byte conflict.
 
 ## Recommended answer behavior
