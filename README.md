@@ -381,6 +381,40 @@ package so no process continues writing to the legacy location.
 generations remain on disk, but are not searched. Automatic generation pruning
 is not implemented.
 
+### Put derived state on fast local storage
+
+`runtime/` is where staging, vectors, and the dense index live, so its device
+dominates ingestion time. Measured on one machine with the same 20-source corpus:
+the exact same Qdrant build cost about **4 ms per point on NVMe** and about
+**290 ms per point on the HDD-backed project**, and on a larger project that
+phase was 99% of a 51-minute build.
+
+The runtime path is fixed inside the project, so the way to place it on faster
+storage without changing this server is an OS bind mount. Stop every research
+MCP, UI, and verifier process for the project first, then:
+
+```bash
+# 1. One-time copy of existing derived state to the fast device.
+sudo mkdir -p /ssd/research-runtime/ai-and-fetishism
+sudo rsync -a --delete \
+  /mnt/data/projects/ai-and-fetishism/.research-rag/runtime/ \
+  /ssd/research-runtime/ai-and-fetishism/
+
+# 2. Move the original aside, then mount the fast copy at the expected path.
+mv /mnt/data/projects/ai-and-fetishism/.research-rag/runtime \
+  /mnt/data/projects/ai-and-fetishism/.research-rag/runtime.moved
+mkdir -p /mnt/data/projects/ai-and-fetishism/.research-rag/runtime
+sudo mount --bind /ssd/research-runtime/ai-and-fetishism \
+  /mnt/data/projects/ai-and-fetishism/.research-rag/runtime
+```
+
+Add the bind mount to `/etc/fstab` to keep it across reboots. Afterwards, run
+`status` and confirm `state_root` still reads
+`<project>/.research-rag/runtime` — a bind mount preserves the path, so every
+containment and portability check behaves exactly as before. Delete
+`runtime.moved` once the build has been verified. A project that is moved or
+copied loses its mount silently, so re-check `state_root` after any move.
+
 ## Export, import, and move a project
 
 An agent can call `export_bundle` and `import_bundle`; the UI exposes matching

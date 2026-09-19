@@ -286,8 +286,10 @@ crash must never redo more than one extraction unit.
       the per-unit write stays small and constant-size.
 - [ ] Stop rewriting per-source artifacts that did not change.
 - [ ] Add a test asserting that a crash mid-chunking redoes at most one unit.
-- [ ] Document fast-local-storage requirements for `.research-rag/runtime` in
-      the README limitations and storage sections.
+- [x] Document the fast-local-storage requirement for `.research-rag/runtime`
+      and the bind-mount stopgap in the README storage section, including the
+      measured cost per point on each device (done ahead of Step 2 because it is
+      the cheapest large win for an HDD-backed project).
 - [ ] Verify that resume, cancellation, and timeout behaviour still produce a
       resumable checkpoint at every boundary.
 
