@@ -10,13 +10,21 @@ import numpy as np
 from fastembed import TextEmbedding
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client import QdrantClient, models
+from tokenizers import Tokenizer
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_MODEL_REVISION = "52398278842ec682c6f32300af41344b1c0b0bb2"
 EMBEDDING_DIMENSION = 384
+# The model's max_position_embeddings. FastEmbed truncates longer input silently,
+# so the ingestion audit exists to make that truncation visible and countable.
+EMBEDDING_MAXIMUM_TOKENS = 512
 RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 RERANKER_MODEL_REVISION = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
 COLLECTION_NAME = "research_chunks"
+
+
+class DenseTokenAuditUnavailable(RuntimeError):
+    """Raised when the embedding tokenizer cannot be inspected safely."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +48,8 @@ class DenseBackend(Protocol):
     def embed_texts(
         self, texts: list[str]
     ) -> np.ndarray[Any, np.dtype[np.float32]]: ...
+
+    def embedding_token_counts(self, texts: list[str]) -> list[int]: ...
 
     def initialize_index(self, index_path: Path, dimension: int) -> None: ...
 
@@ -93,6 +103,7 @@ class LocalQdrantDenseBackend:
         self.offline = offline
         self._embedding_model: TextEmbedding | None = None
         self._reranker: TextCrossEncoder | None = None
+        self._audit_tokenizer: Tokenizer | None = None
 
     def _embedder(self) -> TextEmbedding:
         if self._embedding_model is None:
@@ -121,6 +132,46 @@ class LocalQdrantDenseBackend:
     @staticmethod
     def _client(index_path: Path) -> QdrantClient:
         return QdrantClient(path=str(index_path))
+
+    def _audit_tokenizer_for_ingestion(self) -> Tokenizer:
+        """Return a non-truncating tokenizer matching the embedding model.
+
+        The embedder's own tokenizer truncates at the model limit, which would
+        hide the overflow this audit exists to measure, so the pinned tokenizer
+        file is loaded separately and truncation is disabled on that copy.
+        """
+
+        if self._audit_tokenizer is None:
+            try:
+                model_dir = getattr(self._embedder().model, "_model_dir", None)
+            except Exception as exc:
+                raise DenseTokenAuditUnavailable(
+                    "The embedding model is unavailable for the token audit: "
+                    + str(exc)
+                ) from exc
+            tokenizer_path = (
+                Path(str(model_dir)) / "tokenizer.json" if model_dir else None
+            )
+            if tokenizer_path is None or not tokenizer_path.is_file():
+                raise DenseTokenAuditUnavailable(
+                    "The embedding tokenizer is missing from the model cache: "
+                    + str(tokenizer_path)
+                )
+            tokenizer = Tokenizer.from_file(str(tokenizer_path))
+            tokenizer.no_truncation()
+            self._audit_tokenizer = tokenizer
+        return self._audit_tokenizer
+
+    def embedding_token_counts(self, texts: list[str]) -> list[int]:
+        """Return the embedding tokenizer length of each text, untruncated."""
+
+        if not texts:
+            return []
+        tokenizer = self._audit_tokenizer_for_ingestion()
+        try:
+            return [len(encoding.ids) for encoding in tokenizer.encode_batch(texts)]
+        except Exception as exc:
+            raise DenseTokenAuditUnavailable(str(exc)) from exc
 
     def embed_texts(
         self,

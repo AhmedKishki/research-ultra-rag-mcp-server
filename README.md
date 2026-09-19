@@ -33,6 +33,9 @@ appear at the end of this document.
   and reason codes; unreadable units are excluded without guessing replacement
   text, while foreign-script quotations are flagged with `text_notes` instead of
   being withheld.
+- A dense-fidelity audit: every indexed chunk records its embedding token count
+  and whether its dense vector covers only a prefix, reported per chunk in
+  search hits and in aggregate through `ingest` and `status`.
 - Immutable, project-local generations that become active only after both
   indexes pass.
 
@@ -436,7 +439,7 @@ duplication is intentional.
 | Tool | Parameters and defaults | Access | When to call it |
 |---|---|---|---|
 | `status` | none | Read | Before research or ingestion; reports project identity, current generation, source changes, whether `metadata_overlay_active`, any `metadata_pending_source_paths`, upgrade reasons, model-cache path, last build metrics, and any `ingestion_progress`. |
-| `ingest` | `chunk_size=384` (50–384 GPT-2 tokens); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false`; `work_budget_seconds=45` (10–300) | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. Repeat matching calls while the result is `in_progress`; `ready` and `unchanged` are terminal. |
+| `ingest` | `chunk_size=384` (requested maximum, 50–384 GPT-2 tokens; the chunker can exceed it slightly); `chunk_overlap=64` (0 to `chunk_size-1`); `force_recompute=false`; `work_budget_seconds=45` (10–300) | Write | First build, stale collection refresh, schema upgrade, or deliberate forced regeneration. Repeat matching calls while the result is `in_progress`; `ready` and `unchanged` are terminal. |
 | `search` | required `query`; `top_k=8` (1–50 total passages); `categories=null`; `keywords=null`; `document_ids=null`; `retrieval_method="hybrid"`; `rerank=false`; `result_view="passages"`; `passages_per_reference=2` (1–5) | Read | Retrieve relevance-limited evidence. The optional reference view caps passages per stable `source_id` and returns `reference_groups`; filters retain their existing semantics. |
 | `list_sources` | `categories=null`; `keywords=null` | Idempotent project-state write | Inspect indexed bibliography and stable source IDs, filter by reviewed metadata, and register live IDs in the portable catalog so `known_sources` remains addressable if a file later disappears. It never changes an original or a generation. |
 | `get_passage` | required `chunk_id`; `context_chunks=1` (0–5 on each side) | Read | Inspect nearby cleaned passages from the same source and generation. |
@@ -530,7 +533,9 @@ UltraRAG GPT-2 token chunking
 The research layer selects allowed files, extracts layout-aware semantic units,
 resolves bibliography, cleans layout artifacts, and preserves locators.
 UltraRAG performs GPT-2 token chunking and BM25 indexing/search. FastEmbed
-produces revision-pinned CPU embeddings. Embedded Qdrant stores vectors with
+produces revision-pinned CPU embeddings, and ingestion audits every chunk
+against the model's token limit so a silently truncated dense vector is counted
+and reported rather than invisible. Embedded Qdrant stores vectors with
 only lean lookup payloads (`chunk_id`, `document_id`, and `source_id`) inside
 the generation; canonical passage content and locators stay in `chunks.jsonl`,
 while document metadata and provenance stay in the manifest. A compact SQLite
@@ -633,6 +638,10 @@ project-specific retrieval quality.
 - English is the supported language and workload. Non-English-primary corpora,
   OCR or scanned sources, handwriting, and formula-heavy corpora are outside the
   designed scope.
+- A chunk whose text exceeds the embedding model's token limit is embedded as its
+  prefix only, so BM25 matches its full text while dense search covers just the
+  beginning. Ingestion counts and reports those chunks (`dense_truncated`) but
+  does not split them.
 - Duplicate decisions require agent/user review; the server never deletes the
   original.
 - Large CPU ingestions and optional reranking can be slow. Ingestion is

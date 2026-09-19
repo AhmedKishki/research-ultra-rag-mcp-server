@@ -132,6 +132,18 @@ manifest, `status`, or `search` output reports it. The GPT-2 maximum of 387 also
 shows the documented "must be between 50 and 384" is a requested maximum, not an
 enforced one.
 
+Implemented in the working tree: the dense backend exposes
+`embedding_token_counts` through a dedicated non-truncating tokenizer, the
+service audits every built chunk and records `embedding_token_count` with a
+`dense_truncated` flag, build metrics report `dense_token_audit`,
+`dense_audited_chunk_count`, `dense_truncated_chunk_count`,
+`embedding_maximum_tokens`, and `maximum_embedding_token_count`, and each search
+hit carries the per-chunk values plus a `dense_fidelity` summary. Re-verified on
+the reference corpus through the shipped path: 8,102 chunks audited, **8 over the
+limit, maximum 3,417 tokens**. The audit degrades to `unavailable` when the
+model cache is missing rather than failing a build, and over-limit chunks are
+flagged rather than split (D4/Decision 4 note in `TODO.md`).
+
 #### P0-3. Nothing protects the chunk-size / embedding-limit invariant
 
 All unit and integration tests use a fake dense backend, so no test would catch
@@ -213,6 +225,12 @@ Alphanumeric and Alphabetic Presentation Forms blocks, in the text path; verify
 on a judged query set that recall improves and nothing regresses; and note that
 this changes stored `contents`, so it requires a `cleaning_policy_version` bump
 and one regeneration.
+
+Implemented in the working tree (`CLEANING_POLICY_VERSION` 3): a targeted fold
+covers Mathematical Alphanumeric Symbols and the Alphabetic Presentation Forms
+and runs before NFC, while superscripts, subscripts, accented letters, and
+symbols stay canonical. Measured on the reference corpus: 751 chunks change
+text, and no chunk retains a formula letter afterwards (39 before).
 
 ### P1 — measured efficiency findings
 

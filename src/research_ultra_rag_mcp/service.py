@@ -37,12 +37,14 @@ from .bundle import (
 from .config import ResearchConfig, resolve_source_reference
 from .dense import (
     EMBEDDING_DIMENSION,
+    EMBEDDING_MAXIMUM_TOKENS,
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
     RERANKER_MODEL,
     RERANKER_MODEL_REVISION,
     DenseBackend,
     DenseSearchHit,
+    DenseTokenAuditUnavailable,
     LocalQdrantDenseBackend,
 )
 from .extraction import (
@@ -563,6 +565,8 @@ def _public_passage(
         "text_fidelity": "cleaned_semantic_text",
         "direct_quote_safe": False,
         "text_notes": text_script_notes(_chunk_text(chunk)),
+        "embedding_token_count": chunk.get("embedding_token_count"),
+        "dense_truncated": chunk.get("dense_truncated"),
         "content_kind": str(chunk.get("content_kind") or "prose"),
         "annotations": list(chunk.get("annotations") or []),
         "quality_flags": list(chunk.get("quality_flags") or []),
@@ -663,6 +667,36 @@ def _record_withheld(
         examples = entry["example_chunk_ids"]
         if len(examples) < MAXIMUM_WITHHELD_EXAMPLES:
             examples.append(str(chunk["chunk_id"]))
+
+
+def _record_embedding_token_counts(
+    chunks: list[dict[str, Any]],
+    count_tokens: Any,
+) -> bool:
+    """Record each built chunk's embedding token count and truncation flag.
+
+    FastEmbed silently truncates input that exceeds the embedding model's limit,
+    so the dense vector of such a chunk covers only a prefix while BM25 indexes
+    the whole text. The audit makes that visible per chunk. Returning False means
+    the tokenizer could not be inspected; the fields stay absent and the build
+    metrics report the audit as unavailable rather than inventing a value.
+    """
+
+    if not chunks:
+        return True
+    texts = [_chunk_text(chunk) for chunk in chunks]
+    try:
+        counts = count_tokens(texts)
+    except DenseTokenAuditUnavailable:
+        return False
+    if len(counts) != len(chunks):
+        raise ResearchError(
+            "The embedding tokenizer returned a different count than chunks"
+        )
+    for chunk, count in zip(chunks, counts, strict=True):
+        chunk["embedding_token_count"] = int(count)
+        chunk["dense_truncated"] = int(count) > EMBEDDING_MAXIMUM_TOKENS
+    return True
 
 
 class ResearchService:
@@ -2686,6 +2720,14 @@ class ResearchService:
                         discarded_symbol_only,
                         discarded_corrupt,
                     ) = _enrich_chunks(raw_chunks, units, [document])
+                    audited = await _atomic_to_thread(
+                        _record_embedding_token_counts,
+                        chunks,
+                        self.dense.embedding_token_counts,
+                    )
+                    checkpoint["dense_token_audit"] = (
+                        "counted" if audited else "unavailable"
+                    )
                     checkpoint["rebuilt_chunk_count"] = int(
                         checkpoint.get("rebuilt_chunk_count") or 0
                     ) + len(chunks)
@@ -3061,12 +3103,25 @@ class ResearchService:
                 content_kinds: Counter[str] = Counter()
                 withheld_chunk_count = 0
                 withheld_chunk_reasons: Counter[str] = Counter()
+                audited_chunk_count = 0
+                dense_truncated_chunk_count = 0
+                maximum_embedding_token_count = 0
                 for item in iter_jsonl(staging_root / "chunks" / "chunks.jsonl"):
                     content_kinds[str(item.get("content_kind") or "prose")] += 1
                     reasons = text_corruption_reasons(str(item.get("contents") or ""))
                     if reasons:
                         withheld_chunk_count += 1
                         withheld_chunk_reasons.update(reasons)
+                    token_count = item.get("embedding_token_count")
+                    if isinstance(token_count, int) and not isinstance(
+                        token_count, bool
+                    ):
+                        audited_chunk_count += 1
+                        maximum_embedding_token_count = max(
+                            maximum_embedding_token_count, token_count
+                        )
+                        if item.get("dense_truncated"):
+                            dense_truncated_chunk_count += 1
                 content_kind_counts = dict(sorted(content_kinds.items()))
                 extraction_unit_count = int(checkpoint["extraction_unit_count"])
                 chunk_count = int(checkpoint["chunk_count"])
@@ -3108,6 +3163,15 @@ class ResearchService:
                     "withheld_chunk_reasons": dict(
                         sorted(withheld_chunk_reasons.items())
                     ),
+                    "dense_token_audit": (
+                        "counted"
+                        if audited_chunk_count == chunk_count
+                        else ("partial" if audited_chunk_count else "unavailable")
+                    ),
+                    "dense_audited_chunk_count": audited_chunk_count,
+                    "dense_truncated_chunk_count": dense_truncated_chunk_count,
+                    "embedding_maximum_tokens": EMBEDDING_MAXIMUM_TOKENS,
+                    "maximum_embedding_token_count": maximum_embedding_token_count,
                     "phase_timings_seconds": phase_timings,
                 }
                 records = source_records()
@@ -4337,6 +4401,23 @@ class ResearchService:
                     },
                     "flagged_passages_returned": sum(
                         1 for hit in hits if hit.get("text_notes")
+                    ),
+                },
+                "dense_fidelity": {
+                    "embedding_maximum_tokens": EMBEDDING_MAXIMUM_TOKENS,
+                    "audited_passages_returned": sum(
+                        1
+                        for hit in hits
+                        if isinstance(hit.get("embedding_token_count"), int)
+                    ),
+                    "truncated_passages_returned": sum(
+                        1 for hit in hits if hit.get("dense_truncated")
+                    ),
+                    "note": (
+                        "FastEmbed truncates text beyond the embedding model "
+                        "limit, so such a chunk is matched lexically but only "
+                        "partly semantically. A null embedding_token_count means "
+                        "the generation predates the ingestion audit."
                     ),
                 },
                 "embedding_model": EMBEDDING_MODEL if use_dense else None,

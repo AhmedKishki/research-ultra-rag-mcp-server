@@ -373,6 +373,10 @@ Update tests and documentation when changing them.
   printed text. Leave every other character canonical: do not apply global NFKC,
   because it would also fold superscripts, subscripts, and symbols that carry
   meaning in citations and notation.
+- Audit every built chunk against the embedding model's token limit, record the
+  count and a truncation flag on the chunk record, and report the aggregate in
+  build metrics and per hit. When the tokenizer cannot be inspected, record the
+  audit as unavailable rather than failing the build or inventing a count.
 - Disclose withholding instead of hiding it. Report reason codes, counts, and
   example chunk IDs in the search response, and record corpus-level withheld
   counts and reasons in the generation build metrics that `status` returns.

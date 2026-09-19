@@ -145,6 +145,11 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
 - Formula-font letters (`𝑀` → `M`) and the `ﬁ`, `ﬂ`, `ﬀ` ligatures are folded to
   their plain spellings during cleaning, so a typed query matches the printed
   text. Accented letters, superscripts, and subscripts are unchanged.
+- Ingestion records each chunk's embedding token count. `dense_truncated: true`
+  means the text exceeds the embedding model's limit, so the dense vector covers
+  only a prefix while BM25 still matches the whole text; treat such a hit as
+  lexically reliable and semantically partial, and read its locator. A null count
+  means the generation predates the audit; re-ingest to populate it.
 - Symbol-only chunks are omitted during ingestion and guarded at retrieval for
   older generations. A chunk with at least one Unicode letter or digit is not
   symbol-only, including an alphanumeric formula or numeric content; other

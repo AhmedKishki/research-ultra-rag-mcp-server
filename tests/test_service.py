@@ -17,6 +17,7 @@ from research_ultra_rag_mcp.dense import (
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
     DenseSearchHit,
+    DenseTokenAuditUnavailable,
 )
 from research_ultra_rag_mcp.extraction import ExtractionError
 from research_ultra_rag_mcp.service import (
@@ -142,6 +143,18 @@ class FakeDenseBackend:
         self.embed_calls = 0
         self.embedded_text_count = 0
         self.upload_batches: list[tuple[int, int]] = []
+        self.audit_unavailable = False
+        self.audited_text_count = 0
+        self.token_count_override: int | None = None
+
+    def embedding_token_counts(self, texts: list[str]) -> list[int]:
+        if self.audit_unavailable:
+            raise DenseTokenAuditUnavailable("simulated missing tokenizer")
+        self.audited_text_count += len(texts)
+        if self.token_count_override is not None:
+            return [self.token_count_override for _ in texts]
+        # Deterministic stand-in for the real tokenizer: one token per word.
+        return [len(text.split()) for text in texts]
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         self.embed_calls += 1
@@ -1197,19 +1210,103 @@ async def _assert_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None
         "chunk_id",
         "content_kind",
         "contents",
+        "dense_truncated",
         "document_chunk_index",
         "document_id",
+        "embedding_token_count",
         "id",
         "locator",
         "quality_flags",
         "source_id",
         "unit_id",
     }
+    # The ingestion audit records a real count and an unset truncation flag.
+    assert chunks[0]["embedding_token_count"] == len(
+        ["Stable", "research", "evidence."]
+    )
+    assert chunks[0]["dense_truncated"] is False
+    assert manifest["build_metrics"]["dense_token_audit"] == "counted"
+    assert manifest["build_metrics"]["dense_truncated_chunk_count"] == 0
     assert ultrarag.passages == ["Stable research evidence."]
 
 
 def test_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None:
     asyncio.run(_assert_symbol_only_chunks_do_not_reach_indexes(project))
+
+
+async def _assert_dense_token_audit_flags_truncation(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    dense = FakeDenseBackend()
+    dense.token_count_override = 600
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=dense,
+    )
+
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    assert result["dense_token_audit"] == "counted"
+    assert result["embedding_maximum_tokens"] == 512
+    assert result["dense_truncated_chunk_count"] == result["chunk_count"]
+    assert result["maximum_embedding_token_count"] == 600
+    generation_root = Path(result["generation_root"])
+    manifest = json.loads(
+        (generation_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["build_metrics"]["dense_token_audit"] == "counted"
+    chunks = read_jsonl(generation_root / manifest["files"]["chunks"])
+    assert all(chunk["dense_truncated"] is True for chunk in chunks)
+
+    search = await service.search("evidence", top_k=4, retrieval_method="bm25")
+    assert search["hits"]
+    assert search["dense_fidelity"]["embedding_maximum_tokens"] == 512
+    assert search["dense_fidelity"]["truncated_passages_returned"] == len(
+        search["hits"]
+    )
+    assert all(hit["embedding_token_count"] == 600 for hit in search["hits"])
+
+
+def test_dense_token_audit_flags_truncation(project: Path) -> None:
+    asyncio.run(_assert_dense_token_audit_flags_truncation(project))
+
+
+async def _assert_dense_token_audit_degrades_without_failing_ingestion(
+    project: Path,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    dense = FakeDenseBackend()
+    dense.audit_unavailable = True
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=dense,
+    )
+
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    assert result["status"] == "ready"
+    assert result["dense_token_audit"] == "unavailable"
+    assert result["dense_audited_chunk_count"] == 0
+    assert result["dense_truncated_chunk_count"] == 0
+    generation_root = Path(result["generation_root"])
+    manifest = json.loads(
+        (generation_root / "manifest.json").read_text(encoding="utf-8")
+    )
+    chunks = read_jsonl(generation_root / manifest["files"]["chunks"])
+    assert "embedding_token_count" not in chunks[0]
+    assert "dense_truncated" not in chunks[0]
+
+    search = await service.search("evidence", top_k=4, retrieval_method="bm25")
+    assert search["dense_fidelity"]["audited_passages_returned"] == 0
+    assert search["dense_fidelity"]["truncated_passages_returned"] == 0
+    assert all(hit["embedding_token_count"] is None for hit in search["hits"])
+
+
+def test_dense_token_audit_degrades_without_failing_ingestion(project: Path) -> None:
+    asyncio.run(_assert_dense_token_audit_degrades_without_failing_ingestion(project))
 
 
 async def _assert_agent_reviewed_source_exclusion(project: Path) -> None:

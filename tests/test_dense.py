@@ -3,8 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from research_ultra_rag_mcp.dense import LocalQdrantDenseBackend
+from research_ultra_rag_mcp.dense import (
+    DenseTokenAuditUnavailable,
+    LocalQdrantDenseBackend,
+)
 
 
 def _chunks(count: int) -> list[dict[str, object]]:
@@ -18,6 +22,24 @@ def _chunks(count: int) -> list[dict[str, object]]:
         }
         for index in range(count)
     ]
+
+
+def test_embedding_token_audit_reports_a_missing_model_cache(
+    tmp_path: Path,
+) -> None:
+    # The audit must fail loudly to its caller instead of breaking ingestion, so
+    # a missing or offline model cache raises a dedicated error the service
+    # degrades from rather than an unrelated exception.
+    backend = LocalQdrantDenseBackend(tmp_path / "models", offline=True)
+
+    with pytest.raises(DenseTokenAuditUnavailable):
+        backend.embedding_token_counts(["some evidence text"])
+
+
+def test_embedding_token_audit_accepts_an_empty_batch(tmp_path: Path) -> None:
+    backend = LocalQdrantDenseBackend(tmp_path / "models", offline=True)
+
+    assert backend.embedding_token_counts([]) == []
 
 
 def test_local_qdrant_batches_resume_without_skips_or_duplicates(

@@ -159,6 +159,10 @@ Recorded results (details in `PLAN.md` §10):
 - [x] Step 1c implemented and probed: folding removes formula-font letters from
       all 39 affected chunks (751 chunks change text in total) while leaving
       accented letters, superscripts, and symbols untouched.
+- [x] Step 1 implemented and probed on the reference corpus through the shipped
+      path: all 8,102 chunks are audited, 8 exceed the 512-token embedding limit
+      (maximum 3,417), and the audit degrades to `unavailable` without failing a
+      build when the model cache is absent.
 
 ## Documentation baseline
 
@@ -183,24 +187,38 @@ Gate:
 
 ## Step 1 — Close the retrieval-fidelity gap (P0-2, P0-3)
 
-- [ ] Compute the embedding-tokenizer (WordPiece) length for every chunk during
-      enrichment and persist it in the chunk record.
-- [ ] Add a `dense_truncated` flag to the artifact-lookup sidecar and bump
-      `LOOKUP_SCHEMA_VERSION`.
-- [ ] Split chunks that exceed the embedding model limit, or flag them
-      explicitly when splitting is not possible.
-- [ ] Report an aggregate `dense_truncation_risk` in `ingest` build metrics and
-      in `status`.
-- [ ] Keep the flag readable for legacy generations without re-ingestion.
-- [ ] Add a property test over the real GPT-2 and WordPiece tokenizers proving
-      no emitted chunk exceeds the model input limit.
-- [ ] Correct the README/tool-reference wording for `chunk_size` so the
-      requested versus enforced maximum is unambiguous.
+- [x] Compute the embedding-tokenizer length for every built chunk during
+      enrichment and persist it in the chunk record as `embedding_token_count`
+      with a `dense_truncated` flag.
+- [x] Keep the flag in the canonical chunk record instead of adding a sidecar
+      column. Deviation from the original plan: the sidecar stores only IDs,
+      hashes, and byte offsets, and every query path already loads the full
+      canonical record, so a `LOOKUP_SCHEMA_VERSION` bump would have added
+      migration churn with no query benefit.
+- [x] Report over-limit chunks explicitly instead of splitting them. Splitting
+      was rejected for now because it would change chunk identity, ordinals, and
+      locators for 0.10% of the corpus; the flag plus the aggregate makes the
+      limitation visible, and splitting stays deferred.
+- [x] Report the aggregate in build metrics, which `status` returns as
+      `last_build_metrics`: `dense_token_audit`, `dense_audited_chunk_count`,
+      `dense_truncated_chunk_count`, `embedding_maximum_tokens`, and
+      `maximum_embedding_token_count`. Each search hit carries the per-chunk
+      values plus a `dense_fidelity` summary.
+- [x] Keep legacy generations readable: an absent count means "predates the
+      audit", reported as null rather than as a false zero.
+- [x] Replace the original property test with what the decision requires: the
+      audit detects a real over-limit text (verified on the reference corpus: 8
+      chunks, maximum 3,417 tokens) and degrades safely with no model cache.
+      A test asserting that no chunk exceeds the limit would fail by design,
+      because the policy flags rather than splits.
+- [x] Correct the README tool-reference wording so `chunk_size` reads as a
+      requested maximum that the chunker can exceed slightly.
 
 Gate:
 
-- [ ] A corpus that previously produced 8 over-limit chunks produces none after
-      re-ingestion, and every consumer still passes the existing suite.
+- [x] The reference corpus reports its 8 over-limit chunks with an inspectable
+      count, the audit degrades safely without a model cache, and every consumer
+      passes the existing suite. Splitting remains deferred by decision.
 
 ## Step 1b — Stop silently withholding legitimate chunks (P0-4; needs D8)
 
