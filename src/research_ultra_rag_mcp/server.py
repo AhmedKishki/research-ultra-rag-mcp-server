@@ -23,7 +23,7 @@ from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.10.0"
+SERVER_VERSION = "0.11.0"
 T = TypeVar("T")
 
 
@@ -220,10 +220,30 @@ SourcePath: TypeAlias = Annotated[
     str,
     Field(
         description=(
-            "PDF or EPUB path relative to the configured sources directory, as shown "
-            "by status or list_sources; absolute and escaping paths are rejected."
+            "PDF or EPUB path relative to the configured sources directory. Use "
+            "list_sources.source_relative_path; absolute and escaping paths are "
+            "rejected."
         ),
         min_length=1,
+    ),
+]
+MetadataSourceId: TypeAlias = Annotated[
+    str | None,
+    Field(
+        description=(
+            "Stable project-scoped source_id returned by list_sources or search. "
+            "Provide exactly one of source_id or source_path."
+        ),
+        min_length=1,
+    ),
+]
+MetadataSourcePath: TypeAlias = Annotated[
+    SourcePath | None,
+    Field(
+        description=(
+            "Compatibility selector using list_sources.source_relative_path. "
+            "Provide exactly one of source_id or source_path."
+        )
     ),
 ]
 ReviewedMetadata: TypeAlias = Annotated[
@@ -232,7 +252,10 @@ ReviewedMetadata: TypeAlias = Annotated[
         description=(
             "Complete reviewed metadata override for the source. Supported fields are "
             "title, authors, year, doi, categories, and keywords; omitted fields remove "
-            "their previous overrides."
+            "their previous overrides and an empty object restores all automatic "
+            "values. Explicit empty values clear an automatically extracted field. "
+            "For a source in the selected generation, the new values apply "
+            "immediately without ingestion."
         )
     ),
 ]
@@ -411,7 +434,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
 
     @app.tool(
         annotations={
-            "readOnlyHint": True,
+            "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": True,
             "openWorldHint": False,
@@ -421,7 +444,13 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         categories: CategoryFilter = None,
         keywords: KeywordFilter = None,
     ) -> dict[str, Any]:
-        """List indexed sources and their bibliographic metadata."""
+        """List stable source IDs, indexed metadata, and saved overrides.
+
+        This works before ingestion and durably registers each discovered
+        source ID in the project catalog. ``known_sources`` keeps registered
+        IDs addressable when originals are temporarily absent, while
+        ``reviewed_metadata_sources`` makes every saved override inspectable.
+        """
         return await _tool_call(
             lambda: service().list_sources(
                 categories=categories,
@@ -462,17 +491,31 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def set_source_metadata(
-        source_path: SourcePath,
         metadata: ReviewedMetadata,
+        source_id: MetadataSourceId = None,
+        source_path: MetadataSourcePath = None,
     ) -> dict[str, Any]:
-        """Set reviewed metadata for one source-relative PDF or EPUB path.
+        """Set reviewed metadata for one identified PDF or EPUB source.
 
         Supported fields are title, authors, year, doi, categories, and
-        keywords. Run ingest afterward to create a generation using the update.
+        keywords. For a source already in the selected generation, the update
+        immediately affects source listings, search filters and results,
+        citations, and neighboring passages without rebuilding the immutable
+        indexes. Ingestion is required only when the source is absent from the
+        selected generation. Identify the source with exactly one of source_id
+        or source_path; the path form remains available for compatibility and
+        uses list_sources.source_relative_path. Omitted metadata fields remove
+        their previous overrides, an empty object restores all automatic
+        values, and explicit empty values clear an automatically extracted
+        field.
         """
 
         return await _tool_call(
-            lambda: service().set_source_metadata(source_path, metadata)
+            lambda: service().set_source_metadata(
+                metadata=metadata,
+                source_id=source_id,
+                source_path=source_path,
+            )
         )
 
     @app.tool(
@@ -484,8 +527,9 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def set_source_inclusion(
-        source_path: SourcePath,
         included: InclusionFlag,
+        source_id: MetadataSourceId = None,
+        source_path: MetadataSourcePath = None,
         reason: ExclusionReason = None,
     ) -> dict[str, Any]:
         """Include or exclude a PDF/EPUB from the project knowledge base.
@@ -495,11 +539,13 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         search, source listing, and passage lookup, and future ingestion skips the
         source. The source file is never deleted or modified. Inclusion is
         reversible; re-ingest if the current generation does not contain it.
+        Identify the source with exactly one of source_id or source_path.
         """
 
         return await _tool_call(
             lambda: service().set_source_inclusion(
-                source_path,
+                source_path=source_path,
+                source_id=source_id,
                 included=included,
                 reason=reason,
             )

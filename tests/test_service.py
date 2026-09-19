@@ -23,6 +23,7 @@ from research_ultra_rag_mcp.service import (
     ResearchError,
     ResearchService,
     _citation,
+    _effective_document_metadata,
     _enrich_chunks,
     _public_document,
 )
@@ -80,7 +81,16 @@ class FakeUltraRAG:
         self.initialized = (chunks_path, index_path)
 
     async def initialize_bm25(self, chunks_path: Path, index_path: Path) -> None:
-        self.passages = [item["contents"] for item in read_jsonl(chunks_path)]
+        index_file = index_path / "fake-index.json"
+        if (
+            not index_file.is_file()
+            or json.loads(index_file.read_text(encoding="utf-8")) != {}
+        ):
+            raise RuntimeError("fake BM25 index is missing")
+        self.passages = [
+            str(item.get("contents") or item.get("text") or "")
+            for item in read_jsonl(chunks_path)
+        ]
         self.initialized = (chunks_path, index_path)
 
     async def search_bm25(self, query: str, top_k: int) -> list[str]:
@@ -138,7 +148,7 @@ class FakeDenseBackend:
         self.embedded_text_count += len(texts)
         return np.ones((len(texts), 384), dtype=np.float32)
 
-    def build_index(
+    def _build_index(
         self,
         chunks: list[dict[str, object]],
         index_path: Path,
@@ -149,7 +159,10 @@ class FakeDenseBackend:
             raise RuntimeError("simulated dense-index failure")
         assert vectors.shape == (len(chunks), 384)
         index_path.mkdir(parents=True)
-        (index_path / "fake-qdrant.json").write_text("{}\n", encoding="utf-8")
+        (index_path / "fake-qdrant.json").write_text(
+            json.dumps({"point_count": len(chunks), "dimension": 384}) + "\n",
+            encoding="utf-8",
+        )
         self.chunks = chunks
         return {
             "backend": "fake Qdrant",
@@ -191,7 +204,10 @@ class FakeDenseBackend:
         assert index_path.is_dir()
         assert dimension == 384
         assert len(self.chunks) == expected_count
-        (index_path / "fake-qdrant.json").write_text("{}\n", encoding="utf-8")
+        (index_path / "fake-qdrant.json").write_text(
+            json.dumps({"point_count": expected_count, "dimension": dimension}) + "\n",
+            encoding="utf-8",
+        )
         return {
             "backend": "fake Qdrant",
             "embedding_model": EMBEDDING_MODEL,
@@ -200,18 +216,18 @@ class FakeDenseBackend:
             "point_count": expected_count,
         }
 
-    def build(
+    def validate_index(
         self,
-        chunks: list[dict[str, object]],
         index_path: Path,
-        vectors_path: Path | None = None,
-    ) -> dict[str, object]:
-        vectors = self.embed_texts([str(chunk["embedding_text"]) for chunk in chunks])
-        if vectors_path is not None:
-            vectors_path.parent.mkdir(parents=True, exist_ok=True)
-            with vectors_path.open("wb") as handle:
-                np.save(handle, vectors, allow_pickle=False)
-        return self.build_index(chunks, index_path, vectors)
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> None:
+        metadata = json.loads(
+            (index_path / "fake-qdrant.json").read_text(encoding="utf-8")
+        )
+        if metadata != {"point_count": expected_count, "dimension": dimension}:
+            raise RuntimeError("fake dense index validation failed")
 
     def build_from_vectors(
         self,
@@ -221,7 +237,7 @@ class FakeDenseBackend:
     ) -> dict[str, object]:
         vectors = np.load(vectors_path, allow_pickle=False)
         assert vectors.shape == (len(chunks), 384)
-        return self.build_index(chunks, index_path, vectors)
+        return self._build_index(chunks, index_path, vectors)
 
     def search(
         self,
@@ -229,34 +245,20 @@ class FakeDenseBackend:
         query: str,
         top_k: int,
         *,
-        categories: list[str] | None = None,
-        keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
         excluded_document_ids: list[str] | None = None,
     ) -> list[DenseSearchHit]:
         assert index_path.is_dir()
-        category_filter = {item.casefold() for item in categories or []}
-        keyword_filter = {item.casefold() for item in keywords or []}
         document_filter = set(document_ids or [])
         excluded_document_filter = set(excluded_document_ids or [])
         terms = query.casefold().split()
         scored: list[tuple[float, str]] = []
         for chunk in self.chunks:
-            chunk_categories = {
-                str(item).casefold() for item in chunk.get("categories", [])
-            }
-            chunk_keywords = {
-                str(item).casefold() for item in chunk.get("keywords", [])
-            }
-            if category_filter and not category_filter.issubset(chunk_categories):
-                continue
-            if keyword_filter and not keyword_filter.issubset(chunk_keywords):
-                continue
             if document_filter and chunk["document_id"] not in document_filter:
                 continue
             if chunk["document_id"] in excluded_document_filter:
                 continue
-            text = str(chunk["embedding_text"]).casefold()
+            text = str(chunk["contents"]).casefold()
             score = float(sum(text.count(term) for term in terms))
             scored.append((score, str(chunk["chunk_id"])))
         scored.sort(key=lambda item: (-item[0], item[1]))
@@ -341,6 +343,43 @@ class ManyChunkUltraRAG(FakeUltraRAG):
         )
 
 
+class ProgressivelyFilteredUltraRAG(FakeUltraRAG):
+    def __init__(self) -> None:
+        super().__init__()
+        self.search_depths: list[int] = []
+
+    async def chunk(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        assert chunk_size > chunk_overlap
+        self.chunk_calls += 1
+        unit = read_jsonl(input_path)[0]
+        title = str(unit["title"])
+        count = 30 if title == "Distractor" else 5
+        emphasis = "cobalt cobalt" if title == "Distractor" else "cobalt"
+        write_jsonl(
+            output_path,
+            (
+                {
+                    "id": index,
+                    "doc_id": unit["id"],
+                    "title": title,
+                    "contents": f"{emphasis} {title} evidence {index}.",
+                }
+                for index in range(count)
+            ),
+        )
+
+    async def search_bm25(self, query: str, top_k: int) -> list[str]:
+        self.search_depths.append(top_k)
+        return await super().search_bm25(query, top_k)
+
+
 class JudgedGroupedSearchUltraRAG(FakeUltraRAG):
     def __init__(self, qrels: dict[str, object]) -> None:
         super().__init__()
@@ -384,6 +423,7 @@ class JudgedGroupedSearchUltraRAG(FakeUltraRAG):
 def test_unsearchable_upstream_chunks_are_counted_without_losing_a_unit() -> None:
     document = {
         "document_id": "doc_test",
+        "source_id": "src_test",
         "source_path": "sources/test.pdf",
         "title": "Test",
         "authors": [],
@@ -395,39 +435,51 @@ def test_unsearchable_upstream_chunks_are_counted_without_losing_a_unit() -> Non
     unit = {
         "id": "doc_test:pdf-page:000001",
         "document_id": "doc_test",
+        "source_id": "src_test",
         "locator": {"type": "pdf_page", "page": 1, "page_label": "1"},
     }
-    chunks, discarded_empty, discarded_symbol_only = _enrich_chunks(
+    chunks, discarded_empty, discarded_symbol_only, discarded_corrupt = _enrich_chunks(
         [
             {"doc_id": unit["id"], "contents": "Evidence remains searchable."},
             {"doc_id": unit["id"], "contents": ""},
             {"doc_id": unit["id"], "contents": "— • ∎"},
             {"doc_id": unit["id"], "contents": "W–(M–C–M′)–W′"},
             {"doc_id": unit["id"], "contents": "2026 ± 4"},
+            {"doc_id": unit["id"], "contents": CORRUPT_TEXT},
         ],
         [unit],
         [document],
     )
-    assert [chunk["text"] for chunk in chunks] == [
+    assert [chunk["contents"] for chunk in chunks] == [
         "Evidence remains searchable.",
         "W–(M–C–M′)–W′",
         "2026 ± 4",
     ]
     assert discarded_empty == 1
     assert discarded_symbol_only == 1
+    assert discarded_corrupt == 1
 
     second_unit = {
         "id": "doc_test:pdf-page:000002",
         "document_id": "doc_test",
+        "source_id": "src_test",
         "locator": {"type": "pdf_page", "page": 2, "page_label": "2"},
     }
-    with pytest.raises(ResearchError, match="extraction units"):
+    mixed_chunks, _, mixed_symbol_only, _ = _enrich_chunks(
+        [
+            {"doc_id": unit["id"], "contents": "— • ∎"},
+            {"doc_id": second_unit["id"], "contents": "Other page evidence."},
+        ],
+        [unit, second_unit],
+        [document],
+    )
+    assert [chunk["contents"] for chunk in mixed_chunks] == ["Other page evidence."]
+    assert mixed_symbol_only == 1
+
+    with pytest.raises(ResearchError, match="No searchable chunks were produced"):
         _enrich_chunks(
-            [
-                {"doc_id": unit["id"], "contents": "— • ∎"},
-                {"doc_id": second_unit["id"], "contents": "Other page evidence."},
-            ],
-            [unit, second_unit],
+            [{"doc_id": unit["id"], "contents": "— • ∎"}],
+            [unit],
             [document],
         )
 
@@ -574,7 +626,10 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     assert search["requested_top_k"] == 1
     assert search["relevance_limited"] is False
     assert search["relevance_policy"]["dense_minimum_cosine_similarity"] == 0.72
-    assert "notes" not in json.dumps(search)
+    # No legacy "notes" field survives; text and script state use explicit names.
+    assert "notes" not in search
+    assert "notes" not in hit
+    assert hit["text_notes"] == []
 
     dense_search = await service.search(
         "cobalt labour",
@@ -639,6 +694,483 @@ def test_research_generation_and_structured_search(project: Path) -> None:
     asyncio.run(_assert_research_generation_and_structured_search(project))
 
 
+async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
+    source = project / "sources" / "article.pdf"
+    write_pdf(
+        source,
+        ["Cobalt evidence remains searchable after metadata correction."],
+        title="Automatic Source Title",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    dense = FakeDenseBackend()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=dense,
+    )
+
+    before_ingest = await service.set_source_metadata(
+        "article.pdf",
+        {
+            "title": "Incorrect Reviewed Title",
+            "authors": ["Incorrect Author"],
+            "year": 1999,
+            "doi": "10.1000/incorrect",
+            "categories": ["old category"],
+            "keywords": ["old keyword"],
+        },
+    )
+    assert before_ingest["effective_immediately"] is False
+    assert before_ingest["requires_ingest"] is True
+    assert before_ingest["effective_metadata"] is None
+    pending_status = await service.status()
+    assert pending_status["metadata_overlay_active"] is False
+    assert pending_status["generation_metadata_snapshot_outdated"] is False
+
+    ingested = await service.ingest(chunk_size=100, chunk_overlap=10)
+    generation_root = Path(ingested["generation_root"])
+    current_before = config.current_path.read_bytes()
+    chunks_path = generation_root / "chunks" / "chunks.jsonl"
+    chunks_before = chunks_path.read_bytes()
+    generation_before = {
+        path.relative_to(generation_root).as_posix(): path.read_bytes()
+        for path in generation_root.rglob("*")
+        if path.is_file()
+    }
+
+    corrected = await service.set_source_metadata(
+        "article.pdf",
+        {
+            "title": "Corrected\nReviewed Title",
+            "authors": ["Correct\nAuthor"],
+            "year": 2026,
+            "doi": "10.1000/corrected",
+            "categories": ["new\ncategory"],
+            "keywords": ["new\tkeyword"],
+        },
+    )
+    assert corrected["metadata"] == {
+        "title": "Corrected Reviewed Title",
+        "authors": ["Correct Author"],
+        "year": 2026,
+        "doi": "10.1000/corrected",
+        "categories": ["new category"],
+        "keywords": ["new keyword"],
+    }
+    assert corrected["changed"] is True
+    assert corrected["effective_immediately"] is True
+    assert corrected["requires_ingest"] is False
+    assert corrected["generation_metadata_snapshot_outdated"] is True
+    assert corrected["effective_metadata"] == {
+        "title": "Corrected Reviewed Title",
+        "authors": ["Correct Author"],
+        "year": 2026,
+        "doi": "10.1000/corrected",
+        "categories": ["new category"],
+        "keywords": ["new keyword"],
+        "metadata_provenance": {
+            field: "reviewed_override"
+            for field in (
+                "title",
+                "authors",
+                "year",
+                "doi",
+                "categories",
+                "keywords",
+            )
+        },
+        "metadata_warnings": [],
+    }
+    assert config.current_path.read_bytes() == current_before
+    assert chunks_path.read_bytes() == chunks_before
+    assert {
+        path.relative_to(generation_root).as_posix(): path.read_bytes()
+        for path in generation_root.rglob("*")
+        if path.is_file()
+    } == generation_before
+
+    status = await service.status()
+    assert status["stale"] is False
+    assert status["metadata_overlay_active"] is True
+    assert status["changes"]["metadata_changed"] is True
+    assert status["generation_id"] == ingested["generation_id"]
+
+    old_sources = await service.list_sources(categories=["old category"])
+    assert old_sources["source_count"] == 0
+    sources = await service.list_sources(
+        categories=["new category"],
+        keywords=["new keyword"],
+    )
+    assert sources["source_count"] == 1
+    listed = sources["sources"][0]
+    assert listed["title"] == "Corrected Reviewed Title"
+    assert listed["authors"] == ["Correct Author"]
+    assert listed["year"] == 2026
+    assert listed["doi"] == "10.1000/corrected"
+    assert listed["categories"] == ["new category"]
+    assert listed["keywords"] == ["new keyword"]
+
+    old_dense = await service.search(
+        "cobalt evidence",
+        categories=["old category"],
+        keywords=["old keyword"],
+        retrieval_method="dense",
+    )
+    assert old_dense["hits"] == []
+    search = await service.search(
+        "cobalt evidence",
+        categories=["new category"],
+        keywords=["new keyword"],
+        retrieval_method="dense",
+        result_view="references",
+    )
+    hit = search["hits"][0]
+    assert hit["title"] == "Corrected Reviewed Title"
+    assert hit["authors"] == ["Correct Author"]
+    assert hit["year"] == 2026
+    assert hit["doi"] == "10.1000/corrected"
+    assert hit["categories"] == ["new category"]
+    assert hit["keywords"] == ["new keyword"]
+    assert "Correct Author, Corrected Reviewed Title (2026)" in hit["citation"]
+    assert "doi:10.1000/corrected" in hit["citation"]
+    assert search["reference_groups"][0]["title"] == "Corrected Reviewed Title"
+    assert search["reference_groups"][0]["categories"] == ["new category"]
+
+    passage = await service.get_passage(hit["chunk_id"])
+    context = passage["context"][0]
+    assert context["title"] == "Corrected Reviewed Title"
+    assert context["authors"] == ["Correct Author"]
+    assert context["categories"] == ["new category"]
+    assert context["keywords"] == ["new keyword"]
+    assert "doi:10.1000/corrected" in context["citation"]
+    assert config.current_path.read_bytes() == current_before
+    assert chunks_path.read_bytes() == chunks_before
+
+    # Explicit empty values authoritatively clear wrong automatic fields. An
+    # empty object removes the complete override and restores automatic values.
+    cleared = await service.set_source_metadata(
+        "article.pdf",
+        {
+            "title": "",
+            "authors": [],
+            "year": None,
+            "doi": "",
+            "categories": [],
+            "keywords": [],
+        },
+    )
+    assert cleared["metadata"] == {
+        "title": "",
+        "authors": [],
+        "year": None,
+        "doi": "",
+        "categories": [],
+        "keywords": [],
+    }
+    assert cleared["effective_metadata"]["title"] == ""
+    assert cleared["effective_metadata"]["authors"] == []
+    explicitly_cleared = (await service.list_sources())["sources"][0]
+    assert explicitly_cleared["title"] == ""
+    assert explicitly_cleared["authors"] == []
+    assert explicitly_cleared["year"] is None
+    assert explicitly_cleared["doi"] == ""
+    assert (await service.status())["metadata_overlay_active"] is True
+
+    removed = await service.set_source_metadata("article.pdf", {})
+    assert removed["effective_immediately"] is True
+    assert removed["requires_ingest"] is False
+    assert removed["effective_metadata"]["title"] == "Automatic Source Title"
+    assert removed["effective_metadata"]["authors"] == ["Test Author"]
+    fallback = (await service.list_sources())["sources"][0]
+    assert fallback["title"] == "Automatic Source Title"
+    assert fallback["authors"] == ["Test Author"]
+    assert fallback["year"] is None
+    assert fallback["doi"] == ""
+    assert fallback["categories"] == []
+    assert fallback["keywords"] == []
+    assert (
+        "automatic_metadata_unavailable_after_override_removal"
+        not in fallback["metadata_warnings"]
+    )
+    cleared_status = await service.status()
+    assert cleared_status["metadata_overlay_active"] is False
+    assert cleared_status["generation_metadata_snapshot_outdated"] is True
+    assert json.loads(config.metadata_path.read_text(encoding="utf-8"))["sources"] == {}
+    assert config.current_path.read_bytes() == current_before
+    assert chunks_path.read_bytes() == chunks_before
+    assert {
+        path.relative_to(generation_root).as_posix(): path.read_bytes()
+        for path in generation_root.rglob("*")
+        if path.is_file()
+    } == generation_before
+
+
+def test_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
+    asyncio.run(_assert_reviewed_metadata_is_a_runtime_overlay(project))
+
+
+async def _assert_source_ids_drive_agent_metadata_edits(project: Path) -> None:
+    source_path = project / "sources" / "article.pdf"
+    write_pdf(source_path, ["Stable cobalt evidence for source identity."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+
+    discovered = await service.list_sources()
+    assert discovered["ready"] is False
+    source_id = discovered["discovered_sources"][0]["source_id"]
+    assert source_id.startswith("src_")
+    assert discovered["known_sources"] == [
+        {
+            "source_id": source_id,
+            "source_relative_path": "article.pdf",
+            "exists": True,
+            "included": True,
+            "indexed_in_current_generation": False,
+            "has_reviewed_metadata": False,
+        }
+    ]
+    before_ingest = await service.set_source_metadata(
+        metadata={"title": "Reviewed by ID"},
+        source_id=source_id,
+    )
+    assert before_ingest["source_id"] == source_id
+    assert before_ingest["source_relative_path"] == "article.pdf"
+    assert before_ingest["source_path"] == "sources/article.pdf"
+    assert before_ingest["requires_ingest"] is True
+
+    with pytest.raises(ResearchError, match="exactly one"):
+        await service.set_source_metadata(metadata={"title": "Invalid"})
+    with pytest.raises(ResearchError, match="exactly one"):
+        await service.set_source_metadata(
+            metadata={"title": "Invalid"},
+            source_id=source_id,
+            source_path="article.pdf",
+        )
+
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+    listed = await service.list_sources()
+    assert listed["sources"][0]["source_id"] == source_id
+    assert listed["sources"][0]["title"] == "Reviewed by ID"
+    assert listed["discovered_sources"][0]["source_id"] == source_id
+
+    source_path.unlink()
+    corrected = await service.set_source_metadata(
+        metadata={"title": "Corrected after source removal"},
+        source_id=source_id,
+    )
+    assert corrected["effective_immediately"] is True
+    assert corrected["requires_ingest"] is False
+    listed_after_removal = await service.list_sources()
+    assert listed_after_removal["discovered_sources"] == []
+    assert listed_after_removal["sources"][0]["source_id"] == source_id
+    assert listed_after_removal["sources"][0]["title"] == (
+        "Corrected after source removal"
+    )
+
+
+def test_source_ids_drive_agent_metadata_edits(project: Path) -> None:
+    asyncio.run(_assert_source_ids_drive_agent_metadata_edits(project))
+
+
+async def _assert_metadata_only_source_remains_addressable_by_id(
+    project: Path,
+) -> None:
+    source = project / "sources" / "temporary.pdf"
+    write_pdf(source, ["Temporary evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    source_id = (await service.list_sources())["discovered_sources"][0]["source_id"]
+    await service.set_source_metadata(
+        source_id=source_id,
+        metadata={"title": "Initial reviewed title"},
+    )
+    source.unlink()
+
+    listed = await service.list_sources()
+    assert listed["reviewed_metadata_source_count"] == 1
+    assert listed["reviewed_metadata_sources"] == [
+        {
+            "source_id": source_id,
+            "source_relative_path": "temporary.pdf",
+            "source_path": "sources/temporary.pdf",
+            "metadata": {"title": "Initial reviewed title"},
+            "indexed_in_current_generation": False,
+        }
+    ]
+    corrected = await service.set_source_metadata(
+        source_id=source_id,
+        metadata={"title": "Corrected after deletion"},
+    )
+    assert corrected["changed"] is True
+    assert corrected["requires_ingest"] is True
+    assert corrected["effective_metadata"] is None
+    removed = await service.set_source_metadata(source_id=source_id, metadata={})
+    assert removed["changed"] is True
+    assert json.loads(config.metadata_path.read_text(encoding="utf-8"))["sources"] == {}
+    restarted = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    edited_again = await restarted.set_source_metadata(
+        source_id=source_id,
+        metadata={"title": "Addressable after clearing"},
+    )
+    assert edited_again["source_id"] == source_id
+    assert edited_again["requires_ingest"] is True
+
+
+def test_metadata_only_source_remains_addressable_by_id(project: Path) -> None:
+    asyncio.run(_assert_metadata_only_source_remains_addressable_by_id(project))
+
+
+async def _assert_catalog_retains_unindexed_deleted_and_renamed_sources(
+    project: Path,
+) -> None:
+    original = project / "sources" / "temporary.pdf"
+    write_pdf(original, ["Temporary evidence registered before ingestion."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    listed = await service.list_sources()
+    original_id = listed["discovered_sources"][0]["source_id"]
+
+    renamed = original.with_name("renamed.pdf")
+    original.rename(renamed)
+    after_rename = await service.list_sources()
+    renamed_id = after_rename["discovered_sources"][0]["source_id"]
+    assert renamed_id != original_id
+    assert {
+        (item["source_id"], item["source_relative_path"], item["exists"])
+        for item in after_rename["known_sources"]
+    } == {
+        (original_id, "temporary.pdf", False),
+        (renamed_id, "renamed.pdf", True),
+    }
+
+    renamed.unlink()
+    restarted = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    saved = await restarted.set_source_metadata(
+        source_id=original_id,
+        metadata={"title": "Reviewed after deletion"},
+    )
+    assert saved["source_relative_path"] == "temporary.pdf"
+    assert saved["requires_ingest"] is True
+
+
+def test_catalog_retains_unindexed_deleted_and_renamed_sources(
+    project: Path,
+) -> None:
+    asyncio.run(_assert_catalog_retains_unindexed_deleted_and_renamed_sources(project))
+
+
+def test_removed_legacy_reviewed_metadata_uses_safe_fallback() -> None:
+    legacy = {
+        "document_id": "doc_legacy",
+        "source_path": "sources/legacy.pdf",
+        "source_relative_path": "legacy.pdf",
+        "title": "Wrong Reviewed Title",
+        "authors": ["Wrong Author"],
+        "year": 1900,
+        "doi": "10.1000/wrong",
+        "categories": ["wrong category"],
+        "keywords": ["wrong keyword"],
+        "metadata_override_revision": service_module.value_fingerprint(
+            {
+                "title": "Wrong Reviewed Title",
+                "authors": ["Wrong Author"],
+                "year": 1900,
+                "doi": "10.1000/wrong",
+                "categories": ["wrong category"],
+                "keywords": ["wrong keyword"],
+            }
+        ),
+        "metadata_provenance": {
+            field: "reviewed_override"
+            for field in (
+                "title",
+                "authors",
+                "year",
+                "doi",
+                "categories",
+                "keywords",
+            )
+        },
+        "metadata_confidence": {},
+        "metadata_warnings": [],
+    }
+
+    effective = _effective_document_metadata(legacy, {})
+
+    assert effective["title"] == "legacy"
+    assert effective["authors"] == []
+    assert effective["year"] is None
+    assert effective["doi"] == ""
+    assert effective["categories"] == []
+    assert effective["keywords"] == []
+    assert "metadata_confidence" not in effective
+    assert (
+        "automatic_metadata_unavailable_after_override_removal"
+        in effective["metadata_warnings"]
+    )
+
+
+def test_provenance_free_legacy_metadata_falls_back_only_after_snapshot_change() -> (
+    None
+):
+    legacy_document = {
+        "document_id": "doc_legacy",
+        "source_path": "sources/legacy.pdf",
+        "source_relative_path": "legacy.pdf",
+        "title": "Valid Automatic Title",
+        "authors": ["Automatic Author"],
+        "year": 2020,
+        "doi": "10.1000/automatic",
+        "categories": [],
+        "keywords": [],
+    }
+    empty_revision = service_module.value_fingerprint({})
+    matching_manifest = {
+        "metadata_revision": empty_revision,
+        "documents": [legacy_document],
+    }
+
+    matching = service_module._effective_documents(matching_manifest, {})["doc_legacy"]
+    assert matching["title"] == "Valid Automatic Title"
+    assert matching["authors"] == ["Automatic Author"]
+    assert matching["year"] == 2020
+    assert matching["doi"] == "10.1000/automatic"
+
+    changed = service_module._effective_documents(
+        matching_manifest,
+        {"legacy.pdf": {"categories": ["corrected"]}},
+    )["doc_legacy"]
+    assert changed["title"] == "legacy"
+    assert changed["authors"] == []
+    assert changed["year"] is None
+    assert changed["doi"] == ""
+    assert changed["categories"] == ["corrected"]
+    assert (
+        "automatic_metadata_unavailable_after_override_removal"
+        in changed["metadata_warnings"]
+    )
+
+
 async def _assert_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None:
     write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
     config = resolve_config(project, vanilla_executable=sys.executable)
@@ -656,8 +1188,23 @@ async def _assert_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None
     assert manifest["discarded_symbol_only_chunk_count"] == 1
     assert manifest["build_metrics"]["discarded_symbol_only_chunk_count"] == 1
     chunks = read_jsonl(generation_root / manifest["files"]["chunks"])
-    assert [chunk["text"] for chunk in chunks] == ["Stable research evidence."]
-    assert [chunk["text"] for chunk in dense.chunks] == ["Stable research evidence."]
+    assert [chunk["contents"] for chunk in chunks] == ["Stable research evidence."]
+    assert [chunk["contents"] for chunk in dense.chunks] == [
+        "Stable research evidence."
+    ]
+    assert set(chunks[0]) == {
+        "annotations",
+        "chunk_id",
+        "content_kind",
+        "contents",
+        "document_chunk_index",
+        "document_id",
+        "id",
+        "locator",
+        "quality_flags",
+        "source_id",
+        "unit_id",
+    }
     assert ultrarag.passages == ["Stable research evidence."]
 
 
@@ -752,6 +1299,46 @@ def test_agent_reviewed_source_exclusion_is_immediate_and_reversible(
     project: Path,
 ) -> None:
     asyncio.run(_assert_agent_reviewed_source_exclusion(project))
+
+
+async def _assert_deleted_excluded_source_is_restorable_by_id(project: Path) -> None:
+    source = project / "sources" / "temporary.pdf"
+    write_pdf(source, ["Temporary source that is reviewed before ingestion."])
+    service = ResearchService(  # type: ignore[arg-type]
+        resolve_config(project, vanilla_executable=sys.executable),
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+
+    discovered = await service.list_sources()
+    source_id = discovered["discovered_sources"][0]["source_id"]
+    await service.set_source_inclusion(
+        source_id=source_id,
+        included=False,
+        reason="Source was removed after review.",
+    )
+    source.unlink()
+
+    excluded = await service.list_sources()
+    assert excluded["excluded_sources"][0]["source_id"] == source_id
+    edited = await service.set_source_metadata(
+        source_id=source_id,
+        metadata={"title": "Reviewed while excluded and missing"},
+    )
+    assert edited["requires_ingest"] is True
+    cleared = await service.set_source_metadata(source_id=source_id, metadata={})
+    assert cleared["changed"] is True
+    restored = await service.set_source_inclusion(
+        source_id=source_id,
+        included=True,
+    )
+    assert restored["status"] == "changed"
+    assert restored["source_id"] == source_id
+    assert (await service.list_sources())["excluded_sources"] == []
+
+
+def test_deleted_excluded_source_is_restorable_by_advertised_id(project: Path) -> None:
+    asyncio.run(_assert_deleted_excluded_source_is_restorable_by_id(project))
 
 
 def test_reciprocal_rank_fusion_rewards_agreement() -> None:
@@ -875,7 +1462,7 @@ async def _assert_document_grouped_search_uses_judged_candidate_pool(
     assert grouped["candidate_distinct_reference_count"] == 4
     assert grouped["distinct_reference_count"] == 3
     assert grouped["grouping"] == {
-        "method": "document_id_passage_cap",
+        "method": "source_id_passage_cap",
         "passages_per_reference": 2,
         "skipped_candidate_count": 8,
     }
@@ -1078,6 +1665,49 @@ def test_no_change_ingest_is_noop_and_force_rebuilds(project: Path) -> None:
     asyncio.run(_assert_no_change_ingest_is_noop_and_force_rebuilds(project))
 
 
+@pytest.mark.parametrize(
+    "artifact",
+    ["chunks", "vectors", "bm25", "dense"],
+)
+def test_matching_sources_rebuild_a_corrupt_selected_generation(
+    project: Path,
+    artifact: str,
+) -> None:
+    async def exercise() -> None:
+        write_pdf(project / "sources" / "article.pdf", ["Stable evidence."])
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        first = await service.ingest(chunk_size=50, chunk_overlap=10)
+        generation_root = Path(first["generation_root"])
+        manifest = json.loads(
+            (generation_root / "manifest.json").read_text(encoding="utf-8")
+        )
+        targets = {
+            "chunks": generation_root / manifest["files"]["chunks"],
+            "vectors": generation_root / manifest["files"]["portable_embeddings"],
+            "bm25": generation_root
+            / manifest["files"]["bm25_index"]
+            / "fake-index.json",
+            "dense": generation_root
+            / manifest["files"]["dense_index"]
+            / "fake-qdrant.json",
+        }
+        targets[artifact].write_bytes(b"corrupt\n")
+
+        rebuilt = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        assert rebuilt["status"] == "ready"
+        assert rebuilt["generation_changed"] is True
+        assert rebuilt["generation_id"] != first["generation_id"]
+        assert rebuilt["rebuilt_document_count"] == 1
+
+    asyncio.run(exercise())
+
+
 async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> None:
     first_path = project / "sources" / "first.pdf"
     second_path = project / "sources" / "second.pdf"
@@ -1111,8 +1741,10 @@ async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> No
 
     await service.set_source_metadata("first.pdf", {"categories": ["theory"]})
     metadata_changed = await service.ingest(chunk_size=50, chunk_overlap=10)
-    assert metadata_changed["rebuilt_document_count"] == 1
-    assert metadata_changed["reused_document_count"] == 1
+    assert metadata_changed["status"] == "unchanged"
+    assert metadata_changed["generation_id"] == changed_bytes["generation_id"]
+    assert metadata_changed["rebuilt_document_count"] == 0
+    assert metadata_changed["reused_document_count"] == 2
     assert metadata_changed["reused_vector_count"] == metadata_changed["chunk_count"]
     assert metadata_changed["created_vector_count"] == 0
 
@@ -1142,6 +1774,122 @@ async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> No
 
 def test_selective_reuse_tracks_every_input_change(project: Path) -> None:
     asyncio.run(_assert_selective_reuse_tracks_every_input_change(project))
+
+
+async def _assert_ordinary_ingest_migrates_legacy_metadata_storage(
+    project: Path,
+) -> None:
+    source = project / "sources" / "article.pdf"
+    write_pdf(source, ["Stable cobalt evidence."], title="Automatic Title")
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    await service.set_source_metadata(
+        "article.pdf",
+        {"title": "Reviewed Title", "authors": ["Reviewed Author"]},
+    )
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+    old_manifest_path = Path(first["generation_root"]) / "manifest.json"
+    old_manifest = json.loads(old_manifest_path.read_text(encoding="utf-8"))
+    old_manifest.pop("metadata_storage_policy")
+    old_document = old_manifest["documents"][0]
+    old_document["title"] = "Reviewed Title"
+    old_document["authors"] = ["Reviewed Author"]
+    old_document["metadata_provenance"]["title"] = "reviewed_override"
+    old_document["metadata_provenance"]["authors"] = "reviewed_override"
+    old_manifest_path.write_text(
+        json.dumps(old_manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    legacy_status = await service.status()
+    assert legacy_status["generation_upgrade_required"] is True
+    assert "metadata_storage" in legacy_status["upgrade_reasons"]
+
+    migrated = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    assert migrated["status"] == "ready"
+    assert migrated["generation_changed"] is True
+    assert migrated["generation_id"] != first["generation_id"]
+    assert migrated["rebuilt_document_count"] == 1
+    migrated_manifest = json.loads(
+        (Path(migrated["generation_root"]) / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert migrated_manifest["metadata_storage_policy"] == (
+        service_module.METADATA_STORAGE_POLICY
+    )
+    assert migrated_manifest["documents"][0]["title"] == "Automatic Title"
+
+    # The reviewed overlay remains live throughout the migration, but removing
+    # it now reveals the recovered automatic metadata without another build.
+    listed = (await service.list_sources())["sources"][0]
+    assert listed["title"] == "Reviewed Title"
+    await service.set_source_metadata("article.pdf", {})
+    automatic = (await service.list_sources())["sources"][0]
+    assert automatic["title"] == "Automatic Title"
+    assert (
+        "automatic_metadata_unavailable_after_override_removal"
+        not in automatic["metadata_warnings"]
+    )
+
+
+def test_ordinary_ingest_migrates_legacy_metadata_storage(project: Path) -> None:
+    asyncio.run(_assert_ordinary_ingest_migrates_legacy_metadata_storage(project))
+
+
+async def _assert_pending_metadata_status_is_not_reported_as_active(
+    project: Path,
+) -> None:
+    first_source = project / "sources" / "first.pdf"
+    write_pdf(first_source, ["Stable cobalt evidence."], title="First")
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    # A legacy manifest with no observational revision and no current overrides
+    # is consistent across both the setter and status response.
+    manifest_path = Path(first["generation_root"]) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("metadata_revision")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    unchanged = await service.set_source_metadata("first.pdf", {})
+    assert unchanged["generation_metadata_snapshot_outdated"] is False
+    initial_status = await service.status()
+    assert initial_status["generation_metadata_snapshot_outdated"] is False
+    assert initial_status["metadata_overlay_active"] is False
+
+    second_source = project / "sources" / "second.pdf"
+    write_pdf(second_source, ["Unindexed amber evidence."], title="Second")
+    pending = await service.set_source_metadata(
+        "second.pdf",
+        {"title": "Pending Reviewed Title"},
+    )
+    assert pending["effective_immediately"] is False
+    assert pending["requires_ingest"] is True
+
+    status = await service.status()
+    assert status["stale"] is True
+    assert status["changes"]["added"] == ["second.pdf"]
+    assert status["metadata_overlay_active"] is False
+    assert status["metadata_pending_source_paths"] == ["second.pdf"]
+    assert status["generation_metadata_snapshot_outdated"] is True
+    assert "call ingest" in status["message"]
+    assert "ingestion is not required" not in status["message"]
+
+
+def test_pending_metadata_status_is_not_reported_as_active(project: Path) -> None:
+    asyncio.run(_assert_pending_metadata_status_is_not_reported_as_active(project))
 
 
 async def _assert_failed_dense_build_does_not_replace_current(project: Path) -> None:
@@ -1177,6 +1925,305 @@ async def _assert_failed_dense_build_does_not_replace_current(project: Path) -> 
 
 def test_failed_dense_build_does_not_replace_current(project: Path) -> None:
     asyncio.run(_assert_failed_dense_build_does_not_replace_current(project))
+
+
+def test_checkpoint_progress_is_reconciled_from_per_source_state(
+    project: Path,
+) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    root = config.staging_root / "build"
+    checkpoint: dict[str, object] = {
+        "phase": "extraction",
+        "selected_source_paths": ["article.pdf", "book.epub"],
+        "source_inventory": [
+            {"source_relative_path": "article.pdf", "format": "pdf"},
+            {"source_relative_path": "book.epub", "format": "epub"},
+        ],
+        "extracted_source_paths": ["article.pdf"],
+        "extraction_work_total": 0,
+        "extraction_work_completed": 0,
+        "chunking_work_total": 0,
+        "chunking_work_completed": 0,
+    }
+    pdf_root = service._source_artifact_root(root, "article.pdf")
+    epub_root = service._source_artifact_root(root, "book.epub")
+    pdf_root.mkdir(parents=True)
+    epub_root.mkdir(parents=True)
+    (pdf_root / "state.json").write_text(
+        json.dumps(
+            {
+                "reused": False,
+                "extraction_stage": "complete",
+                "total": 2,
+                "next_index": 2,
+                "chunking_work_total": 2,
+                "chunked_unit_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (epub_root / "state.json").write_text(
+        json.dumps(
+            {
+                "reused": False,
+                "extraction_stage": "complete",
+                "total": 3,
+                "next_index": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service._reconcile_checkpoint_progress(root, checkpoint)  # type: ignore[arg-type]
+
+    assert checkpoint["extraction_work_total"] == 11
+    # The EPUB final state is committed, but its global completion checkpoint is
+    # not; the normal resume path will account for that last atomic unit once.
+    assert checkpoint["extraction_work_completed"] == 10
+    assert checkpoint["chunking_work_total"] == 2
+    assert checkpoint["chunking_work_completed"] == 1
+
+
+async def _assert_pdf_ingestion_checkpoints_fixed_page_batches(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(
+        project / "sources" / "batched.pdf",
+        [
+            f"{topic} research develops a distinct account of material evidence."
+            for topic in (
+                "Cobalt",
+                "Amber",
+                "Copper",
+                "Lithium",
+                "Silicon",
+                "Nickel",
+                "Graphite",
+                "Quartz",
+                "Manganese",
+            )
+        ],
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    first = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    initialized = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    scanned = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+
+    assert first["phase"] == "source_hashing"
+    assert initialized["phase"] == "extraction"
+    assert initialized["progress"] == {
+        "completed": 0,
+        "total": 6,
+        "unit": "pdf_page_batches_or_epub_sections",
+    }
+    assert scanned["progress"] == {
+        "completed": 1,
+        "total": 6,
+        "unit": "pdf_page_batches_or_epub_sections",
+    }
+    staging_root = next(config.staging_root.iterdir())
+    state_path = next((staging_root / "work" / "sources").glob("*/state.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["page_batch_size"] == service_module.PDF_PAGE_BATCH_SIZE == 8
+    assert state["next_index"] == 8
+
+    ready = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=300,
+    )
+    assert ready["status"] == "ready"
+    units = read_jsonl(Path(ready["generation_root"]) / "corpus/extracted-units.jsonl")
+    assert [unit["locator"]["page"] for unit in units] == list(range(1, 10))
+
+
+def test_pdf_ingestion_checkpoints_fixed_page_batches(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_pdf_ingestion_checkpoints_fixed_page_batches(project, monkeypatch)
+    )
+
+
+async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(
+        project / "sources" / "batched.pdf",
+        [
+            f"{topic} research preserves a distinct account of durable evidence."
+            for topic in (
+                "Cobalt",
+                "Amber",
+                "Copper",
+                "Lithium",
+                "Silicon",
+                "Nickel",
+                "Graphite",
+                "Quartz",
+                "Manganese",
+            )
+        ],
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+
+    class SimulatedProcessExit(BaseException):
+        pass
+
+    original_atomic_write = service_module.atomic_write_json
+    crashed = False
+
+    def fail_during_first_scan_batch(path: Path, value: object) -> None:
+        nonlocal crashed
+        if (
+            not crashed
+            and path.parent.name == "page-scans"
+            and path.name == "00000001.json"
+        ):
+            crashed = True
+            raise SimulatedProcessExit
+        original_atomic_write(path, value)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            service_module,
+            "atomic_write_json",
+            fail_during_first_scan_batch,
+        )
+        with pytest.raises(SimulatedProcessExit):
+            await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    staging_root = next(config.staging_root.iterdir())
+    state_path = next((staging_root / "work" / "sources").glob("*/state.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["extraction_stage"] == "pdf_scan"
+    assert state["next_index"] == 0
+    assert (state_path.parent / "page-scans/00000000.json").is_file()
+    assert not (state_path.parent / "page-scans/00000001.json").exists()
+
+    resumed = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    ready = await resumed.ingest(chunk_size=50, chunk_overlap=10)
+    assert ready["status"] == "ready"
+    assert ready["resumed"] is True
+    units = read_jsonl(Path(ready["generation_root"]) / "corpus/extracted-units.jsonl")
+    assert [unit["locator"]["page"] for unit in units] == list(range(1, 10))
+
+
+def test_partial_pdf_batch_is_replayed_after_hard_crash(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_partial_pdf_batch_is_replayed_after_hard_crash(project, monkeypatch)
+    )
+
+
+def test_vector_outputs_are_fsynced_before_atomic_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_syncs = 0
+    directory_syncs: list[Path] = []
+    real_fsync = os.fsync
+
+    def tracking_fsync(descriptor: int) -> None:
+        nonlocal file_syncs
+        file_syncs += 1
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(service_module.os, "fsync", tracking_fsync)
+    monkeypatch.setattr(
+        service_module,
+        "fsync_directory",
+        lambda path: directory_syncs.append(path),
+    )
+    vectors = np.ones(
+        (2, service_module.EMBEDDING_DIMENSION),
+        dtype=np.float32,
+    )
+    batches_root = tmp_path / "batches"
+    batch_path = batches_root / "000000000000.npy"
+    ResearchService._save_vector_batch(batch_path, vectors)
+    assembled_path = tmp_path / "portable" / "embeddings.npy"
+    ResearchService._assemble_vector_batches(
+        assembled_path,
+        batches_root,
+        len(vectors),
+    )
+
+    assert file_syncs == 2
+    assert directory_syncs == [batch_path.parent, assembled_path.parent]
+    np.testing.assert_array_equal(
+        np.load(assembled_path, allow_pickle=False),
+        vectors,
+    )
+
+
+async def _assert_checkpointless_staging_is_cleaned_before_ingest(
+    project: Path,
+) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    orphan = config.staging_root / "interrupted-before-checkpoint"
+    orphan.mkdir()
+    (orphan / ".checkpoint.tmp").write_text("partial", encoding="utf-8")
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    assert result["status"] == "ready"
+    assert not orphan.exists()
+    diagnostic = json.loads(
+        (config.failures_root / "interrupted-before-checkpoint-orphan.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert diagnostic["resumable"] is False
+    assert "checkpointless" in diagnostic["error"]
+
+
+def test_checkpointless_staging_is_cleaned_before_ingest(project: Path) -> None:
+    asyncio.run(_assert_checkpointless_staging_is_cleaned_before_ingest(project))
 
 
 async def _assert_bounded_ingestion_resumes_after_service_restart(
@@ -1236,6 +2283,70 @@ def test_bounded_ingestion_resumes_after_service_restart(
 ) -> None:
     asyncio.run(
         _assert_bounded_ingestion_resumes_after_service_restart(project, monkeypatch)
+    )
+
+
+async def _assert_metadata_edit_preserves_ingestion_checkpoint(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(
+        project / "sources" / "article.pdf",
+        ["Stable cobalt evidence."],
+        title="Automatic Title",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
+
+    pending = await service.ingest(
+        chunk_size=50,
+        chunk_overlap=10,
+        work_budget_seconds=0,
+    )
+    assert pending["status"] == "in_progress"
+    metadata = await service.set_source_metadata(
+        "article.pdf",
+        {"title": "Reviewed During Build", "categories": ["theory"]},
+    )
+    assert metadata["effective_immediately"] is False
+    assert metadata["requires_ingest"] is True
+
+    for _ in range(30):
+        result = await service.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+            work_budget_seconds=0,
+        )
+        if result["status"] == "ready":
+            break
+        assert result["build_id"] == pending["build_id"]
+    else:  # pragma: no cover
+        raise AssertionError("metadata-independent checkpoint did not finish")
+
+    assert result["generation_id"] == pending["build_id"]
+    manifest = json.loads(
+        (Path(result["generation_root"]) / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["metadata_storage_policy"] == (
+        service_module.METADATA_STORAGE_POLICY
+    )
+    assert manifest["documents"][0]["title"] == "Automatic Title"
+    listed = await service.list_sources(categories=["theory"])
+    assert listed["sources"][0]["title"] == "Reviewed During Build"
+    assert not any(config.failures_root.iterdir())
+
+
+def test_metadata_edit_preserves_ingestion_checkpoint(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(
+        _assert_metadata_edit_preserves_ingestion_checkpoint(project, monkeypatch)
     )
 
 
@@ -1311,6 +2422,81 @@ async def _assert_cancelled_ingestion_preserves_its_checkpoint(project: Path) ->
 
 def test_cancelled_ingestion_preserves_its_checkpoint(project: Path) -> None:
     asyncio.run(_assert_cancelled_ingestion_preserves_its_checkpoint(project))
+
+
+@pytest.mark.parametrize("reuse_existing", [False, True])
+def test_restart_reconciles_completed_extraction_before_checkpoint(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reuse_existing: bool,
+) -> None:
+    async def exercise() -> None:
+        write_pdf(project / "sources" / "article.pdf", ["Stable evidence."])
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        ultrarag = FakeUltraRAG()
+        dense = FakeDenseBackend()
+        if reuse_existing:
+            initial_service = ResearchService(  # type: ignore[arg-type]
+                config,
+                ultrarag,
+                dense=dense,
+            )
+            await initial_service.ingest(chunk_size=50, chunk_overlap=10)
+            write_pdf(project / "sources" / "new.pdf", ["New evidence."])
+
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            ultrarag,
+            dense=dense,
+        )
+        original_write = service._write_checkpoint
+        crashed = False
+
+        class SimulatedProcessExit(BaseException):
+            pass
+
+        def fail_after_completed_state(
+            root: Path,
+            checkpoint: dict[str, object],
+        ) -> None:
+            nonlocal crashed
+            if (
+                not crashed
+                and checkpoint.get("phase") == "extraction"
+                and checkpoint.get("extracted_source_paths")
+                and any(
+                    json.loads(path.read_text(encoding="utf-8")).get("extraction_stage")
+                    == "complete"
+                    for path in (root / "work" / "sources").glob("*/state.json")
+                )
+            ):
+                crashed = True
+                raise SimulatedProcessExit
+            original_write(root, checkpoint)
+
+        with monkeypatch.context() as patcher:
+            patcher.setattr(service, "_write_checkpoint", fail_after_completed_state)
+            with pytest.raises(SimulatedProcessExit):
+                await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        staging_root = next(config.staging_root.iterdir())
+        stored_checkpoint = json.loads(
+            (staging_root / "checkpoint.json").read_text(encoding="utf-8")
+        )
+        assert stored_checkpoint["extracted_source_paths"] == []
+
+        resumed_service = ResearchService(  # type: ignore[arg-type]
+            config,
+            ultrarag,
+            dense=dense,
+        )
+        resumed = await resumed_service.ingest(chunk_size=50, chunk_overlap=10)
+        assert resumed["status"] == "ready"
+        assert resumed["resumed"] is True
+        assert resumed["reused_document_count"] == int(reuse_existing)
+        assert resumed["rebuilt_document_count"] == 1
+
+    asyncio.run(exercise())
 
 
 async def _assert_incompatible_force_mode_supersedes_checkpoint(
@@ -1469,12 +2655,23 @@ async def _assert_bounded_and_single_call_builds_are_equivalent(
 
     single_root = Path(single_result["generation_root"])
     bounded_root = Path(bounded_result["generation_root"])
-    assert read_jsonl(single_root / "corpus" / "extracted-units.jsonl") == read_jsonl(
-        bounded_root / "corpus" / "extracted-units.jsonl"
+
+    def without_project_scoped_id(
+        records: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        return [
+            {key: value for key, value in item.items() if key != "source_id"}
+            for item in records
+        ]
+
+    assert without_project_scoped_id(
+        read_jsonl(single_root / "corpus" / "extracted-units.jsonl")
+    ) == without_project_scoped_id(
+        read_jsonl(bounded_root / "corpus" / "extracted-units.jsonl")
     )
-    assert read_jsonl(single_root / "chunks" / "chunks.jsonl") == read_jsonl(
-        bounded_root / "chunks" / "chunks.jsonl"
-    )
+    assert without_project_scoped_id(
+        read_jsonl(single_root / "chunks" / "chunks.jsonl")
+    ) == without_project_scoped_id(read_jsonl(bounded_root / "chunks" / "chunks.jsonl"))
     assert np.array_equal(
         np.load(single_root / "portable" / "embeddings.npy", allow_pickle=False),
         np.load(bounded_root / "portable" / "embeddings.npy", allow_pickle=False),
@@ -1488,6 +2685,139 @@ def test_bounded_and_single_call_builds_are_equivalent(
     asyncio.run(
         _assert_bounded_and_single_call_builds_are_equivalent(project, monkeypatch)
     )
+
+
+async def _assert_invalid_activation_journals_self_heal(project: Path) -> None:
+    write_pdf(project / "sources" / "evidence.pdf", ["Recoverable evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    journal_path = config.state_root / "pending-activation.json"
+
+    journal_path.write_text("{not-json", encoding="utf-8")
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert first["status"] == "ready"
+    assert not journal_path.exists()
+
+    journal_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 999,
+                "project_id": config.project_id,
+                "build_id": "../../unsafe",
+            }
+        ),
+        encoding="utf-8",
+    )
+    second = await service.ingest(chunk_size=50, chunk_overlap=10)
+    assert second["status"] == "unchanged"
+    assert not journal_path.exists()
+    diagnostics = list(config.failures_root.glob("*-invalid-activation-journal.json"))
+    assert len(diagnostics) == 2
+    assert all(
+        json.loads(path.read_text(encoding="utf-8"))["resumable"] is False
+        for path in diagnostics
+    )
+
+
+def test_invalid_activation_journals_do_not_block_ingestion(project: Path) -> None:
+    asyncio.run(_assert_invalid_activation_journals_self_heal(project))
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["before_journal", "before_move", "before_pointer"],
+)
+def test_pending_activation_recovers_crash_window(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    async def exercise() -> None:
+        write_pdf(project / "sources" / "evidence.pdf", ["Recoverable evidence."])
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+
+        if failure_point == "before_journal":
+
+            class SimulatedProcessExit(BaseException):
+                pass
+
+            original_atomic_write = service_module.atomic_write_json
+
+            def fail_journal(path: Path, value: object) -> None:
+                if path == config.state_root / "pending-activation.json":
+                    raise SimulatedProcessExit
+                original_atomic_write(path, value)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(service_module, "atomic_write_json", fail_journal)
+                with pytest.raises(SimulatedProcessExit):
+                    await service.ingest(chunk_size=50, chunk_overlap=10)
+            staging_root = next(config.staging_root.iterdir())
+            assert (staging_root / "work").is_dir()
+        elif failure_point == "before_move":
+            original_replace = service_module.os.replace
+
+            def fail_generation_move(source: object, destination: object) -> None:
+                if Path(destination).parent == config.generations_root:
+                    raise OSError("simulated crash before generation move")
+                original_replace(source, destination)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(service_module.os, "replace", fail_generation_move)
+                with pytest.raises(OSError, match="before generation move"):
+                    await service.ingest(chunk_size=50, chunk_overlap=10)
+        else:
+            original_atomic_write = service_module.atomic_write_json
+
+            def fail_pointer(path: Path, value: object) -> None:
+                if path == config.current_path:
+                    raise OSError("simulated crash before pointer write")
+                original_atomic_write(path, value)
+
+            with monkeypatch.context() as patcher:
+                patcher.setattr(service_module, "atomic_write_json", fail_pointer)
+                with pytest.raises(OSError, match="before pointer write"):
+                    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        assert (config.state_root / "pending-activation.json").is_file() is (
+            failure_point != "before_journal"
+        )
+        recovered_service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        recovered = await recovered_service.ingest(
+            chunk_size=50,
+            chunk_overlap=10,
+        )
+        assert recovered["status"] == "ready"
+        assert recovered.get("activation_recovered", False) is (
+            failure_point != "before_journal"
+        )
+        assert not (config.state_root / "pending-activation.json").exists()
+        generation_root = Path(recovered["generation_root"])
+        assert not (generation_root / "checkpoint.json").exists()
+        assert (
+            json.loads(config.current_path.read_text(encoding="utf-8"))["generation_id"]
+            == recovered["generation_id"]
+        )
+        search = await recovered_service.search(
+            "recoverable evidence",
+            retrieval_method="bm25",
+        )
+        assert search["result_count"] == 1
+
+    asyncio.run(exercise())
 
 
 async def _assert_resumed_dense_batches_are_exactly_once(
@@ -1554,14 +2884,12 @@ async def _assert_legacy_corrupt_chunks_are_rejected_immediately(
     clean_chunk["document_chunk_index"] = 0
     corrupt_chunk = dict(chunks[0])
     corrupt_chunk["document_chunk_index"] = 1
-    for field in ("contents", "embedding_text", "text"):
-        corrupt_chunk[field] = CORRUPT_TEXT
+    corrupt_chunk["contents"] = CORRUPT_TEXT
     symbol_chunk = dict(chunks[0])
     symbol_chunk["chunk_id"] = "symbol-only"
     symbol_chunk["id"] = "symbol-only"
     symbol_chunk["document_chunk_index"] = 2
-    for field in ("contents", "embedding_text", "text"):
-        symbol_chunk[field] = "— • ∎"
+    symbol_chunk["contents"] = "— • ∎"
     chunks = [clean_chunk, corrupt_chunk, symbol_chunk]
     write_jsonl(chunks_path, chunks)
     ultrarag.passages = [
@@ -1599,6 +2927,81 @@ def test_legacy_corrupt_chunks_are_rejected_immediately(project: Path) -> None:
     asyncio.run(_assert_legacy_corrupt_chunks_are_rejected_immediately(project))
 
 
+async def _assert_foreign_script_chunks_stay_retrievable(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = FakeUltraRAG()
+    dense = FakeDenseBackend()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=dense,
+    )
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+    generation_root = Path(result["generation_root"])
+    chunks_path = generation_root / "chunks" / "chunks.jsonl"
+    base = read_jsonl(chunks_path)[0]
+
+    quotation = dict(base)
+    quotation["chunk_id"] = "greek-quotation"
+    quotation["id"] = "greek-quotation"
+    quotation["document_chunk_index"] = 0
+    quotation["contents"] = "ὁ ἄργυρος κακὸν νόμισμ᾽ ἔβλαστε καὶ πόλεις πορθεῖ �"
+
+    corrupt_chunk = dict(base)
+    corrupt_chunk["document_chunk_index"] = 1
+    corrupt_chunk["contents"] = CORRUPT_TEXT
+
+    write_jsonl(chunks_path, [quotation, corrupt_chunk])
+    ultrarag.passages = [str(quotation["contents"]), CORRUPT_TEXT]
+
+    search = await service.search("ἄργυρος", top_k=8, retrieval_method="bm25")
+    hit = next(item for item in search["hits"] if item["chunk_id"] == "greek-quotation")
+    assert hit["text_notes"] == ["non_latin_dominant"]
+    assert search["withheld_candidates"]["policy"] == "corruption_evidence_only"
+    assert search["withheld_candidates"]["flagged_passages_returned"] == 1
+    assert search["withheld_candidates"]["total"] == 2
+    reasons = search["withheld_candidates"]["reasons"]
+    assert reasons["replacement_characters"]["count"] == 1
+    assert reasons["private_or_unassigned_characters"]["count"] == 1
+    assert reasons["replacement_characters"]["example_chunk_ids"]
+
+    passage = await service.get_passage("greek-quotation")
+    assert [item["chunk_id"] for item in passage["context"]] == ["greek-quotation"]
+
+
+def test_foreign_script_chunks_stay_retrievable(project: Path) -> None:
+    asyncio.run(_assert_foreign_script_chunks_stay_retrievable(project))
+
+
+async def _assert_legacy_text_chunks_remain_searchable(project: Path) -> None:
+    write_pdf(project / "sources" / "article.pdf", ["Legacy cobalt evidence."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = FakeUltraRAG()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=FakeDenseBackend(),
+    )
+    result = await service.ingest(chunk_size=50, chunk_overlap=10)
+    generation_root = Path(result["generation_root"])
+    chunks_path = generation_root / "chunks" / "chunks.jsonl"
+    chunks = read_jsonl(chunks_path)
+    legacy_text = chunks[0].pop("contents")
+    chunks[0]["text"] = legacy_text
+    write_jsonl(chunks_path, chunks)
+    ultrarag.passages = [str(legacy_text)]
+
+    search = await service.search("legacy cobalt", retrieval_method="bm25")
+    assert search["hits"][0]["text"] == legacy_text
+    passage = await service.get_passage(str(chunks[0]["chunk_id"]), context_chunks=0)
+    assert passage["context"][0]["text"] == legacy_text
+
+
+def test_legacy_text_chunks_remain_searchable(project: Path) -> None:
+    asyncio.run(_assert_legacy_text_chunks_remain_searchable(project))
+
+
 async def _assert_unreadable_source_fails_without_activation(project: Path) -> None:
     write_epub(project / "sources" / "broken.epub", CORRUPT_TEXT)
     config = resolve_config(project, vanilla_executable=sys.executable)
@@ -1620,3 +3023,102 @@ async def _assert_unreadable_source_fails_without_activation(project: Path) -> N
 
 def test_unreadable_source_fails_without_activation(project: Path) -> None:
     asyncio.run(_assert_unreadable_source_fails_without_activation(project))
+
+
+async def _assert_query_paths_use_generation_lookup(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_pdf(
+        project / "sources" / "article.pdf",
+        [
+            "Cobalt evidence in the first passage.",
+            "Cobalt context in the neighboring passage.",
+        ],
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    result = await service.ingest(chunk_size=100, chunk_overlap=10)
+    generation_root = Path(result["generation_root"])
+    lookup_path = generation_root / "indexes" / "artifact-lookup.sqlite3"
+    chunks_path = generation_root / "chunks" / "chunks.jsonl"
+    assert lookup_path.is_file()
+
+    # A generation created before the sidecar existed is upgraded lazily. Query
+    # paths then seek only selected records rather than materializing JSONL.
+    lookup_path.unlink()
+    original_read_jsonl = service_module.read_jsonl
+
+    def reject_corpus_materialization(path: Path) -> list[dict[str, object]]:
+        if path == chunks_path:
+            raise AssertionError("query path materialized the complete chunk store")
+        return original_read_jsonl(path)
+
+    monkeypatch.setattr(service_module, "read_jsonl", reject_corpus_materialization)
+    search = await service.search(
+        "cobalt",
+        top_k=1,
+        retrieval_method="dense",
+    )
+    assert search["hits"]
+    assert lookup_path.is_file()
+
+    passage = await service.get_passage(
+        search["hits"][0]["chunk_id"],
+        context_chunks=1,
+    )
+    assert passage["context"]
+
+
+def test_query_paths_use_generation_lookup(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(_assert_query_paths_use_generation_lookup(project, monkeypatch))
+
+
+async def _assert_filtered_bm25_deepens_without_loading_the_corpus(
+    project: Path,
+) -> None:
+    write_pdf(
+        project / "sources" / "a-distractor.pdf",
+        ["Distractor source."],
+        title="Distractor",
+    )
+    write_pdf(
+        project / "sources" / "b-target.pdf",
+        ["Target source."],
+        title="Target",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    ultrarag = ProgressivelyFilteredUltraRAG()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        ultrarag,
+        dense=FakeDenseBackend(),
+    )
+    await service.set_source_metadata(
+        "b-target.pdf",
+        {"categories": ["selected"]},
+    )
+    await service.ingest(chunk_size=100, chunk_overlap=10)
+
+    ultrarag.search_depths.clear()
+    search = await service.search(
+        "cobalt",
+        top_k=5,
+        categories=["selected"],
+        retrieval_method="bm25",
+    )
+
+    assert len(search["hits"]) == 5
+    assert {hit["title"] for hit in search["hits"]} == {"Target"}
+    assert ultrarag.search_depths == [20, 35]
+
+
+def test_filtered_bm25_deepens_without_loading_the_corpus(project: Path) -> None:
+    asyncio.run(_assert_filtered_bm25_deepens_without_loading_the_corpus(project))

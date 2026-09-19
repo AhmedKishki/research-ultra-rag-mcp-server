@@ -20,10 +20,17 @@ from .sources import (
     SourceScan,
     normalize_metadata,
     sha256_file,
+    stable_source_id,
 )
-from .storage import load_metadata_overrides, load_source_exclusions, read_jsonl
+from .storage import (
+    iter_jsonl,
+    load_metadata_overrides,
+    load_source_catalog,
+    load_source_exclusions,
+    write_source_catalog,
+)
 
-BUNDLE_SCHEMA_VERSION = 1
+BUNDLE_SCHEMA_VERSION = 2
 BUNDLE_SUFFIX = ".research-rag.zip"
 MAX_BUNDLE_ENTRIES = 100_000
 MAX_EXPANDED_BYTES = 20 * 1024 * 1024 * 1024
@@ -143,6 +150,49 @@ def export_generation_bundle(
     checksums: dict[str, dict[str, Any]] = {}
     source_records: list[dict[str, Any]] = []
 
+    manifest_source_files = manifest.get("source_files")
+    if not isinstance(manifest_source_files, list) or any(
+        not isinstance(item, dict) for item in manifest_source_files
+    ):
+        raise BundleError("Generation manifest has invalid source-file records")
+    manifest_sources_by_path: dict[str, dict[str, Any]] = {}
+    for item in manifest_source_files:
+        relative = item.get("source_relative_path")
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or relative in manifest_sources_by_path
+        ):
+            raise BundleError("Generation manifest has invalid source-file paths")
+        expected_source_id = stable_source_id(config.project_id, relative)
+        if item.get("source_id") != expected_source_id:
+            raise BundleError(
+                f"Generation source ID does not match its project path: {relative}"
+            )
+        manifest_sources_by_path[relative] = item
+
+    manifest_documents = manifest.get("documents")
+    if not isinstance(manifest_documents, list) or any(
+        not isinstance(item, dict) for item in manifest_documents
+    ):
+        raise BundleError("Generation manifest has invalid document records")
+    for item in manifest_documents:
+        relative = item.get("source_relative_path")
+        if not isinstance(relative, str) or not relative:
+            raise BundleError("Generation manifest has invalid document paths")
+        if item.get("source_id") != stable_source_id(config.project_id, relative):
+            raise BundleError(
+                "Generation document source ID does not match its project path: "
+                f"{relative}"
+            )
+
+    scanned_paths = {source.source_relative_path for source in scan.selected}
+    if scanned_paths != set(manifest_sources_by_path):
+        raise BundleError(
+            "Sources changed while the bundle was being exported: the current "
+            "source path set differs from the selected generation"
+        )
+
     entries: list[tuple[str, Path]] = []
     for relative in _GENERATION_EXPORT_FILES:
         source = generation_root / relative
@@ -150,26 +200,39 @@ def export_generation_bundle(
             raise BundleError(f"Generation is missing portable artifact: {relative}")
         entries.append((f"generation/{relative}", source))
     for source in scan.selected:
+        expected_source_id = stable_source_id(
+            config.project_id,
+            source.source_relative_path,
+        )
+        if source.source_id != expected_source_id:
+            raise BundleError(
+                "Scanned source ID does not match its project path: "
+                f"{source.source_relative_path}"
+            )
         name = f"sources/{source.source_relative_path}"
         entries.append((name, source.path))
         source_records.append(
             {
                 "path": source.source_relative_path,
+                "source_id": source.source_id,
                 "size": source.size,
-                "sha256": next(
-                    (
-                        str(item["sha256"])
-                        for item in manifest.get("documents", [])
-                        if item.get("source_relative_path")
-                        == source.source_relative_path
-                    ),
-                    "",
-                ),
+                "sha256": "",
             }
         )
     portable_values = {
         "project/project.json": config.project_config_path.read_bytes(),
         "project/source-metadata.json": _portable_json(config.metadata_path, "sources"),
+        "project/source-catalog.json": (
+            config.source_catalog_path.read_bytes()
+            if config.source_catalog_path.is_file()
+            else _json_bytes(
+                {
+                    "schema_version": 1,
+                    "project_id": config.project_id,
+                    "sources": {},
+                }
+            )
+        ),
         "project/source-exclusions.json": _portable_json(
             config.source_exclusions_path, "sources"
         ),
@@ -194,15 +257,12 @@ def export_generation_bundle(
                 entry = checksums[f"sources/{source_record['path']}"]
                 source_record["sha256"] = entry["sha256"]
                 source_record["size"] = entry["size"]
-            indexed_checksums = {
-                str(item.get("source_relative_path")): str(item.get("sha256") or "")
-                for item in manifest.get("documents", [])
-            }
             changed = [
                 item["path"]
                 for item in source_records
-                if item["path"] in indexed_checksums
-                and item["sha256"] != indexed_checksums[item["path"]]
+                if item["sha256"]
+                != str(manifest_sources_by_path[item["path"]].get("sha256") or "")
+                or item["size"] != manifest_sources_by_path[item["path"]].get("size")
             ]
             if changed:
                 raise BundleError(
@@ -439,6 +499,7 @@ def stage_bundle(
                 *(f"generation/{item}" for item in _GENERATION_EXPORT_FILES),
                 "project/project.json",
                 "project/source-metadata.json",
+                "project/source-catalog.json",
                 "project/source-exclusions.json",
             }
             if missing := required - set(declared_files):
@@ -506,24 +567,58 @@ def stage_bundle(
             )
             for value in reviewed_metadata.values():
                 normalize_metadata(value)
-            load_source_exclusions(staging / "project" / "source-exclusions.json")
+            source_catalog = load_source_catalog(
+                staging / "project" / "source-catalog.json",
+                project_id=config.project_id,
+            )
+            source_exclusions = load_source_exclusions(
+                staging / "project" / "source-exclusions.json"
+            )
         except Exception as exc:
             raise BundleError("Bundled reviewed project state is invalid") from exc
+        for relative in set(reviewed_metadata) | set(source_exclusions):
+            expected_source_id = stable_source_id(config.project_id, relative)
+            if source_catalog.get(expected_source_id) != relative:
+                raise BundleError(
+                    f"Bundled source catalog omits reviewed source identity: {relative}"
+                )
 
+        chunk_count = 0
+        chunk_ids: set[str] = set()
+        chunk_document_sources: set[tuple[str, str]] = set()
         try:
-            chunks = read_jsonl(staging / "generation" / "chunks" / "chunks.jsonl")
+            for item in iter_jsonl(staging / "generation" / "chunks" / "chunks.jsonl"):
+                chunk_id = item.get("chunk_id")
+                document_id = item.get("document_id")
+                source_id = item.get("source_id")
+                contents = item.get("contents")
+                if not isinstance(contents, str):
+                    # Earlier artifacts used ``text`` as the canonical public
+                    # field. Current artifacts write ``contents`` for UltraRAG.
+                    contents = item.get("text")
+                if (
+                    not isinstance(chunk_id, str)
+                    or not chunk_id
+                    or not isinstance(document_id, str)
+                    or not document_id
+                    or not isinstance(source_id, str)
+                    or not source_id
+                    or not isinstance(contents, str)
+                ):
+                    raise BundleError(
+                        "Bundled chunks do not match the generation manifest"
+                    )
+                if chunk_id in chunk_ids:
+                    raise BundleError("Bundled chunks contain duplicate chunk IDs")
+                chunk_ids.add(chunk_id)
+                chunk_document_sources.add((document_id, source_id))
+                chunk_count += 1
+        except BundleError:
+            raise
         except Exception as exc:
             raise BundleError("Bundled chunk collection is invalid") from exc
-        if len(chunks) != manifest.get("chunk_count") or any(
-            not isinstance(item.get("chunk_id"), str)
-            or not isinstance(item.get("document_id"), str)
-            or not isinstance(item.get("text"), str)
-            for item in chunks
-        ):
+        if chunk_count != manifest.get("chunk_count"):
             raise BundleError("Bundled chunks do not match the generation manifest")
-        chunk_ids = [str(item["chunk_id"]) for item in chunks]
-        if len(chunk_ids) != len(set(chunk_ids)):
-            raise BundleError("Bundled chunks contain duplicate chunk IDs")
 
         sources = descriptor.get("sources")
         if not isinstance(sources, list):
@@ -537,6 +632,18 @@ def stage_bundle(
             if relative.as_posix() in source_paths:
                 raise BundleError("Bundle contains duplicate source records")
             source_paths.add(relative.as_posix())
+            expected_source_id = stable_source_id(
+                config.project_id,
+                relative.as_posix(),
+            )
+            if source.get("source_id") != expected_source_id:
+                raise BundleError(
+                    f"Bundle source ID differs from its project path: {relative}"
+                )
+            if source_catalog.get(expected_source_id) != relative.as_posix():
+                raise BundleError(
+                    f"Bundle source is missing from its source catalog: {relative}"
+                )
             if relative.suffix.casefold() not in ALLOWED_SOURCE_EXTENSIONS:
                 raise BundleError(f"Bundle contains an unsupported source: {relative}")
             declared_source = descriptor["files"].get(f"sources/{relative.as_posix()}")
@@ -593,12 +700,16 @@ def stage_bundle(
                 "Bundled source files do not match the generation manifest"
             )
         for item in manifest_source_files:
-            source_record = source_records[str(item["source_relative_path"])]
-            if item.get("sha256") != source_record.get("sha256") or item.get(
-                "format"
-            ) != PurePosixPath(
-                str(item["source_relative_path"])
-            ).suffix.casefold().lstrip("."):
+            relative = str(item["source_relative_path"])
+            source_record = source_records[relative]
+            expected_source_id = stable_source_id(config.project_id, relative)
+            if (
+                item.get("source_id") != expected_source_id
+                or source_record.get("source_id") != expected_source_id
+                or item.get("sha256") != source_record.get("sha256")
+                or item.get("format")
+                != PurePosixPath(relative).suffix.casefold().lstrip(".")
+            ):
                 raise BundleError(
                     "Bundled source-file identity differs from its original"
                 )
@@ -631,8 +742,11 @@ def stage_bundle(
         for document in documents:
             relative = str(document["source_relative_path"])
             source_record = source_records.get(relative)
+            expected_source_id = stable_source_id(config.project_id, relative)
             if (
                 source_record is None
+                or document.get("source_id") != expected_source_id
+                or source_record.get("source_id") != expected_source_id
                 or document.get("sha256") != source_record.get("sha256")
                 or document.get("format")
                 != PurePosixPath(relative).suffix.casefold().lstrip(".")
@@ -641,8 +755,17 @@ def stage_bundle(
                     f"Bundled document identity differs from its source: {relative}"
                 )
         known_document_ids = set(document_ids)
-        if any(str(item["document_id"]) not in known_document_ids for item in chunks):
+        if any(
+            document_id not in known_document_ids
+            for document_id, _source_id in chunk_document_sources
+        ):
             raise BundleError("Bundled chunks refer to unknown documents")
+        document_source_ids = {
+            (str(document["document_id"]), str(document["source_id"]))
+            for document in documents
+        }
+        if not chunk_document_sources.issubset(document_source_ids):
+            raise BundleError("Bundled chunks refer to mismatched source identities")
         return StagedBundle(staging, descriptor, manifest)
     except zipfile.BadZipFile as exc:
         shutil.rmtree(staging, ignore_errors=True)
@@ -694,6 +817,28 @@ def install_staged_sources(config: ResearchConfig, staged: StagedBundle) -> None
 def install_portable_state(config: ResearchConfig, staged: StagedBundle) -> None:
     """Atomically install the reviewed metadata and source decisions."""
 
+    local_catalog = load_source_catalog(
+        config.source_catalog_path,
+        project_id=config.project_id,
+    )
+    bundled_catalog = load_source_catalog(
+        staged.root / "project" / "source-catalog.json",
+        project_id=config.project_id,
+    )
+    merged_catalog = dict(local_catalog)
+    paths_to_ids = {
+        relative: source_id for source_id, relative in local_catalog.items()
+    }
+    for source_id, relative in bundled_catalog.items():
+        if merged_catalog.get(source_id) not in {None, relative} or paths_to_ids.get(
+            relative
+        ) not in {None, source_id}:
+            raise BundleError(
+                f"Bundled source catalog conflicts with local identity: {relative}"
+            )
+        merged_catalog[source_id] = relative
+        paths_to_ids[relative] = source_id
+
     mappings = {
         staged.root / "project" / "source-metadata.json": config.metadata_path,
         staged.root
@@ -704,3 +849,8 @@ def install_portable_state(config: ResearchConfig, staged: StagedBundle) -> None
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         shutil.copy2(source, temporary)
         os.replace(temporary, destination)
+    write_source_catalog(
+        config.source_catalog_path,
+        merged_catalog,
+        project_id=config.project_id,
+    )

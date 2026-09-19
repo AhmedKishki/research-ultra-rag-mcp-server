@@ -32,6 +32,12 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "--force-recompute",
         "work_budget_seconds=45",
         'status="in_progress"',
+        "metadata_overlay_active",
+        "effective_immediately",
+        "discovered_sources",
+        "exactly one selector",
+        "canonical `contents`",
+        "lean lookup payloads",
         "corrupt-text",
         "research-ultra-rag-bundle export",
         "research-ultra-rag-bundle import",
@@ -68,3 +74,25 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
     assert ".research-rag/runtime/" in readme
     assert "raw-extraction.jsonl" not in readme
     assert "ultrarag-chunks.jsonl" not in readme
+    assert "metadata_confidence" not in readme
+    assert "high-confidence" not in lowered
+
+
+def test_agent_docs_define_source_identity_and_current_storage_contract() -> None:
+    root = Path(__file__).parents[1]
+    agent_guide = (root / "AGENT_GUIDE.md").read_text(encoding="utf-8")
+    engineering_guide = (root / "AGENTS.md").read_text(encoding="utf-8")
+    combined = f"{agent_guide}\n{engineering_guide}"
+
+    for value in (
+        "discovered_sources",
+        "source_id",
+        "document_id",
+        "exactly one selector",
+        "contents",
+        "chunk_id",
+    ):
+        assert value in combined
+
+    assert "metadata_confidence" not in combined
+    assert "high-confidence" not in combined.casefold()

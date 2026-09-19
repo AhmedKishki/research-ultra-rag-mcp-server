@@ -28,6 +28,12 @@ class ExtractionError(RuntimeError):
 _HORIZONTAL_SPACE = re.compile(r"[\t\f\v \u00a0]+")
 _LIST_ITEM = re.compile(r"^(?:[-*•]|\d+[.)]|[A-Za-z][.)])\s+")
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# Compatibility folding is deliberately limited to the two blocks that English
+# scholarship actually produces: Mathematical Alphanumeric Symbols (letters that
+# come from formula fonts and are otherwise unmatchable by typed queries) and
+# Alphabetic Presentation Forms (fi/fl/ff ligatures). Global NFKC would also fold
+# superscripts, subscripts, and symbols that carry meaning in citations.
+_FOLDABLE_CHARACTERS = re.compile(r"[\U0001d400-\U0001d7ff\ufb00-\ufb06\ufb13-\ufb17]")
 _DOI = re.compile(r"\b10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 _URL = re.compile(r"^(?:https?://|www\.|(?:dx\.)?doi\.org/)", re.IGNORECASE)
 _PAGE_NUMBER = re.compile(
@@ -64,7 +70,8 @@ _DATED_LINE = re.compile(
     r"dec(?:ember)?)\b.*\b(?:18\d{2}|19\d{2}|20\d{2}|21\d{2})\b",
     re.IGNORECASE,
 )
-_LEGEND_ASTERISK = re.compile(r"(?<!\w)\*|\*(?!\w)")
+_LEADING_ASTERISK_MARKER = re.compile(r"^\s*\*\s*")
+_TRAILING_ASTERISK_MARKER = re.compile(r"(?<=\w)\*\s*$")
 _EXPLICIT_MARKER_LEGEND = re.compile(
     r"^\s*\*\s*(?:(?:indicates?|denotes?|means?)\b|[:=])",
     re.IGNORECASE,
@@ -124,10 +131,21 @@ def _ends_sentence(value: str) -> bool:
     return value.rstrip("\"'”’)]}").endswith((".", "!", "?", "…", ":"))
 
 
+def _fold_compatibility_characters(value: str) -> str:
+    """Fold formula-font letters and presentation ligatures to plain text."""
+
+    if not _FOLDABLE_CHARACTERS.search(value):
+        return value
+    return _FOLDABLE_CHARACTERS.sub(
+        lambda match: unicodedata.normalize("NFKC", match.group(0)),
+        value,
+    )
+
+
 def normalize_reading_text(value: str) -> str:
     """Remove extraction layout wrapping without rewriting source prose."""
 
-    text = unicodedata.normalize("NFC", value)
+    text = unicodedata.normalize("NFC", _fold_compatibility_characters(value))
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\u00ad", "")
     text = _CONTROL_CHARACTERS.sub("", text)
     paragraphs: list[str] = []
@@ -213,18 +231,19 @@ def _script_family(character: str) -> str | None:
     return name.split(" ", 1)[0].casefold() if name else "unknown"
 
 
-def text_corruption_reasons(value: str) -> list[str]:
-    """Identify high-confidence corrupt or non-English extraction text.
+def _text_signals(value: str) -> tuple[list[str], list[str]]:
+    """Return corruption evidence and advisory script notes for one text value.
 
-    This intentionally implements the server's English-oriented retrieval
-    policy. It rejects incoherent font-map output without attempting a lossy
-    encoding repair.
+    Corruption evidence withholds text from retrieval. Script notes never do:
+    English-language scholarship legitimately quotes Greek, Cyrillic, Arabic, and
+    other scripts, so a mixed-script passage is reported for inspection instead of
+    being discarded.
     """
 
     raw = unicodedata.normalize("NFC", value)
     normalized = normalize_inline_text(raw)
     if not normalized:
-        return []
+        return [], []
     replacement_count = normalized.count("\ufffd")
     private_or_unassigned = sum(
         unicodedata.category(character) in {"Co", "Cn", "Cs"}
@@ -239,38 +258,48 @@ def text_corruption_reasons(value: str) -> list[str]:
     latin_count = families.get("latin", 0)
     dominant_count = max(families.values(), default=0)
 
-    reasons: list[str] = []
+    corruption: list[str] = []
     mojibake = bool(
         _MOJIBAKE_LATIN1_PAIR.search(raw)
         or any(marker in raw for marker in _MOJIBAKE_MARKERS)
     )
-    other_signal = bool(
-        private_or_unassigned
-        or mojibake
-        or (len(alphabetic) >= 20 and latin_count / len(alphabetic) < 0.50)
-        or (
-            len(alphabetic) >= 20
-            and len(families) >= 4
-            and dominant_count / len(alphabetic) < 0.70
-        )
-    )
-    if replacement_count >= 2 or (replacement_count == 1 and other_signal):
-        reasons.append("replacement_characters")
+    # One replacement character is only evidence of corruption when another
+    # corruption signal corroborates it. Script mixing must not corroborate,
+    # because that is how a legitimate foreign-language quotation was withheld.
+    corroborated = bool(private_or_unassigned or mojibake)
+    if replacement_count >= 2 or (replacement_count == 1 and corroborated):
+        corruption.append("replacement_characters")
     if private_or_unassigned >= 2 or (
         private_or_unassigned == 1 and replacement_count > 0
     ):
-        reasons.append("private_or_unassigned_characters")
+        corruption.append("private_or_unassigned_characters")
     if mojibake:
-        reasons.append("known_mojibake")
+        corruption.append("known_mojibake")
+
+    notes: list[str] = []
     if len(alphabetic) >= 20 and latin_count / len(alphabetic) < 0.50:
-        reasons.append("non_latin_dominant")
-    if (
-        len(alphabetic) >= 20
-        and len(families) >= 4
-        and dominant_count / len(alphabetic) < 0.70
-    ):
-        reasons.append("mixed_script_text")
-    return reasons
+        notes.append("non_latin_dominant")
+    if len(families) >= 4 and dominant_count / len(alphabetic) < 0.70:
+        notes.append("mixed_script_text")
+    return corruption, notes
+
+
+def text_corruption_reasons(value: str) -> list[str]:
+    """Return the corruption evidence that withholds extraction text.
+
+    Only incoherent output is withheld: replacement characters, private-use or
+    unassigned code points, and known damaged encoding sequences. Script mixing
+    and non-Latin dominance are reported by `text_script_notes` instead, so
+    legitimate quotations remain retrievable.
+    """
+
+    return _text_signals(value)[0]
+
+
+def text_script_notes(value: str) -> list[str]:
+    """Return advisory non-Latin or mixed-script notes that never withhold text."""
+
+    return _text_signals(value)[1]
 
 
 def has_searchable_alphanumeric_content(value: str) -> bool:
@@ -441,31 +470,6 @@ def _title_and_embedded_byline(
     return title, authors
 
 
-def _metadata_confidence(provenance: str) -> float:
-    return {
-        "reviewed_override": 1.0,
-        "epub_opf": 0.98,
-        "pdf_front_matter": 0.92,
-        "epub_visible": 0.86,
-        "pdf_metadata": 0.72,
-        "filename": 0.30,
-        "missing": 0.0,
-    }.get(provenance, 0.0)
-
-
-def _metadata_value(
-    field: str,
-    override: dict[str, Any],
-    automatic: Any,
-    automatic_source: str,
-) -> tuple[Any, str]:
-    if field in override:
-        value = override[field]
-        if value not in (None, "", []):
-            return value, "reviewed_override"
-    return automatic, automatic_source
-
-
 def _base_metadata(
     *,
     source: SourceFile,
@@ -474,66 +478,28 @@ def _base_metadata(
     automatic: dict[str, Any],
     provenance: dict[str, str],
     warnings: list[str],
-    override: dict[str, Any],
 ) -> dict[str, Any]:
-    title, title_source = _metadata_value(
-        "title",
-        override,
-        automatic.get("title") or source.path.stem,
-        provenance.get("title", "filename"),
-    )
-    authors, author_source = _metadata_value(
-        "authors",
-        override,
-        automatic.get("authors", []),
-        provenance.get("authors", "missing"),
-    )
-    year, year_source = _metadata_value(
-        "year",
-        override,
-        automatic.get("year"),
-        provenance.get("year", "missing"),
-    )
-    doi, doi_source = _metadata_value(
-        "doi",
-        override,
-        automatic.get("doi", ""),
-        provenance.get("doi", "missing"),
-    )
-    categories = _normalize_text_list(override.get("categories", []))
-    keywords = _normalize_text_list(override.get("keywords", []))
+    title = automatic.get("title") or source.path.stem
+    title_source = provenance.get("title", "filename")
+    authors = automatic.get("authors", [])
+    author_source = provenance.get("authors", "missing")
+    year = automatic.get("year")
+    year_source = provenance.get("year", "missing")
+    doi = automatic.get("doi", "")
+    doi_source = provenance.get("doi", "missing")
     resolved_authors = _normalize_text_list(list(authors or []))
     resolved_title = normalize_inline_text(str(title))
-    if title_source == "reviewed_override" and not _valid_title(
-        resolved_title,
-        source.path.stem,
-        reject_filename_match=False,
-    ):
-        invalid_title_source = title_source
-        warnings.append("invalid_title_candidate")
-        candidate_doi = _doi(resolved_title)
-        automatic_title = normalize_inline_text(str(automatic.get("title") or ""))
-        if _valid_title(automatic_title, source.path.stem):
-            resolved_title = automatic_title
-            title_source = provenance.get("title", "filename")
-        else:
-            resolved_title = source.path.stem
-            title_source = "filename"
-        if candidate_doi and not doi:
-            doi = candidate_doi
-            doi_source = invalid_title_source
-    if title_source != "reviewed_override" and text_health_reasons(resolved_title):
+    if text_health_reasons(resolved_title):
         resolved_title = source.path.stem
         title_source = "filename"
         warnings.append("corrupt_extracted_title")
-    if author_source != "reviewed_override":
-        clean_authors = [
-            author for author in resolved_authors if not text_health_reasons(author)
-        ]
-        if len(clean_authors) != len(resolved_authors):
-            warnings.append("corrupt_extracted_authors")
-            author_source = "missing" if not clean_authors else author_source
-        resolved_authors = clean_authors
+    clean_authors = [
+        author for author in resolved_authors if not text_health_reasons(author)
+    ]
+    if len(clean_authors) != len(resolved_authors):
+        warnings.append("corrupt_extracted_authors")
+        author_source = "missing" if not clean_authors else author_source
+    resolved_authors = clean_authors
     resolved_title = resolved_title or source.path.stem
     resolved_doi = _doi(str(doi)) or normalize_inline_text(str(doi or ""))
     metadata_warnings = list(dict.fromkeys(warnings))
@@ -546,11 +512,12 @@ def _base_metadata(
         "authors": author_source,
         "year": year_source,
         "doi": doi_source,
-        "categories": "reviewed_override" if "categories" in override else "missing",
-        "keywords": "reviewed_override" if "keywords" in override else "missing",
+        "categories": "missing",
+        "keywords": "missing",
     }
     return {
         "document_id": document_id,
+        "source_id": source.source_id,
         "source_path": source.project_relative_path,
         "source_relative_path": source.source_relative_path,
         "format": source.extension.removeprefix("."),
@@ -561,13 +528,9 @@ def _base_metadata(
         "authors": resolved_authors,
         "year": year,
         "doi": resolved_doi,
-        "categories": categories,
-        "keywords": keywords,
+        "categories": [],
+        "keywords": [],
         "metadata_provenance": metadata_provenance,
-        "metadata_confidence": {
-            field: _metadata_confidence(source_name)
-            for field, source_name in metadata_provenance.items()
-        },
         "metadata_warnings": list(dict.fromkeys(metadata_warnings)),
     }
 
@@ -581,33 +544,9 @@ def _pdf_author_list(metadata: dict[str, Any]) -> list[str]:
 
 
 def _pdf_line_text(spans: list[dict[str, Any]]) -> str:
-    """Repair split dash glyphs only when span geometry proves an overlay."""
+    """Join extracted spans without guessing replacements for ambiguous glyphs."""
 
-    result: list[str] = []
-    index = 0
-    while index < len(spans):
-        span = spans[index]
-        text = str(span.get("text") or "")
-        if text in {"*", "\x01"} and index + 1 < len(spans):
-            following = spans[index + 1]
-            following_text = str(following.get("text") or "")
-            left_bbox = tuple(float(value) for value in span.get("bbox", ()))
-            right_bbox = tuple(float(value) for value in following.get("bbox", ()))
-            split_overlay = bool(
-                following_text == "/"
-                and span.get("font") != following.get("font")
-                and len(left_bbox) == 4
-                and len(right_bbox) == 4
-                and left_bbox[0] <= right_bbox[0] <= left_bbox[2] + 1.0
-                and max(left_bbox[1], right_bbox[1]) < min(left_bbox[3], right_bbox[3])
-            )
-            if split_overlay:
-                result.append("—" if text == "*" else "–")
-                index += 2
-                continue
-        result.append(text)
-        index += 1
-    return "".join(result)
+    return "".join(str(span.get("text") or "") for span in spans)
 
 
 def _page_blocks(page: pymupdf.Page) -> list[_TextBlock]:
@@ -970,7 +909,7 @@ def _reading_order(blocks: list[_TextBlock], page_width: float) -> list[_TextBlo
     return list(dict.fromkeys(ordered))
 
 
-def _marker_annotations(blocks: list[_TextBlock]) -> tuple[list[dict[str, Any]], bool]:
+def _marker_annotations(blocks: list[_TextBlock]) -> list[dict[str, Any]]:
     legend = ""
     for block in blocks:
         normalized = normalize_inline_text(block.text)
@@ -979,27 +918,32 @@ def _marker_annotations(blocks: list[_TextBlock]) -> tuple[list[dict[str, Any]],
         if legend:
             break
     if not legend:
-        return [], False
+        return []
     affected: list[str] = []
     for block in blocks:
         for line in block.lines:
-            if "*" not in line or _EXPLICIT_MARKER_LEGEND.search(line):
+            if (
+                line.count("*") != 1
+                or not _TRAILING_ASTERISK_MARKER.search(line)
+                or _EXPLICIT_MARKER_LEGEND.search(line)
+            ):
                 continue
-            cleaned = normalize_inline_text(_LEGEND_ASTERISK.sub("", line))
+            cleaned = normalize_inline_text(
+                _TRAILING_ASTERISK_MARKER.sub("", line, count=1)
+            )
             if cleaned and cleaned not in affected:
                 affected.append(cleaned)
-    return (
-        [
-            {
-                "type": "legend_marker",
-                "marker": "*",
-                "legend_text": legend,
-                "meaning": normalize_inline_text(_LEGEND_ASTERISK.sub("", legend)),
-                "applies_to": affected,
-            }
-        ],
-        True,
-    )
+    return [
+        {
+            "type": "legend_marker",
+            "marker": "*",
+            "legend_text": legend,
+            "meaning": normalize_inline_text(
+                _LEADING_ASTERISK_MARKER.sub("", legend, count=1)
+            ),
+            "applies_to": affected,
+        }
+    ]
 
 
 def _vertical_gap(
@@ -1060,7 +1004,7 @@ def _label_annotations(
 
 
 def _quality_flags(text: str, kind: str) -> list[str]:
-    """Mark only high-confidence extraction debris for retrieval rejection."""
+    """Mark extraction debris that meets deterministic rejection rules."""
 
     normalized = normalize_inline_text(text)
     alphabetic = sum(character.isalpha() for character in normalized)
@@ -1112,6 +1056,7 @@ def _pdf_page_units(
     page_height: float,
     repeated_margins: set[str],
     document_id: str,
+    source_id: str,
     title: str,
 ) -> tuple[list[dict[str, Any]], bool, int]:
     locator = _pdf_locator(page, page_number)
@@ -1165,12 +1110,10 @@ def _pdf_page_units(
             else sorted(members, key=lambda item: (item.bbox[1], item.bbox[0]))
         )
         annotations = _label_annotations(kind, ordered)
-        marker_annotations, strip_marker = _marker_annotations(ordered)
-        annotations.extend(marker_annotations)
+        annotations.extend(_marker_annotations(ordered))
         paragraphs = []
         for block in ordered:
-            value = _LEGEND_ASTERISK.sub("", block.text) if strip_marker else block.text
-            if normalized := normalize_reading_text(value):
+            if normalized := normalize_reading_text(block.text):
                 paragraphs.append(normalized)
         text = "\n\n".join(paragraphs)
         if not text:
@@ -1182,6 +1125,7 @@ def _pdf_page_units(
                     f"region:{region_index:03d}"
                 ),
                 "document_id": document_id,
+                "source_id": source_id,
                 "title": title,
                 "contents": text,
                 "content_kind": kind,
@@ -1195,7 +1139,6 @@ def _pdf_page_units(
 
 def _extract_pdf(
     source: SourceFile,
-    override: dict[str, Any],
     digest: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     digest = digest or sha256_file(source.path)
@@ -1225,7 +1168,6 @@ def _extract_pdf(
             automatic=automatic,
             provenance=provenance,
             warnings=warnings,
-            override=override,
         )
         repeated_margins = _repeated_margin_signatures(pages)
         units: list[dict[str, Any]] = []
@@ -1242,6 +1184,7 @@ def _extract_pdf(
                 page_height=page_height,
                 repeated_margins=repeated_margins,
                 document_id=document_id,
+                source_id=source.source_id,
                 title=str(record["title"]),
             )
             units.extend(page_units)
@@ -1326,11 +1269,10 @@ def _epub_visible_identity(
 
 def _extract_epub(
     source: SourceFile,
-    override: dict[str, Any],
     digest: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     digest = digest or sha256_file(source.path)
-    record, spine_items = prepare_epub_extraction(source, override, digest)
+    record, spine_items = prepare_epub_extraction(source, digest)
     units: list[dict[str, Any]] = []
     empty_sections = 0
     for spine_index in range(spine_items):
@@ -1361,8 +1303,17 @@ def pdf_page_count(source: SourceFile) -> int:
         document.close()
 
 
-def scan_pdf_page(source: SourceFile, page_index: int) -> dict[str, Any]:
-    """Capture one page's deterministic text blocks for resumable extraction."""
+def scan_pdf_pages(
+    source: SourceFile,
+    start_index: int,
+    page_count: int,
+) -> list[dict[str, Any]]:
+    """Capture a consecutive page batch using one PDF document handle."""
+
+    if start_index < 0:
+        raise ValueError("start_index must be non-negative")
+    if page_count <= 0:
+        raise ValueError("page_count must be positive")
 
     try:
         document = pymupdf.open(source.path)
@@ -1373,23 +1324,29 @@ def scan_pdf_page(source: SourceFile, page_index: int) -> dict[str, Any]:
             raise ExtractionError(
                 f"Password-protected PDF is unsupported: {source.path}"
             )
-        page = document.load_page(page_index)
-        blocks = _page_blocks(page)
-        return {
-            "page_index": page_index,
-            "page_width": float(page.rect.width),
-            "page_height": float(page.rect.height),
-            "blocks": [
+        end_index = min(start_index + page_count, document.page_count)
+        scans: list[dict[str, Any]] = []
+        for page_index in range(start_index, end_index):
+            page = document.load_page(page_index)
+            blocks = _page_blocks(page)
+            scans.append(
                 {
-                    "number": block.number,
-                    "bbox": list(block.bbox),
-                    "lines": list(block.lines),
-                    "text": block.text,
-                    "font_size": block.font_size,
+                    "page_index": page_index,
+                    "page_width": float(page.rect.width),
+                    "page_height": float(page.rect.height),
+                    "blocks": [
+                        {
+                            "number": block.number,
+                            "bbox": list(block.bbox),
+                            "lines": list(block.lines),
+                            "text": block.text,
+                            "font_size": block.font_size,
+                        }
+                        for block in blocks
+                    ],
                 }
-                for block in blocks
-            ],
-        }
+            )
+        return scans
     finally:
         document.close()
 
@@ -1409,7 +1366,6 @@ def _blocks_from_scan(scan: dict[str, Any]) -> list[_TextBlock]:
 
 def prepare_scanned_pdf(
     source: SourceFile,
-    override: dict[str, Any],
     digest: str,
     page_scans: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1444,7 +1400,6 @@ def prepare_scanned_pdf(
             automatic=automatic,
             provenance=provenance,
             warnings=warnings,
-            override=override,
         )
         record.update(
             {
@@ -1459,15 +1414,16 @@ def prepare_scanned_pdf(
         document.close()
 
 
-def extract_scanned_pdf_page(
+def extract_scanned_pdf_pages(
     source: SourceFile,
     document_record: dict[str, Any],
-    scan: dict[str, Any],
+    page_scans: list[dict[str, Any]],
     repeated_margins: list[str],
-) -> tuple[list[dict[str, Any]], bool, int]:
-    """Extract one previously scanned PDF page without touching other pages."""
+) -> list[tuple[int, list[dict[str, Any]], bool, int]]:
+    """Extract a scanned page batch using one PDF document handle."""
 
-    page_index = int(scan["page_index"])
+    if not page_scans:
+        raise ValueError("page_scans must not be empty")
     try:
         document = pymupdf.open(source.path)
     except Exception as exc:
@@ -1477,24 +1433,30 @@ def extract_scanned_pdf_page(
             raise ExtractionError(
                 f"Password-protected PDF is unsupported: {source.path}"
             )
-        page = document.load_page(page_index)
-        return _pdf_page_units(
-            page,
-            page_number=page_index + 1,
-            blocks=_blocks_from_scan(scan),
-            page_width=float(scan["page_width"]),
-            page_height=float(scan["page_height"]),
-            repeated_margins=set(repeated_margins),
-            document_id=str(document_record["document_id"]),
-            title=str(document_record["title"]),
-        )
+        repeated_margin_set = set(repeated_margins)
+        batches: list[tuple[int, list[dict[str, Any]], bool, int]] = []
+        for scan in page_scans:
+            page_index = int(scan["page_index"])
+            page = document.load_page(page_index)
+            units, empty, removed = _pdf_page_units(
+                page,
+                page_number=page_index + 1,
+                blocks=_blocks_from_scan(scan),
+                page_width=float(scan["page_width"]),
+                page_height=float(scan["page_height"]),
+                repeated_margins=repeated_margin_set,
+                document_id=str(document_record["document_id"]),
+                source_id=str(document_record["source_id"]),
+                title=str(document_record["title"]),
+            )
+            batches.append((page_index, units, empty, removed))
+        return batches
     finally:
         document.close()
 
 
 def prepare_epub_extraction(
     source: SourceFile,
-    override: dict[str, Any],
     digest: str,
 ) -> tuple[dict[str, Any], int]:
     """Resolve EPUB metadata and return its deterministic spine work count."""
@@ -1552,7 +1514,6 @@ def prepare_epub_extraction(
             and opf_title.casefold() != visible_title.casefold()
             else []
         ),
-        override=override,
     )
     record.update(
         {
@@ -1750,6 +1711,7 @@ def extract_epub_spine_item(
     )
     units: list[dict[str, Any]] = []
     document_id = str(document_record["document_id"])
+    source_id = str(document_record["source_id"])
     title = str(document_record["title"])
     href = str(item.get_name() or "")
     block_index = 0
@@ -1781,6 +1743,7 @@ def extract_epub_spine_item(
                     f"block:{block_index:06d}"
                 ),
                 "document_id": document_id,
+                "source_id": source_id,
                 "title": title,
                 "contents": text,
                 "content_kind": content_kind,
@@ -1886,7 +1849,6 @@ def extract_epub_spine_item(
 
 def extract_sources(
     sources: tuple[SourceFile, ...],
-    metadata_overrides: dict[str, dict[str, Any]],
     source_digests: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return indexed documents and cleaned semantic units."""
@@ -1894,12 +1856,11 @@ def extract_sources(
     documents: list[dict[str, Any]] = []
     units: list[dict[str, Any]] = []
     for source in sources:
-        override = metadata_overrides.get(source.source_relative_path, {})
         digest = (source_digests or {}).get(source.source_relative_path)
         if source.extension == ".pdf":
-            document, extracted = _extract_pdf(source, override, digest)
+            document, extracted = _extract_pdf(source, digest)
         elif source.extension == ".epub":
-            document, extracted = _extract_epub(source, override, digest)
+            document, extracted = _extract_epub(source, digest)
         else:  # pragma: no cover
             raise ExtractionError(f"Unsupported source format: {source.path}")
         retained: list[dict[str, Any]] = []

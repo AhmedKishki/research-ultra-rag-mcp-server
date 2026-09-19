@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -14,15 +15,51 @@ class StorageError(RuntimeError):
     """Raised for missing or malformed research state."""
 
 
+def fsync_directory(path: Path) -> None:
+    """Persist directory-entry updates when the host supports directory fsync."""
+
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        # Some supported platforms cannot open directories as file descriptors.
+        # Do not hide genuine storage failures such as EIO or a missing parent.
+        if exc.errno not in {
+            errno.EACCES,
+            errno.EINVAL,
+            errno.EISDIR,
+            errno.ENOTSUP,
+            errno.EPERM,
+        }:
+            raise
+        return
+    try:
+        try:
+            os.fsync(descriptor)
+        except OSError as exc:
+            if exc.errno not in {
+                errno.EACCES,
+                errno.EBADF,
+                errno.EINVAL,
+                errno.ENOTSUP,
+            }:
+                raise
+    finally:
+        os.close(descriptor)
+
+
 def atomic_write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(
+                json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -32,6 +69,8 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def atomic_write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
@@ -39,6 +78,7 @@ def atomic_write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
     try:
         write_jsonl(temporary, records)
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -48,12 +88,13 @@ def read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise StorageError(f"Required state file does not exist: {path}") from exc
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise StorageError(f"Invalid JSON state file: {path}") from exc
 
 
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+def iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield validated JSON objects without materializing the complete file."""
+
     try:
         with path.open(encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, 1):
@@ -69,10 +110,15 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
                     raise StorageError(
                         f"Expected an object in {path} at line {line_number}"
                     )
-                records.append(value)
+                yield value
     except FileNotFoundError as exc:
         raise StorageError(f"Required state file does not exist: {path}") from exc
-    return records
+    except UnicodeDecodeError as exc:
+        raise StorageError(f"Invalid UTF-8 in JSONL state file: {path}") from exc
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return list(iter_jsonl(path))
 
 
 def load_metadata_overrides(path: Path) -> dict[str, dict[str, Any]]:
@@ -112,6 +158,84 @@ def write_metadata_overrides(
         {
             "schema_version": 1,
             "sources": overrides,
+        },
+    )
+
+
+def load_source_catalog(path: Path, *, project_id: str) -> dict[str, str]:
+    """Load the durable reverse mapping for opaque project source IDs."""
+
+    if not path.exists():
+        return {}
+    value = read_json(path)
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != 1
+        or value.get("project_id") != project_id
+    ):
+        raise StorageError(f"Unsupported source catalog: {path}")
+    sources = value.get("sources", {})
+    if not isinstance(sources, dict):
+        raise StorageError(f"Invalid source catalog mapping: {path}")
+
+    # Import lazily to keep the general JSON storage helpers independent while
+    # still validating the project-derived identity at this trust boundary.
+    from .sources import ALLOWED_SOURCE_EXTENSIONS, stable_source_id
+
+    result: dict[str, str] = {}
+    seen_paths: set[str] = set()
+    for source_id, record in sources.items():
+        if not isinstance(source_id, str) or not isinstance(record, dict):
+            raise StorageError(f"Invalid source catalog record: {source_id!r}")
+        if set(record) != {"source_relative_path"}:
+            raise StorageError(f"Unsupported source catalog fields: {source_id!r}")
+        source_path = record.get("source_relative_path")
+        if not isinstance(source_path, str):
+            raise StorageError(f"Invalid source path for {source_id!r}: {path}")
+        relative = PurePosixPath(source_path)
+        if (
+            source_path in {"", "."}
+            or "\\" in source_path
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != source_path
+            or source_path in seen_paths
+            or relative.suffix.casefold() not in ALLOWED_SOURCE_EXTENSIONS
+        ):
+            raise StorageError(
+                "Source catalog paths must be unique, supported, normalized, and "
+                f"relative: {source_path!r}"
+            )
+        try:
+            expected_source_id = stable_source_id(project_id, source_path)
+        except ValueError as exc:
+            raise StorageError(
+                f"Invalid source identity in catalog: {source_id!r}"
+            ) from exc
+        if source_id != expected_source_id:
+            raise StorageError(
+                f"Source catalog ID does not match its path: {source_id!r}"
+            )
+        result[source_id] = source_path
+        seen_paths.add(source_path)
+    return dict(sorted(result.items()))
+
+
+def write_source_catalog(
+    path: Path,
+    catalog: dict[str, str],
+    *,
+    project_id: str,
+) -> None:
+    atomic_write_json(
+        path,
+        {
+            "schema_version": 1,
+            "project_id": project_id,
+            "sources": {
+                source_id: {"source_relative_path": source_path}
+                for source_id, source_path in sorted(catalog.items())
+            },
         },
     )
 

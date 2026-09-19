@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import ResearchConfig
@@ -23,6 +23,7 @@ class SourcePolicyError(ValueError):
 @dataclass(frozen=True, slots=True)
 class SourceFile:
     path: Path
+    source_id: str
     source_relative_path: str
     project_relative_path: str
     extension: str
@@ -34,6 +35,23 @@ class SourceFile:
 class SourceScan:
     selected: tuple[SourceFile, ...]
     ignored_extensions: dict[str, int]
+
+
+def stable_source_id(project_id: str, source_relative_path: str) -> str:
+    """Return a project-scoped identity that survives source-content changes."""
+
+    relative = PurePosixPath(source_relative_path)
+    if (
+        not project_id
+        or source_relative_path in {"", "."}
+        or "\\" in source_relative_path
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or relative.as_posix() != source_relative_path
+    ):
+        raise SourcePolicyError("Cannot create a source ID from an invalid identity")
+    identity = f"{project_id}\0{source_relative_path}".encode()
+    return f"src_{hashlib.sha256(identity).hexdigest()[:24]}"
 
 
 def scan_sources(config: ResearchConfig) -> SourceScan:
@@ -63,12 +81,15 @@ def scan_sources(config: ResearchConfig) -> SourceScan:
                 f"Source escapes the configured source directory: {path}"
             ) from exc
         stat = resolved.stat()
+        source_relative_path = resolved.relative_to(config.source_root).as_posix()
         selected.append(
             SourceFile(
                 path=resolved,
-                source_relative_path=resolved.relative_to(
-                    config.source_root
-                ).as_posix(),
+                source_id=stable_source_id(
+                    config.project_id,
+                    source_relative_path,
+                ),
+                source_relative_path=source_relative_path,
                 project_relative_path=resolved.relative_to(
                     config.project_root
                 ).as_posix(),

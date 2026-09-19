@@ -9,6 +9,7 @@ import pytest
 from conftest import write_epub, write_pdf
 from ebooklib import epub
 
+import research_ultra_rag_mcp.extraction as extraction_module
 from research_ultra_rag_mcp.config import (
     ConfigurationError,
     configured_source_directory,
@@ -20,14 +21,23 @@ from research_ultra_rag_mcp.extraction import (
     _pdf_line_text,
     _quality_flags,
     _TextBlock,
+    extract_scanned_pdf_pages,
     extract_sources,
     has_searchable_alphanumeric_content,
     normalize_inline_text,
     normalize_reading_text,
+    prepare_scanned_pdf,
+    scan_pdf_pages,
     text_corruption_reasons,
     text_health_reasons,
+    text_script_notes,
 )
-from research_ultra_rag_mcp.sources import SourcePolicyError, scan_sources
+from research_ultra_rag_mcp.sources import (
+    SourcePolicyError,
+    scan_sources,
+    sha256_file,
+    stable_source_id,
+)
 from research_ultra_rag_mcp.ultrarag import create_vanilla_transport
 
 CORRUPT_TEXT = (
@@ -70,6 +80,27 @@ def test_only_pdf_and_epub_are_selected(project: Path) -> None:
     assert scan.ignored_extensions == {".md": 1}
 
 
+def test_source_id_is_project_scoped_and_content_independent(project: Path) -> None:
+    path = project / "sources" / "article.pdf"
+    write_pdf(path, ["Initial source contents."])
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    initial = scan_sources(config).selected[0]
+    path.write_bytes(b"changed source bytes")
+    changed = scan_sources(config).selected[0]
+
+    assert initial.source_id == changed.source_id
+    assert initial.source_id == stable_source_id(
+        config.project_id,
+        initial.source_relative_path,
+    )
+    assert initial.source_id != stable_source_id(
+        "another-project",
+        initial.source_relative_path,
+    )
+    assert initial.source_id != stable_source_id(config.project_id, "other.pdf")
+
+
 def test_pdf_pages_and_epub_sections_preserve_locators(project: Path) -> None:
     write_pdf(
         project / "sources" / "article.pdf",
@@ -83,9 +114,15 @@ def test_pdf_pages_and_epub_sections_preserve_locators(project: Path) -> None:
     )
     config = resolve_config(project, vanilla_executable=sys.executable)
 
-    documents, units = extract_sources(scan_sources(config).selected, {})
+    documents, units = extract_sources(scan_sources(config).selected)
 
     assert {item["format"] for item in documents} == {"pdf", "epub"}
+    documents_by_id = {item["document_id"]: item for item in documents}
+    assert all(
+        item["source_id"] == documents_by_id[item["document_id"]]["source_id"]
+        for item in units
+    )
+    assert all("source_id" not in item["locator"] for item in units)
     pdf_units = [item for item in units if item["locator"]["type"] == "pdf_page"]
     epub_units = [item for item in units if item["locator"]["type"] == "epub_section"]
     assert [item["locator"]["page"] for item in pdf_units] == [1, 2]
@@ -93,6 +130,91 @@ def test_pdf_pages_and_epub_sections_preserve_locators(project: Path) -> None:
     assert all("section_index" in item["locator"] for item in epub_units)
     assert all("element_path" in item["locator"] for item in epub_units)
     assert all("block_index" in item["locator"] for item in epub_units)
+
+
+def test_pdf_page_batches_share_handles_and_preserve_extraction_output(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = project / "sources" / "batched.pdf"
+    write_pdf(
+        path,
+        [
+            f"{topic} research develops a distinct account of material evidence."
+            for topic in (
+                "Cobalt",
+                "Amber",
+                "Copper",
+                "Lithium",
+                "Silicon",
+                "Nickel",
+                "Graphite",
+                "Quartz",
+                "Manganese",
+            )
+        ],
+        title="Batched PDF",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    source = scan_sources(config).selected[0]
+    expected_documents, expected_units = extract_sources([source])
+
+    open_count = 0
+    real_open = extraction_module.pymupdf.open
+
+    def tracked_open(*args: object, **kwargs: object) -> pymupdf.Document:
+        nonlocal open_count
+        open_count += 1
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(extraction_module.pymupdf, "open", tracked_open)
+
+    first_scans = scan_pdf_pages(source, 0, 8)
+    assert open_count == 1
+    final_scans = scan_pdf_pages(source, 8, 8)
+    assert open_count == 2
+    page_scans = [*first_scans, *final_scans]
+    assert [scan["page_index"] for scan in page_scans] == list(range(9))
+
+    document, repeated_margins = prepare_scanned_pdf(
+        source,
+        sha256_file(source.path),
+        page_scans,
+    )
+    assert open_count == 3
+    first_batches = extract_scanned_pdf_pages(
+        source,
+        document,
+        first_scans,
+        repeated_margins,
+    )
+    assert open_count == 4
+    final_batches = extract_scanned_pdf_pages(
+        source,
+        document,
+        final_scans,
+        repeated_margins,
+    )
+    assert open_count == 5
+
+    staged_units = [
+        unit
+        for _page_index, units, _empty, _removed in [
+            *first_batches,
+            *final_batches,
+        ]
+        for unit in units
+    ]
+    assert staged_units == expected_units
+    for key, value in expected_documents[0].items():
+        if key not in {
+            "empty_units",
+            "excluded_corrupt_unit_count",
+            "excluded_corrupt_units",
+            "extracted_units",
+            "removed_repeated_margin_blocks",
+        }:
+            assert document[key] == value
 
 
 def test_epub_preserves_element_and_preceding_anchors_with_stable_fallbacks(
@@ -112,8 +234,8 @@ def test_epub_preserves_element_and_preceding_anchors_with_stable_fallbacks(
     original = path.read_bytes()
     config = resolve_config(project, vanilla_executable=sys.executable)
 
-    _documents, units = extract_sources(scan_sources(config).selected, {})
-    _repeat_documents, repeated = extract_sources(scan_sources(config).selected, {})
+    _documents, units = extract_sources(scan_sources(config).selected)
+    _repeat_documents, repeated = extract_sources(scan_sources(config).selected)
 
     assert path.read_bytes() == original
     assert [unit["id"] for unit in repeated] == [unit["id"] for unit in units]
@@ -165,7 +287,7 @@ def test_epub_mid_paragraph_anchor_splits_without_marker_leakage(
     )
     config = resolve_config(project, vanilla_executable=sys.executable)
 
-    _documents, units = extract_sources(scan_sources(config).selected, {})
+    _documents, units = extract_sources(scan_sources(config).selected)
 
     assert [unit["contents"] for unit in units] == [
         "Evidence before the internal marker.",
@@ -200,7 +322,7 @@ def test_epub_tables_keep_document_order_and_nested_blocks_are_not_duplicated(
     )
     config = resolve_config(project, vanilla_executable=sys.executable)
 
-    _documents, units = extract_sources(scan_sources(config).selected, {})
+    _documents, units = extract_sources(scan_sources(config).selected)
 
     assert [unit["contents"] for unit in units] == [
         "Prose before the table.",
@@ -216,6 +338,32 @@ def test_epub_tables_keep_document_order_and_nested_blocks_are_not_duplicated(
         "\n".join(unit["contents"] for unit in units).count("Nested quoted evidence.")
         == 1
     )
+
+
+def test_formula_letters_and_ligatures_fold_for_matching() -> None:
+    # Mathematical Alphanumeric Symbols come from formula fonts; without folding a
+    # plain-text query can never match them.
+    assert normalize_reading_text("𝑀𝑗𝑀𝑗𝑗𝑀") == "MjMjjM"
+    assert normalize_inline_text("𝑀𝑗𝑗𝑇𝑗𝑗 and 𝑇𝑗𝑗𝑇𝑗𝑗") == "MjjTjj and TjjTjj"
+    assert text_corruption_reasons("𝑀𝑗𝑀𝑗𝑗𝑀") == []
+    assert text_script_notes("𝑀𝑗𝑗𝑇𝑗𝑗") == []
+
+    # Alphabetic Presentation Forms are the fi/fl/ff ligatures.
+    assert (
+        normalize_reading_text("The ﬁnal ﬂow aﬀects it.")
+        == "The final flow affects it."
+    )
+    assert normalize_inline_text("ﬂour and ﬁbre") == "flour and fibre"
+
+
+def test_folding_preserves_letters_and_symbols_that_carry_meaning() -> None:
+    for text in (
+        "Café workers’ organisations analyse political economy.",
+        "Œuvre and æsthetic stay as printed.",
+        "x¹ + y² = 3 in footnote ⁴",
+        "W–(M–C–M′)–W′",
+    ):
+        assert normalize_inline_text(text) == text
 
 
 def test_extracted_text_removes_layout_wrapping() -> None:
@@ -237,7 +385,7 @@ def test_extracted_text_removes_layout_wrapping() -> None:
     )
 
 
-def test_english_oriented_corruption_policy_preserves_valid_symbols() -> None:
+def test_corruption_policy_preserves_valid_symbols() -> None:
     assert text_corruption_reasons("W–(M–C–M′)–W′") == []
     assert (
         text_corruption_reasons(
@@ -252,12 +400,32 @@ def test_english_oriented_corruption_policy_preserves_valid_symbols() -> None:
     assert text_corruption_reasons(CORRUPT_TEXT) == [
         "replacement_characters",
         "private_or_unassigned_characters",
-        "non_latin_dominant",
-        "mixed_script_text",
     ]
-    assert text_corruption_reasons(
-        "这是一个完整的中文段落，用于测试英语导向的过滤策略。这里有足够多的汉字。"
-    ) == ["non_latin_dominant"]
+
+
+def test_foreign_script_text_is_noted_but_never_withheld() -> None:
+    chinese = "这是一个完整的中文段落，用于测试英语导向的过滤策略。这里有足够多的汉字。"
+    assert text_corruption_reasons(chinese) == []
+    assert text_script_notes(chinese) == ["non_latin_dominant"]
+
+    quoted = "Latinlettersab αβγ БГД אבג enough"
+    assert text_corruption_reasons(quoted) == []
+    assert text_script_notes(quoted) == ["mixed_script_text"]
+
+
+def test_foreign_language_quotation_stays_retrievable() -> None:
+    # A Greek quotation carrying one unreadable glyph must remain evidence: a
+    # single replacement character is withheld only with corroborating corruption
+    # evidence, and script mixing never corroborates.
+    quotation = "ὁ ἄργυρος κακὸν νόμισμ᾽ ἔβλαστε καὶ πόλεις πορθεῖ �"
+    assert text_corruption_reasons(quotation) == []
+    assert text_script_notes(quotation) == ["non_latin_dominant"]
+
+    bibliography = (
+        "Покровскій], Василій [Иванович]: [Review of:] «Капиталъ» Д. Рикардо "
+        "въ связи съ позднѣйшими дополненіями и разъясненіями."
+    )
+    assert text_corruption_reasons(bibliography) == []
 
 
 @pytest.mark.parametrize(
@@ -302,10 +470,6 @@ def test_symbol_filter_preserves_formula_and_existing_page_number_guard() -> Non
             "private_or_unassigned_characters",
         ),
         ("The cafÃ© text is a known damaged encoding sequence.", "known_mojibake"),
-        (
-            "Latinlettersab αβγ БГД אבג enough",
-            "mixed_script_text",
-        ),
     ],
 )
 def test_each_corruption_signal_has_an_inspectable_reason(
@@ -321,6 +485,11 @@ def test_one_replacement_character_requires_another_corruption_signal() -> None:
         "replacement_characters",
         "known_mojibake",
     ]
+
+
+def test_short_four_script_text_is_noted_without_letter_threshold() -> None:
+    assert text_corruption_reasons("aαБא") == []
+    assert text_script_notes("aαБא") == ["mixed_script_text"]
 
 
 def test_corrupt_epub_units_are_excluded_with_locator_diagnostics(
@@ -343,7 +512,7 @@ def test_corrupt_epub_units_are_excluded_with_locator_diagnostics(
     epub.write_epub(str(path), book)
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, units = extract_sources(scan_sources(config).selected, {})
+    documents, units = extract_sources(scan_sources(config).selected)
 
     assert len(units) == 1
     assert units[0]["contents"].startswith("Clean")
@@ -352,7 +521,15 @@ def test_corrupt_epub_units_are_excluded_with_locator_diagnostics(
     assert documents[0]["excluded_corrupt_unit_count"] == 1
     diagnostic = documents[0]["excluded_corrupt_units"][0]
     assert diagnostic["locator"]["type"] == "epub_section"
-    assert "non_latin_dominant" in diagnostic["reasons"]
+    assert diagnostic["reasons"] == [
+        "replacement_characters",
+        "private_or_unassigned_characters",
+    ]
+    # Script mixing is reported separately and is never an exclusion reason.
+    assert text_script_notes(CORRUPT_TEXT) == [
+        "non_latin_dominant",
+        "mixed_script_text",
+    ]
     assert CORRUPT_TEXT not in json.dumps(diagnostic, ensure_ascii=False)
 
 
@@ -361,7 +538,7 @@ def test_source_with_only_corrupt_text_fails_extraction(project: Path) -> None:
     config = resolve_config(project, vanilla_executable=sys.executable)
 
     with pytest.raises(ExtractionError, match="no readable English-oriented text"):
-        extract_sources(scan_sources(config).selected, {})
+        extract_sources(scan_sources(config).selected)
 
 
 def test_symbol_only_epub_unit_is_excluded_with_locator_diagnostics(
@@ -384,7 +561,7 @@ def test_symbol_only_epub_unit_is_excluded_with_locator_diagnostics(
     epub.write_epub(str(path), book)
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, units = extract_sources(scan_sources(config).selected, {})
+    documents, units = extract_sources(scan_sources(config).selected)
 
     assert [unit["contents"] for unit in units] == [
         "Readable English research evidence."
@@ -420,10 +597,10 @@ def test_source_with_only_symbol_text_fails_extraction(project: Path) -> None:
     config = resolve_config(project, vanilla_executable=sys.executable)
 
     with pytest.raises(ExtractionError, match="no readable English-oriented text"):
-        extract_sources(scan_sources(config).selected, {})
+        extract_sources(scan_sources(config).selected)
 
 
-def test_pdf_split_symbol_font_dashes_are_restored_from_geometry() -> None:
+def test_pdf_span_text_does_not_guess_replacements_for_ambiguous_overlays() -> None:
     spans = [
         {"text": "before", "font": "Body", "bbox": (0, 0, 30, 10)},
         {"text": "*", "font": "Symbol", "bbox": (30, 0, 39, 10)},
@@ -436,7 +613,10 @@ def test_pdf_split_symbol_font_dashes_are_restored_from_geometry() -> None:
         {"text": "cold", "font": "Body", "bbox": (94, 0, 114, 10)},
     ]
 
-    assert _pdf_line_text(spans) == "before—after post–cold"
+    extracted = _pdf_line_text(spans)
+
+    assert extracted == "before*/after post\x01/cold"
+    assert normalize_reading_text(extracted) == "before*/after post/cold"
 
 
 def test_marker_legend_detection_requires_explicit_legend_syntax() -> None:
@@ -448,7 +628,39 @@ def test_marker_legend_detection_requires_explicit_legend_syntax() -> None:
         font_size=10,
     )
 
-    assert _marker_annotations([prose]) == ([], False)
+    assert _marker_annotations([prose]) == []
+
+
+def test_marker_annotations_preserve_equations_emphasis_and_footnotes() -> None:
+    marked = _TextBlock(
+        number=1,
+        bbox=(0, 0, 100, 20),
+        lines=("Lenovo*",),
+        text="Lenovo*",
+        font_size=10,
+    )
+    other_asterisks = _TextBlock(
+        number=2,
+        bbox=(0, 20, 100, 40),
+        lines=("x * y = z", "This is *important*.", "See footnote * below."),
+        text="x * y = z\nThis is *important*.\nSee footnote * below.",
+        font_size=10,
+    )
+    legend = _TextBlock(
+        number=3,
+        bbox=(0, 40, 100, 60),
+        lines=("* indicates companies included in the sample.",),
+        text="* indicates companies included in the sample.",
+        font_size=10,
+    )
+
+    annotations = _marker_annotations([marked, other_asterisks, legend])
+
+    assert annotations[0]["applies_to"] == ["Lenovo"]
+    assert annotations[0]["meaning"] == "indicates companies included in the sample."
+    assert other_asterisks.text == (
+        "x * y = z\nThis is *important*.\nSee footnote * below."
+    )
 
 
 def test_pdf_front_matter_resolves_title_authors_year_and_doi(project: Path) -> None:
@@ -474,7 +686,7 @@ def test_pdf_front_matter_resolves_title_authors_year_and_doi(project: Path) -> 
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, _units = extract_sources(scan_sources(config).selected, {})
+    documents, _units = extract_sources(scan_sources(config).selected)
     source = documents[0]
 
     assert source["title"] == "Supply Chains and the Human Condition"
@@ -489,7 +701,7 @@ def test_pdf_front_matter_resolves_title_authors_year_and_doi(project: Path) -> 
         "categories": "missing",
         "keywords": "missing",
     }
-    assert source["metadata_confidence"]["title"] > 0.9
+    assert "metadata_confidence" not in source
     assert "conflicting_candidates" not in source["metadata_warnings"]
 
 
@@ -514,7 +726,7 @@ def test_explicit_pdf_byline_outranks_name_like_subtitle(project: Path) -> None:
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, _units = extract_sources(scan_sources(config).selected, {})
+    documents, _units = extract_sources(scan_sources(config).selected)
     source = documents[0]
 
     assert source["title"] == "Systems and Society"
@@ -542,7 +754,7 @@ def test_doi_title_becomes_doi_and_filename_is_only_title_fallback(
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, _units = extract_sources(scan_sources(config).selected, {})
+    documents, _units = extract_sources(scan_sources(config).selected)
     source = documents[0]
 
     assert source["title"] == "fallback-title"
@@ -574,7 +786,7 @@ def test_valid_pdf_embedded_metadata_is_used_independently(project: Path) -> Non
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, _units = extract_sources(scan_sources(config).selected, {})
+    documents, _units = extract_sources(scan_sources(config).selected)
     source = documents[0]
 
     assert source["title"] == "Embedded Article Title"
@@ -595,16 +807,14 @@ def test_visible_cover_title_may_legitimately_match_filename(project: Path) -> N
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, _units = extract_sources(scan_sources(config).selected, {})
+    documents, _units = extract_sources(scan_sources(config).selected)
 
     assert documents[0]["title"] == "Visible Cover Title"
     assert documents[0]["metadata_provenance"]["title"] == "pdf_front_matter"
     assert "title_from_filename" not in documents[0]["metadata_warnings"]
 
 
-def test_epub_uses_opf_then_visible_metadata_and_reviewed_overrides(
-    project: Path,
-) -> None:
+def test_epub_uses_opf_then_visible_metadata(project: Path) -> None:
     opf = project / "sources" / "opf.epub"
     write_epub(opf, "EPUB evidence.", title="Validated OPF Title")
 
@@ -627,24 +837,11 @@ def test_epub_uses_opf_then_visible_metadata_and_reviewed_overrides(
     epub.write_epub(str(visible), book)
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    overrides = {
-        "opf.epub": {
-            "title": "Reviewed Book Title",
-            "authors": ["Reviewed Author"],
-            "year": 2025,
-            "doi": "10.2000/reviewed",
-            "categories": ["History"],
-            "keywords": ["Archives"],
-        }
-    }
-    documents, _units = extract_sources(scan_sources(config).selected, overrides)
+    documents, _units = extract_sources(scan_sources(config).selected)
     by_path = {item["source_relative_path"]: item for item in documents}
 
-    assert by_path["opf.epub"]["title"] == "Reviewed Book Title"
-    assert by_path["opf.epub"]["authors"] == ["Reviewed Author"]
-    assert set(by_path["opf.epub"]["metadata_provenance"].values()) == {
-        "reviewed_override"
-    }
+    assert by_path["opf.epub"]["title"] == "Validated OPF Title"
+    assert by_path["opf.epub"]["metadata_provenance"]["title"] == "epub_opf"
     assert by_path["visible.epub"]["title"] == "The Visible Book Title"
     assert by_path["visible.epub"]["authors"] == ["Ada Lovelace", "Grace Hopper"]
     assert by_path["visible.epub"]["doi"] == "10.1000/visible"
@@ -685,7 +882,7 @@ def test_pdf_layout_restores_columns_removes_margins_and_separates_lists(
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    documents, units = extract_sources(scan_sources(config).selected, {})
+    documents, units = extract_sources(scan_sources(config).selected)
 
     combined = "\n".join(item["contents"] for item in units)
     assert "REPEATED JOURNAL HEADER" not in combined
@@ -709,6 +906,9 @@ def test_figure_markers_are_cleaned_but_preserved_as_annotations(project: Path) 
     page.draw_rect(pymupdf.Rect(65, 200, 520, 430), width=1)
     page.insert_text((90, 245), "Lenovo*", fontsize=11)
     page.insert_text((90, 285), "Samsung*", fontsize=11)
+    page.insert_text((90, 320), "x * y = z", fontsize=10)
+    page.insert_text((90, 340), "This is *important*.", fontsize=10)
+    page.insert_text((90, 360), "See footnote * below.", fontsize=10)
     page.insert_text(
         (90, 390), "* indicates companies included in the sample.", fontsize=10
     )
@@ -719,10 +919,15 @@ def test_figure_markers_are_cleaned_but_preserved_as_annotations(project: Path) 
     document.close()
 
     config = resolve_config(project, vanilla_executable=sys.executable)
-    _documents, units = extract_sources(scan_sources(config).selected, {})
+    _documents, units = extract_sources(scan_sources(config).selected)
     figure = next(item for item in units if item["content_kind"] == "figure")
 
-    assert "*" not in figure["contents"]
+    assert "Lenovo*" in figure["contents"]
+    assert "Samsung*" in figure["contents"]
+    assert "x * y = z" in figure["contents"]
+    assert "This is *important*." in figure["contents"]
+    assert "See footnote * below." in figure["contents"]
+    assert "* indicates companies included in the sample." in figure["contents"]
     assert "Figure 1. Companies included in the sample." in figure["contents"]
     assert any(
         annotation["type"] == "caption"

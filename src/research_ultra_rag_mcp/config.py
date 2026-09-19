@@ -70,6 +70,10 @@ class ResearchConfig:
         return self.portable_root / "source-exclusions.json"
 
     @property
+    def source_catalog_path(self) -> Path:
+        return self.portable_root / "source-catalog.json"
+
+    @property
     def project_config_path(self) -> Path:
         return self.portable_root / "project.json"
 
@@ -139,7 +143,11 @@ def _review_state_files(
     project_state_root: Path,
 ) -> list[tuple[Path, Path]]:
     result: list[tuple[Path, Path]] = []
-    for name in ("source-metadata.json", "source-exclusions.json"):
+    for name in (
+        "source-metadata.json",
+        "source-exclusions.json",
+        "source-catalog.json",
+    ):
         legacy = runtime_root / name
         destination = project_state_root / name
         if not legacy.exists():

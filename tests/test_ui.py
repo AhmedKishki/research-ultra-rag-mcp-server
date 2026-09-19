@@ -116,8 +116,11 @@ class FakeResearchClient:
             "set_source_metadata": {
                 "source_path": arguments.get("source_path"),
                 "metadata": arguments.get("metadata"),
-                "requires_ingest": True,
-                "message": "Metadata saved.",
+                "changed": True,
+                "effective_immediately": True,
+                "requires_ingest": False,
+                "generation_metadata_snapshot_outdated": True,
+                "message": "Metadata saved and applied immediately.",
             },
             "set_source_inclusion": {
                 "source_relative_path": arguments.get("source_path"),
@@ -260,7 +263,8 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
         )
 
     assert search.json()["hits"][0]["citation"].endswith("p. 1")
-    assert metadata.json()["requires_ingest"] is True
+    assert metadata.json()["effective_immediately"] is True
+    assert metadata.json()["requires_ingest"] is False
     assert inclusion.json()["included"] is False
     assert ingestion.json()["generation_id"] == "generation-2"
     assert exported.json()["bundle_name"].endswith(".research-rag.zip")

@@ -88,8 +88,13 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             },
             "list_sources": {"categories", "keywords"},
             "get_passage": {"chunk_id", "context_chunks"},
-            "set_source_metadata": {"source_path", "metadata"},
-            "set_source_inclusion": {"source_path", "included", "reason"},
+            "set_source_metadata": {"source_id", "source_path", "metadata"},
+            "set_source_inclusion": {
+                "source_id",
+                "source_path",
+                "included",
+                "reason",
+            },
             "export_bundle": set(),
             "import_bundle": {"bundle_name", "activate"},
         }
@@ -101,6 +106,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         metadata_definition = tools["set_source_metadata"].inputSchema["properties"][
             "metadata"
         ]
+        assert "immediately" in metadata_definition["description"]
+        assert "immediately" in (tools["set_source_metadata"].description or "")
         assert metadata_definition["additionalProperties"] is False
         assert set(metadata_definition["properties"]) == {
             "title",
@@ -153,6 +160,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             },
         )
         assert metadata.data["requires_ingest"] is True
+        assert metadata.data["effective_immediately"] is False
 
         ingested = await _ingest_until_complete(
             client,
@@ -188,18 +196,90 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "search",
             {"query": "cobalt heron amber marsh", "top_k": 1},
         )
-        hit = result.data["hits"][0]
-        assert hit["title"] == "Citable Evidence"
-        assert hit["source_path"] == "sources/evidence.pdf"
-        assert hit["locator"]["page"] == 1
-        assert "cobalt heron" in hit["text"].lower()
-        assert "notes" not in hit["text"].lower()
+        initial_hit = result.data["hits"][0]
+        source_id = initial_hit["source_id"]
+        assert source_id.startswith("src_")
+        assert initial_hit["title"] == "Citable Evidence"
+        assert initial_hit["source_path"] == "sources/evidence.pdf"
+        assert initial_hit["locator"]["page"] == 1
+        assert "cobalt heron" in initial_hit["text"].lower()
+        assert "notes" not in initial_hit["text"].lower()
         assert result.data["retrieval_method"] == "hybrid"
-        assert hit["component_ranks"] == {"bm25": 1, "dense": 1}
-        assert hit["fusion_score"] is not None
-        assert hit["direct_quote_safe"] is False
-        assert hit["text_fidelity"] == "cleaned_semantic_text"
+        assert initial_hit["component_ranks"] == {"bm25": 1, "dense": 1}
+        assert initial_hit["fusion_score"] is not None
+        assert initial_hit["direct_quote_safe"] is False
+        assert initial_hit["text_fidelity"] == "cleaned_semantic_text"
         assert result.data["requested_top_k"] == 1
+
+        manifest_before_metadata = (generation_root / "manifest.json").read_bytes()
+        chunks_before_metadata = (
+            generation_root / "chunks" / "chunks.jsonl"
+        ).read_bytes()
+        corrected_metadata = await client.call_tool(
+            "set_source_metadata",
+            {
+                "source_id": source_id,
+                "metadata": {
+                    "title": "Reviewed Marsh Evidence",
+                    "authors": ["Field Researcher"],
+                    "year": 2025,
+                    "categories": ["corrected"],
+                    "keywords": ["heron"],
+                },
+            },
+        )
+        assert corrected_metadata.data["changed"] is True
+        assert corrected_metadata.data["effective_immediately"] is True
+        assert corrected_metadata.data["requires_ingest"] is False
+        assert corrected_metadata.data["generation_metadata_snapshot_outdated"] is True
+        assert (
+            generation_root / "manifest.json"
+        ).read_bytes() == manifest_before_metadata
+        assert (
+            generation_root / "chunks" / "chunks.jsonl"
+        ).read_bytes() == chunks_before_metadata
+
+        metadata_status = await client.call_tool("status", {})
+        assert metadata_status.data["stale"] is False
+        assert metadata_status.data["metadata_overlay_active"] is True
+        assert metadata_status.data["changes"]["metadata_changed"] is True
+
+        corrected_sources = await client.call_tool(
+            "list_sources",
+            {"categories": ["corrected"], "keywords": ["heron"]},
+        )
+        assert corrected_sources.data["source_count"] == 1
+        assert corrected_sources.data["sources"][0]["source_id"] == source_id
+        assert corrected_sources.data["sources"][0]["title"] == (
+            "Reviewed Marsh Evidence"
+        )
+
+        corrected_result = await client.call_tool(
+            "search",
+            {
+                "query": "cobalt heron amber marsh",
+                "top_k": 1,
+                "categories": ["corrected"],
+                "keywords": ["heron"],
+            },
+        )
+        hit = corrected_result.data["hits"][0]
+        assert hit["chunk_id"] == initial_hit["chunk_id"]
+        assert hit["title"] == "Reviewed Marsh Evidence"
+        assert hit["authors"] == ["Field Researcher"]
+        assert hit["year"] == 2025
+        assert hit["citation"].startswith(
+            "Field Researcher, Reviewed Marsh Evidence (2025)"
+        )
+
+        corrected_context = await client.call_tool(
+            "get_passage",
+            {"chunk_id": hit["chunk_id"], "context_chunks": 0},
+        )
+        assert corrected_context.data["context"][0]["title"] == (
+            "Reviewed Marsh Evidence"
+        )
+        assert corrected_context.data["context"][0]["categories"] == ["corrected"]
 
         references_result = await client.call_tool(
             "search",
@@ -225,8 +305,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "query": "cobalt heron amber marsh labour ecology",
                 "top_k": 1,
                 "retrieval_method": "dense",
-                "categories": ["research"],
-                "keywords": ["wetland"],
+                "categories": ["corrected"],
+                "keywords": ["heron"],
             },
         )
         assert dense_result.data["hits"][0]["chunk_id"] == hit["chunk_id"]
@@ -274,7 +354,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         excluded = await client.call_tool(
             "set_source_inclusion",
             {
-                "source_path": "evidence.pdf",
+                "source_id": source_id,
                 "included": False,
                 "reason": "Agent-reviewed duplicate representation test.",
             },
@@ -289,7 +369,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
         restored = await client.call_tool(
             "set_source_inclusion",
-            {"source_path": "evidence.pdf", "included": True},
+            {"source_id": source_id, "included": True},
         )
         assert restored.data["effective_immediately"] is True
         restored_search = await client.call_tool(
@@ -339,6 +419,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             timeout=1800,
         )
         assert imported_search.data["hits"][0]["chunk_id"] == reference_chunk_id
+        assert imported_search.data["hits"][0]["title"] == "Reviewed Marsh Evidence"
         assert (imported_project / "sources" / "evidence.pdf").is_file()
 
     offline_transport = StdioTransport(

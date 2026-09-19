@@ -30,13 +30,6 @@ class DenseSearchHit:
 class DenseBackend(Protocol):
     """Boundary used by the service and deterministic test doubles."""
 
-    def build(
-        self,
-        chunks: list[dict[str, Any]],
-        index_path: Path,
-        vectors_path: Path | None = None,
-    ) -> dict[str, Any]: ...
-
     def build_from_vectors(
         self,
         chunks: list[dict[str, Any]],
@@ -47,13 +40,6 @@ class DenseBackend(Protocol):
     def embed_texts(
         self, texts: list[str]
     ) -> np.ndarray[Any, np.dtype[np.float32]]: ...
-
-    def build_index(
-        self,
-        chunks: list[dict[str, Any]],
-        index_path: Path,
-        vectors: np.ndarray[Any, np.dtype[np.float32]],
-    ) -> dict[str, Any]: ...
 
     def initialize_index(self, index_path: Path, dimension: int) -> None: ...
 
@@ -74,14 +60,20 @@ class DenseBackend(Protocol):
         dimension: int,
     ) -> dict[str, Any]: ...
 
+    def validate_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> None: ...
+
     def search(
         self,
         index_path: Path,
         query: str,
         top_k: int,
         *,
-        categories: list[str] | None = None,
-        keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
         excluded_document_ids: list[str] | None = None,
     ) -> list[DenseSearchHit]: ...
@@ -130,21 +122,6 @@ class LocalQdrantDenseBackend:
     def _client(index_path: Path) -> QdrantClient:
         return QdrantClient(path=str(index_path))
 
-    def build(
-        self,
-        chunks: list[dict[str, Any]],
-        index_path: Path,
-        vectors_path: Path | None = None,
-    ) -> dict[str, Any]:
-        texts = [str(chunk["embedding_text"]) for chunk in chunks]
-        vectors = self.embed_texts(texts)
-
-        if vectors_path is not None:
-            vectors_path.parent.mkdir(parents=True, exist_ok=True)
-            with vectors_path.open("wb") as handle:
-                np.save(handle, vectors, allow_pickle=False)
-        return self.build_index(chunks, index_path, vectors)
-
     def embed_texts(
         self,
         texts: list[str],
@@ -172,7 +149,7 @@ class LocalQdrantDenseBackend:
         vectors_path: Path,
     ) -> dict[str, Any]:
         try:
-            vectors = np.load(vectors_path, allow_pickle=False)
+            vectors = np.load(vectors_path, allow_pickle=False, mmap_mode="r")
         except (OSError, ValueError) as exc:
             raise ValueError(
                 f"Cannot load portable embeddings: {vectors_path}"
@@ -186,11 +163,12 @@ class LocalQdrantDenseBackend:
             raise ValueError(
                 "Portable embedding dimensions do not match the chunk collection"
             )
-        if not np.isfinite(vectors).all():
-            raise ValueError("Portable embeddings contain non-finite values")
-        return self.build_index(chunks, index_path, vectors)
+        for offset in range(0, len(vectors), 4096):
+            if not np.isfinite(vectors[offset : offset + 4096]).all():
+                raise ValueError("Portable embeddings contain non-finite values")
+        return self._build_index(chunks, index_path, vectors)
 
-    def build_index(
+    def _build_index(
         self,
         chunks: list[dict[str, Any]],
         index_path: Path,
@@ -250,14 +228,7 @@ class LocalQdrantDenseBackend:
                     payload={
                         "chunk_id": chunk["chunk_id"],
                         "document_id": chunk["document_id"],
-                        "source_path": chunk["source_path"],
-                        "categories": [
-                            str(value).casefold()
-                            for value in chunk.get("categories", [])
-                        ],
-                        "keywords": [
-                            str(value).casefold() for value in chunk.get("keywords", [])
-                        ],
+                        "source_id": chunk.get("source_id"),
                     },
                 )
                 for index, (chunk, vector) in enumerate(
@@ -280,17 +251,11 @@ class LocalQdrantDenseBackend:
         expected_count: int,
         dimension: int,
     ) -> dict[str, Any]:
-        client = self._client(index_path)
-        try:
-            collection = client.get_collection(COLLECTION_NAME)
-            point_count = int(collection.points_count or 0)
-            if point_count != expected_count:
-                raise RuntimeError(
-                    "Qdrant verification failed: "
-                    f"expected {expected_count} points, found {point_count}"
-                )
-        finally:
-            client.close()
+        self.validate_index(
+            index_path,
+            expected_count=expected_count,
+            dimension=dimension,
+        )
         return {
             "backend": "Qdrant local mode",
             "collection": COLLECTION_NAME,
@@ -302,29 +267,43 @@ class LocalQdrantDenseBackend:
             "point_count": expected_count,
         }
 
+    def validate_index(
+        self,
+        index_path: Path,
+        *,
+        expected_count: int,
+        dimension: int,
+    ) -> None:
+        if not index_path.is_dir() or index_path.is_symlink():
+            raise ValueError(f"Dense index is missing or unsafe: {index_path}")
+        client = self._client(index_path)
+        try:
+            if not client.collection_exists(COLLECTION_NAME):
+                raise RuntimeError(f"Qdrant collection is missing: {COLLECTION_NAME}")
+            collection = client.get_collection(COLLECTION_NAME)
+            point_count = int(collection.points_count or 0)
+            if point_count != expected_count:
+                raise RuntimeError(
+                    "Qdrant verification failed: "
+                    f"expected {expected_count} points, found {point_count}"
+                )
+            vectors_config = collection.config.params.vectors
+            actual_dimension = getattr(vectors_config, "size", None)
+            if actual_dimension != dimension:
+                raise RuntimeError(
+                    "Qdrant verification failed: "
+                    f"expected dimension {dimension}, found {actual_dimension}"
+                )
+        finally:
+            client.close()
+
     @staticmethod
     def _filter(
         *,
-        categories: list[str] | None,
-        keywords: list[str] | None,
         document_ids: list[str] | None,
         excluded_document_ids: list[str] | None,
     ) -> models.Filter | None:
         conditions: list[models.FieldCondition] = []
-        conditions.extend(
-            models.FieldCondition(
-                key="categories",
-                match=models.MatchValue(value=value.casefold()),
-            )
-            for value in categories or []
-        )
-        conditions.extend(
-            models.FieldCondition(
-                key="keywords",
-                match=models.MatchValue(value=value.casefold()),
-            )
-            for value in keywords or []
-        )
         if document_ids:
             conditions.append(
                 models.FieldCondition(
@@ -352,8 +331,6 @@ class LocalQdrantDenseBackend:
         query: str,
         top_k: int,
         *,
-        categories: list[str] | None = None,
-        keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
         excluded_document_ids: list[str] | None = None,
     ) -> list[DenseSearchHit]:
@@ -371,8 +348,6 @@ class LocalQdrantDenseBackend:
                 collection_name=COLLECTION_NAME,
                 query=query_vectors[0].tolist(),
                 query_filter=self._filter(
-                    categories=categories,
-                    keywords=keywords,
                     document_ids=document_ids,
                     excluded_document_ids=excluded_document_ids,
                 ),

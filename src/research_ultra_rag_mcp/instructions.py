@@ -19,8 +19,11 @@ For research questions:
 1. Call status first. If no generation exists, ask before calling ingest because
    ingestion writes a new persistent generation, computes embeddings, and may
    download the pinned embedding model on first use.
-2. If status reports stale=true, tell the user which sources or metadata changed
-   and ask whether to ingest a new generation. Existing searches remain usable.
+2. If status reports stale=true, tell the user which sources or inclusion state
+   changed and ask whether to ingest a new generation. Existing searches remain
+   usable. metadata_overlay_active is informational, not staleness: current
+   reviewed metadata is already authoritative on every read surface and does
+   not require ingestion merely to become effective.
    If generation_upgrade_required=true, explain upgrade_reasons and recommend a
    new ingestion. Normal ingest verifies source hashes and safely reuses
    compatible documents, chunks, and vectors while reconstructing complete new
@@ -57,17 +60,30 @@ For research questions:
    responsible for redistribution rights. import_bundle only accepts a filename
    already beneath this project's .research-rag/bundles directory and rejects a
    different stable project ID. It replaces reviewed metadata and exclusions
-   with the bundled copies, so disclose that effect before importing.
+   with the bundled copies, so disclose that effect before importing. With
+   activate=false the generation pointer stays unchanged, but compatible
+   imported metadata and exclusions immediately govern matching sources on the
+   selected generation's retrieval surfaces. Both also govern future ingestion.
 
 PDF hits include physical page numbers and available page labels. EPUBs have
 spine-section plus XHTML anchor or structural-block locators because reflowable
 EPUB files do not have stable page numbers. These internal locators improve
 navigation but do not make cleaned text safe for exact quotation.
-Automatic bibliography is best-effort. Review provenance, confidence, and
-warnings; if a title, author, year, or DOI is uncertain or wrong, inspect the
+Automatic bibliography is best-effort. Review provenance and warnings; if a
+title, author, year, or DOI is uncertain or wrong, inspect the
 original and use set_source_metadata for the reviewed value instead of relying
 on a document-specific extraction rule. Use it for reviewed categories and
-keywords as well, then ingest again to apply the changes.
+keywords as well. Prefer the stable source_id returned by list_sources or search;
+source_path remains available for compatibility and takes the reported
+source_relative_path. Provide exactly one selector. For a source in the selected
+generation, the tool applies the complete reviewed override immediately to
+source listings, metadata filters, search results and citations, and neighboring
+passages without rebuilding the immutable indexes. Check effective_immediately
+and requires_ingest in its response; ingestion is required only when the source
+is absent from the selected generation. Omitted fields remove their previous
+reviewed overrides. If an old generation cannot recover automatic bibliography
+hidden by a removed override, it returns a safe fallback with a warning until a
+later ingestion recovers the automatic value from the original.
 
 Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
 BM25 lexical retrieval; FastEmbed creates semantic vectors stored in embedded
