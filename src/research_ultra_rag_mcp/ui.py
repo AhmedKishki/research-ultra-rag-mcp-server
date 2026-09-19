@@ -205,6 +205,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--offline", action="store_true")
     parser.add_argument(
+        "--runtime-root",
+        default=os.environ.get("RESEARCH_ULTRARAG_RUNTIME_ROOT"),
+        help=(
+            "Absolute directory for disposable derived state; use it when the "
+            "project lives on slow storage."
+        ),
+    )
+    parser.add_argument(
         "--dense-backend",
         choices=("auto", "exact", "qdrant"),
         default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
@@ -245,6 +253,7 @@ def main() -> None:
             offline=args.offline,
             log_level=args.log_level,
             dense_backend=args.dense_backend,
+            runtime_root=args.runtime_root,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc

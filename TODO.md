@@ -354,26 +354,46 @@ Gate:
 
 ## Step 2c — Explicit derived-state location (P1-12, needs D5)
 
-- [ ] Decide whether the `AGENTS.md` "everything beneath
+Status: **implemented** (D5 chose C). `--runtime-root` /
+`RESEARCH_ULTRARAG_RUNTIME_ROOT` relocates derived state only; the root is
+claimed by a marker holding the owning `project_id`, which also makes the
+remaining items below unnecessary to leave open. The README keeps an OS bind
+mount as the alternative for users who prefer the literal in-project path.
+
+- [x] Decide whether the `AGENTS.md` "everything beneath
       `<project>/.research-rag`" invariant is amended or the storage requirement
-      is documented instead.
-- [ ] If amended: add `--runtime-root` / `RESEARCH_ULTRARAG_RUNTIME_ROOT` with
-      containment, ownership, and marker validation.
-- [ ] If amended: update the `AGENTS.md` invariant bullet that requires every
+      is documented instead. Amended: the bullet now allows relocating derived
+      state only, never review state.
+- [x] If amended: add `--runtime-root` / `RESEARCH_ULTRARAG_RUNTIME_ROOT` with
+      containment, ownership, and marker validation. Rejects a relative path,
+      the project root and its `.research-rag`, a non-directory, a root owned by
+      a different `project_id`, and a non-empty root with no marker.
+- [x] If amended: update the `AGENTS.md` invariant bullet that requires every
       project-owned artifact to live beneath `<project>/.research-rag`.
-- [ ] Record the runtime root in `.research-rag/project.json` so a moved or
-      missing root is detected rather than silently re-derived.
-- [ ] Refuse to start when a runtime root belongs to another project or its
+- [x] Record the runtime root in `.research-rag/project.json` so a moved or
+      missing root is detected rather than silently re-derived. Deviation: the
+      marker records `project_id` and `project_root` **in the runtime root**
+      rather than in the portable descriptor, because a relocated project must
+      be able to point at a different fast device without rewriting portable
+      identity, and a marker at the destination is what detects a shared or
+      foreign root. `status` reports the effective root as `runtime_root`.
+- [x] Refuse to start when a runtime root belongs to another project or its
       marker does not match, so a shared fast disk cannot mix projects.
-- [ ] Confirm that no bundle, log, or index content can leak between projects
-      through a shared runtime root.
-- [ ] If not amended: document the fast-local-storage requirement in the README
-      storage and limitations sections.
+- [x] Confirm that no bundle, log, or index content can leak between projects
+      through a shared runtime root. Bundles and reviewed metadata stay in
+      `.research-rag`, and the marker check fails before any state is written,
+      so a shared root cannot be reached at all.
+- ~~If not amended: document the fast-local-storage requirement in the README
+  storage and limitations sections.~~ Not applicable; the invariant was amended,
+  and the README documents both the option and the bind-mount alternative.
 
 Gate:
 
-- [ ] Either a relocated runtime root works with all safety guarantees intact,
-      or the storage requirement is unambiguously documented.
+- [x] Either a relocated runtime root works with all safety guarantees intact,
+      or the storage requirement is unambiguously documented. Relocated roots
+      work: the ownership marker is validated before any state is written, the
+      lock and `current.json` move with the root, and the new tests cover
+      claiming, reuse, and every refusal path.
 
 ## Step 2d — Embedding throughput (P1-13)
 

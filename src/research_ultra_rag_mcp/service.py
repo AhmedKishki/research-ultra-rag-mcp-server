@@ -1715,6 +1715,11 @@ class ResearchService:
                 "project_name": self.config.project_name,
                 "source_root": str(self.config.source_root),
                 "state_root": str(self.config.state_root),
+                "runtime_root": (
+                    str(self.config.runtime_root)
+                    if self.config.runtime_root is not None
+                    else None
+                ),
                 "portable_root": str(self.config.portable_root),
                 "model_cache_root": str(self.config.model_cache_root),
                 "discovered_source_count": len(scan.selected),
@@ -1860,6 +1865,11 @@ class ResearchService:
             "project_name": self.config.project_name,
             "source_root": str(self.config.source_root),
             "state_root": str(self.config.state_root),
+            "runtime_root": (
+                str(self.config.runtime_root)
+                if self.config.runtime_root is not None
+                else None
+            ),
             "portable_root": str(self.config.portable_root),
             "model_cache_root": str(self.config.model_cache_root),
             "generation_id": manifest["generation_id"],

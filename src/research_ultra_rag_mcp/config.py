@@ -17,6 +17,9 @@ class ConfigurationError(ValueError):
     """Raised when the server cannot establish a safe project boundary."""
 
 
+_RUNTIME_MARKER = ".research-ultra-rag-runtime.json"
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchConfig:
     project_root: Path
@@ -31,6 +34,7 @@ class ResearchConfig:
     offline: bool
     log_level: str
     dense_backend: str = "auto"
+    runtime_root: Path | None = None
 
     @property
     def generations_root(self) -> Path:
@@ -281,12 +285,82 @@ def _initialize_portable_project(
     return project_id, project_name
 
 
+def _prepare_runtime_root(
+    candidate: Path,
+    *,
+    project: Path,
+    project_id: str,
+    marker_required: bool,
+) -> Path:
+    """Claim or validate the directory that holds disposable derived state.
+
+    A relocated root carries a marker naming its owning project, so two projects
+    can never silently share one set of generations and an unrelated directory is
+    never adopted. The default in-project root needs no marker.
+    """
+
+    if not marker_required:
+        # The default root is inside the project, so the project owns it by
+        # construction and there is nothing to claim or validate.
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+    if candidate.exists() and not candidate.is_dir():
+        raise ConfigurationError(f"Runtime root is not a directory: {candidate}")
+    marker_path = candidate / _RUNTIME_MARKER
+    if candidate.is_dir() and not marker_path.is_file():
+        try:
+            has_payload = any(candidate.iterdir())
+        except OSError as exc:
+            raise ConfigurationError(
+                f"Runtime root is not readable: {candidate}"
+            ) from exc
+        if has_payload:
+            raise ConfigurationError(
+                "Runtime root is not empty and carries no project marker: "
+                f"{candidate}. Point --runtime-root at an empty directory or at "
+                "the directory this project already uses."
+            )
+    if marker_path.is_file():
+        try:
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ConfigurationError(
+                f"Invalid runtime-root marker: {marker_path}"
+            ) from exc
+        owner = marker.get("project_id") if isinstance(marker, dict) else None
+        if owner != project_id:
+            raise ConfigurationError(
+                f"Runtime root belongs to another project ({owner!r}; this "
+                f"project is {project_id!r}): {candidate}"
+            )
+    candidate.mkdir(parents=True, exist_ok=True)
+    if not marker_path.is_file():
+        temporary = marker_path.with_name(f".{marker_path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "project_id": project_id,
+                    "project_root": str(project),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, marker_path)
+    return candidate
+
+
 def resolve_config(
     project_root: str | Path,
     *,
     source_directory: str = "sources",
     vanilla_executable: str | Path | None = None,
     runtime_cache_root: str | Path | None = None,
+    runtime_root: str | Path | None = None,
     model_cache_root: str | Path | None = None,
     offline: bool = False,
     log_level: str = "warn",
@@ -308,9 +382,22 @@ def resolve_config(
     portable = (project / ".research-rag").resolve()
     if not _within(portable, project):
         raise ConfigurationError(f"Portable state escapes the project root: {portable}")
-    state = (portable / "runtime").resolve()
-    if not _within(state, portable):
-        raise ConfigurationError(f"Research runtime escapes its project state: {state}")
+    default_state = (portable / "runtime").resolve()
+    if not _within(default_state, portable):
+        raise ConfigurationError(
+            f"Research runtime escapes its project state: {default_state}"
+        )
+    relocated = runtime_root is not None
+    custom_state = (
+        Path(runtime_root).expanduser().resolve() if relocated else default_state
+    )
+    if relocated:
+        if not Path(str(runtime_root)).expanduser().is_absolute():
+            raise ConfigurationError("--runtime-root must be an absolute path")
+        if custom_state in {project, portable}:
+            raise ConfigurationError(
+                "--runtime-root must not be the project root or its .research-rag"
+            )
 
     executable = (
         Path(
@@ -335,7 +422,21 @@ def resolve_config(
         )
 
     portable.mkdir(parents=True, exist_ok=True)
-    _migrate_legacy_runtime(project, portable, state)
+    if not relocated:
+        _migrate_legacy_runtime(project, portable, default_state)
+
+    normalized_source_directory = source_argument.as_posix()
+    project_id, project_name = _initialize_portable_project(
+        project,
+        portable,
+        normalized_source_directory,
+    )
+    state = _prepare_runtime_root(
+        custom_state,
+        project=project,
+        project_id=project_id,
+        marker_required=relocated,
+    )
 
     cache = (
         Path(runtime_cache_root).expanduser().resolve()
@@ -363,12 +464,6 @@ def resolve_config(
     (state / "failures").mkdir(exist_ok=True)
     (state / "ultrarag-runtime").mkdir(exist_ok=True)
     configured_model_cache.mkdir(parents=True, exist_ok=True)
-    normalized_source_directory = source_argument.as_posix()
-    project_id, project_name = _initialize_portable_project(
-        project,
-        portable,
-        normalized_source_directory,
-    )
 
     return ResearchConfig(
         project_root=project,
@@ -383,6 +478,7 @@ def resolve_config(
         offline=offline,
         log_level=log_level,
         dense_backend=normalized_dense_backend,
+        runtime_root=custom_state if relocated else None,
     )
 
 

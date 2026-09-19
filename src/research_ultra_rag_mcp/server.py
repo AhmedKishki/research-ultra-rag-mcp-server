@@ -646,6 +646,16 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--runtime-root",
+        default=os.environ.get("RESEARCH_ULTRARAG_RUNTIME_ROOT"),
+        help=(
+            "Absolute directory for disposable derived state (generations, "
+            "staging, logs). Defaults to <project>/.research-rag/runtime; point "
+            "it at fast local storage when the project itself is on a slow disk. "
+            "A relocated root is claimed by this project and refuses to be shared."
+        ),
+    )
+    parser.add_argument(
         "--dense-backend",
         choices=("auto", "exact", "qdrant"),
         default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
@@ -678,6 +688,7 @@ def main() -> None:
             offline=args.offline,
             log_level=args.log_level,
             dense_backend=args.dense_backend,
+            runtime_root=args.runtime_root,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc

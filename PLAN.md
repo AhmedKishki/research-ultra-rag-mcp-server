@@ -1224,6 +1224,23 @@ Recommendation: **C**, with **B** as the immediate stopgap. Reversible: B is
 trivially reversible; C is reversible by removing the flag after moving state
 back.
 
+Outcome (2026-09-19, Step 2c): implemented as chosen. `--runtime-root` (or
+`RESEARCH_ULTRARAG_RUNTIME_ROOT`) relocates the runtime root and nothing else:
+`project.json`, reviewed metadata, exclusions, the source catalog, and bundles
+stay in `<project>/.research-rag`. The first run claims the target by writing
+`.research-ultra-rag-runtime.json` with the owning `project_id` and
+`project_root`; every later run validates it and refuses a foreign owner, a
+non-empty unmarked directory, a relative path, the project root or its
+`.research-rag`, and a non-directory. One deviation from this plan's wording:
+the root is recorded by a marker in the runtime root rather than in the portable
+descriptor, so a project can be pointed at a different fast device without
+rewriting portable identity, and a *shared* root is detected at the destination
+where the risk actually is. The legacy `.ultrarag/research` migration runs only
+for the default root. `status` reports the effective root as `runtime_root`
+(`null` when default). The README keeps bind mount B documented as the
+alternative, with its limitation stated: the server cannot detect it or warn
+when a moved project loses the mount.
+
 ### D6 — Dense backend
 
 Chosen: **B** (2026-09-19) — exact scan by default, `LocalQdrantDenseBackend` selectable above a documented threshold.

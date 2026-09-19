@@ -82,8 +82,12 @@ concrete options, never as an open question. For every decision:
   sources directory.
 - Reject source symlinks and path traversal.
 - Store every project-owned research-RAG artifact beneath
-  `<project>/.research-rag`: portable identity/review state at its root and all
-  disposable derived state beneath `.research-rag/runtime`.
+  `<project>/.research-rag` by default: portable identity/review state at its
+  root and all disposable derived state beneath `.research-rag/runtime`. An
+  explicit `--runtime-root` may relocate derived state only, and only to an
+  absolute path claimed by a marker naming this project's `project_id`; review
+  state must stay in the project, and two projects must never share one runtime
+  root.
 - Share only immutable model binaries through the configured user cache. Never
   place documents, metadata, chunks, vectors, indexes, bundles, logs, or query
   state in global storage.
@@ -218,6 +222,16 @@ Disposable local state lives at:
 <project>/.research-rag/runtime/current.json
 <project>/.research-rag/runtime/project.lock
 ```
+
+`--runtime-root` (or `RESEARCH_ULTRARAG_RUNTIME_ROOT`) may relocate the whole
+runtime root, including `current.json` and `project.lock`, to an absolute path
+outside the project, which is how a project on slow storage keeps generations,
+staging, and index builds on a fast device. The root is claimed on first use by a
+`.research-ultra-rag-runtime.json` marker holding the owning `project_id`; a
+root with a different `project_id`, a non-empty root with no marker, a relative
+path, the project root, and a non-directory are all rejected with explicit
+messages. Review state in `.research-rag` never moves, and the legacy-location
+migration runs only for the default root.
 
 `resolve_config` performs a guarded one-time move from the legacy
 `.ultrarag/research` location. Never create new research state there. Refuse to

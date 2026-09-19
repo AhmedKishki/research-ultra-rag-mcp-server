@@ -1239,6 +1239,35 @@ def test_symbol_only_chunks_do_not_reach_indexes(project: Path) -> None:
     asyncio.run(_assert_symbol_only_chunks_do_not_reach_indexes(project))
 
 
+def test_status_reports_the_relocated_runtime_root(project: Path) -> None:
+    async def exercise() -> None:
+        runtime_root = project.parent / "relocated-runtime"
+        config = resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            runtime_root=runtime_root,
+        )
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+
+        status = await service.status()
+        assert status["runtime_root"] == str(runtime_root.resolve())
+        assert status["state_root"] == str(runtime_root.resolve())
+        assert status["project_root"] == str(project.resolve())
+
+        default_service = ResearchService(  # type: ignore[arg-type]
+            resolve_config(project, vanilla_executable=sys.executable),
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        assert (await default_service.status())["runtime_root"] is None
+
+    asyncio.run(exercise())
+
+
 def test_dense_backend_selection_honors_the_threshold_and_config(
     project: Path,
 ) -> None:

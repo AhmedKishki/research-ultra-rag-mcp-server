@@ -79,6 +79,14 @@ def _parser() -> argparse.ArgumentParser:
         help="Override the shared FastEmbed model cache.",
     )
     parser.add_argument(
+        "--runtime-root",
+        default=os.environ.get("RESEARCH_ULTRARAG_RUNTIME_ROOT"),
+        help=(
+            "Absolute directory for disposable derived state; use it when the "
+            "project lives on slow storage."
+        ),
+    )
+    parser.add_argument(
         "--dense-backend",
         choices=("auto", "exact", "qdrant"),
         default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
@@ -123,6 +131,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         model_cache_root=args.model_cache_root,
         offline=args.offline,
         dense_backend=args.dense_backend,
+        runtime_root=args.runtime_root,
     )
     log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(

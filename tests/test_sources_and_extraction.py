@@ -1087,6 +1087,120 @@ def test_projects_share_only_the_configured_model_cache(tmp_path: Path) -> None:
     assert not second.legacy_models_root.exists()
 
 
+def test_relocated_runtime_root_is_claimed_then_reused(
+    project: Path, tmp_path: Path
+) -> None:
+    runtime_root = tmp_path / "fast-local-runtime"
+    marker = runtime_root / ".research-ultra-rag-runtime.json"
+
+    relocated = resolve_config(
+        project,
+        vanilla_executable=sys.executable,
+        runtime_root=runtime_root,
+    )
+
+    assert relocated.state_root == runtime_root.resolve()
+    assert relocated.runtime_root == runtime_root.resolve()
+    assert relocated.generations_root.is_dir()
+    assert relocated.logs_root.is_dir()
+    assert relocated.staging_root.is_dir()
+    # Portable review state stays in the project; only derived state moves.
+    assert relocated.metadata_path.parent == project / ".research-rag"
+    assert not (project / ".research-rag" / "runtime" / "generations").exists()
+    marker_record = json.loads(marker.read_text(encoding="utf-8"))
+    assert marker_record["project_id"] == relocated.project_id
+    assert marker_record["project_root"] == str(project.resolve())
+    assert marker_record["schema_version"] == 1
+
+    # The same project reuses its root, including through an unresolved path.
+    again = resolve_config(
+        project,
+        vanilla_executable=sys.executable,
+        runtime_root=runtime_root / ".",
+    )
+    assert again.state_root == runtime_root.resolve()
+    assert again.project_id == relocated.project_id
+
+
+def test_relocated_runtime_root_refuses_another_project_and_foreign_data(
+    project: Path,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "shared-runtime"
+    resolve_config(
+        project,
+        vanilla_executable=sys.executable,
+        runtime_root=runtime_root,
+    )
+
+    other_project = tmp_path / "other-project"
+    (other_project / "sources").mkdir(parents=True)
+    with pytest.raises(ConfigurationError, match="belongs to another project"):
+        resolve_config(
+            other_project,
+            vanilla_executable=sys.executable,
+            runtime_root=runtime_root,
+        )
+
+    # A different project may not adopt the same root through the other case
+    # either, and the owning project keeps using it.
+    with pytest.raises(ConfigurationError, match="belongs to another project"):
+        resolve_config(
+            other_project,
+            vanilla_executable=sys.executable,
+            runtime_root=tmp_path / "shared-runtime" / ".." / "shared-runtime",
+        )
+    assert (
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            runtime_root=runtime_root,
+        ).state_root
+        == runtime_root.resolve()
+    )
+
+    unrelated = tmp_path / "unrelated-data"
+    (unrelated / "generations").mkdir(parents=True)
+    (unrelated / "generations" / "keep.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="carries no project marker"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            runtime_root=unrelated,
+        )
+    assert (unrelated / "generations" / "keep.json").is_file()
+
+    with pytest.raises(ConfigurationError, match="must be an absolute path"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            runtime_root="relative/runtime",
+        )
+    with pytest.raises(ConfigurationError, match="must not be the project root"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            runtime_root=project / ".research-rag",
+        )
+
+    occupied = tmp_path / "occupied.json"
+    occupied.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="not a directory"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            runtime_root=occupied,
+        )
+
+
+def test_default_runtime_root_needs_no_marker(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    assert config.runtime_root is None
+    assert config.state_root == project / ".research-rag" / "runtime"
+    assert not (config.state_root / ".research-ultra-rag-runtime.json").exists()
+
+
 def test_research_starts_only_required_ultrarag_namespaces(project: Path) -> None:
     config = resolve_config(project, vanilla_executable=sys.executable)
     transport = create_vanilla_transport(config)

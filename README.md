@@ -385,37 +385,40 @@ is not implemented.
 
 ### Put derived state on fast local storage
 
-`runtime/` is where staging, vectors, and the dense index live, so its device
-dominates ingestion time. Measured on one machine with the same 20-source corpus:
-the exact same Qdrant build cost about **4 ms per point on NVMe** and about
-**290 ms per point on the HDD-backed project**, and on a larger project that
-phase was 99% of a 51-minute build.
+The runtime root is where staging, vectors, and the dense index live, so its
+device dominates ingestion time. Measured on one machine with the same 20-source
+corpus: the exact same Qdrant build cost about **4 ms per point on NVMe** and
+about **290 ms per point on the HDD-backed project**, and on a larger project
+that phase was 99% of a 51-minute build.
 
-The runtime path is fixed inside the project, so the way to place it on faster
-storage without changing this server is an OS bind mount. Stop every research
-MCP, UI, and verifier process for the project first, then:
+Point the runtime root at fast storage instead of leaving it inside the project:
 
 ```bash
-# 1. One-time copy of existing derived state to the fast device.
-sudo mkdir -p /ssd/research-runtime/ai-and-fetishism
-sudo rsync -a --delete \
-  /mnt/data/projects/ai-and-fetishism/.research-rag/runtime/ \
-  /ssd/research-runtime/ai-and-fetishism/
-
-# 2. Move the original aside, then mount the fast copy at the expected path.
-mv /mnt/data/projects/ai-and-fetishism/.research-rag/runtime \
-  /mnt/data/projects/ai-and-fetishism/.research-rag/runtime.moved
-mkdir -p /mnt/data/projects/ai-and-fetishism/.research-rag/runtime
-sudo mount --bind /ssd/research-runtime/ai-and-fetishism \
-  /mnt/data/projects/ai-and-fetishism/.research-rag/runtime
+research-ultra-rag-mcp \
+  --project-root /mnt/data/projects/ai-and-fetishism \
+  --runtime-root /ssd/research-runtime/ai-and-fetishism
 ```
 
-Add the bind mount to `/etc/fstab` to keep it across reboots. Afterwards, run
-`status` and confirm `state_root` still reads
-`<project>/.research-rag/runtime` — a bind mount preserves the path, so every
-containment and portability check behaves exactly as before. Delete
-`runtime.moved` once the build has been verified. A project that is moved or
-copied loses its mount silently, so re-check `state_root` after any move.
+Or set `RESEARCH_ULTRARAG_RUNTIME_ROOT` for the MCP, UI, and verifier processes.
+`--runtime-root` must be an absolute path. The first run claims an empty
+directory by writing `.research-ultra-rag-runtime.json` with this project's
+`project_id`, and every later run checks that marker: a root owned by another
+project, a non-empty directory with no marker, and a path that is a file are all
+rejected with an explicit message rather than silently mixing two projects'
+generations. Portable review state — `project.json`, source metadata,
+exclusions, the source catalog, and bundles — stays in
+`<project>/.research-rag`. `status` reports the effective root as
+`runtime_root`, and moving derived state back to the project works by dropping
+the option again and relocating the directory.
+
+On a machine where a bind mount is preferable (for example to keep the literal
+path inside the project), the OS-level approach still works: stop every research
+MCP, UI, and verifier process for the project, copy `runtime/` to the fast
+device, then `mount --bind` it at `<project>/.research-rag/runtime` and add the
+mount to `/etc/fstab`. A bind mount preserves the path, so every containment
+check behaves as before, but the server cannot detect it and cannot warn when a
+moved project loses the mount. The two approaches are mutually exclusive, and
+`--runtime-root` is the portable one.
 
 ## Export, import, and move a project
 
