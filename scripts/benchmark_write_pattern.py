@@ -29,7 +29,7 @@ import asyncio
 import json
 import shutil
 import time
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -122,10 +122,33 @@ class durable_writes:
             setattr(service_module, name, original)
 
 
+class chunk_batch:
+    """Force a chunker batch size for the duration of a run."""
+
+    def __init__(self, units: int) -> None:
+        self.units = units
+
+    def __enter__(self) -> None:
+        self._original = service_module.CHUNK_BATCH_UNITS
+        service_module.CHUNK_BATCH_UNITS = self.units
+
+    def __exit__(self, *exc_info: object) -> None:
+        service_module.CHUNK_BATCH_UNITS = self._original
+
+
+def patch_for(variant: str, side: str) -> AbstractContextManager[None]:
+    if variant == "write-pattern":
+        return durable_writes() if side == "before" else nullcontext()
+    if variant == "chunk-batch":
+        return chunk_batch(1 if side == "before" else 16)
+    raise SystemExit(f"unsupported variant: {variant}")
+
+
 async def run_once(
     project: Path,
     *,
-    paired: bool,
+    variant: str,
+    side: str,
     sources: int,
     pages: int,
     chunk_size: int,
@@ -137,7 +160,7 @@ async def run_once(
     config = resolve_config(project)
 
     started = time.perf_counter()
-    with durable_writes() if paired else nullcontext():
+    with patch_for(variant, side):
         async with Client(
             create_vanilla_transport(config),
             name="write-pattern-benchmark",
@@ -195,32 +218,29 @@ async def compare(
     root: Path,
     *,
     label: str,
+    variant: str,
     reverse: bool,
     sources: int,
     pages: int,
     chunk_size: int,
     chunk_overlap: int,
 ) -> tuple[RunResult, RunResult]:
-    async def run(name: str, paired: bool) -> RunResult:
+    async def run(name: str, side: str) -> RunResult:
         return await run_once(
             root / name,
-            paired=paired,
+            variant=variant,
+            side=side,
             sources=sources,
             pages=pages,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
 
-    order = (
-        (("grouped", False), ("paired", True))
-        if reverse
-        else (("paired", True), ("grouped", False))
-    )
-    first = await run(f"{label}-{order[0][0]}", order[0][1])
-    second = await run(f"{label}-{order[1][0]}", order[1][1])
-    if reverse:
-        return second, first
-    return first, second
+    order = ("after", "before") if reverse else ("before", "after")
+    first = await run(f"{label}-{order[0]}", order[0])
+    second = await run(f"{label}-{order[1]}", order[1])
+    before, after = (second, first) if reverse else (first, second)
+    return before, after
 
 
 async def main() -> None:
@@ -239,6 +259,16 @@ async def main() -> None:
         default="both",
         help="The second run of a pair sees a warm cache, so both orders matter.",
     )
+    parser.add_argument(
+        "--variant",
+        choices=("write-pattern", "chunk-batch"),
+        default="write-pattern",
+        help=(
+            "write-pattern compares the pre-Step-2a per-file durability against "
+            "the grouped writes; chunk-batch compares one extraction unit per "
+            "caller call against CHUNK_BATCH_UNITS."
+        ),
+    )
     parser.add_argument("--sources", type=int, default=8)
     parser.add_argument("--pages", type=int, default=8)
     parser.add_argument("--chunk-size", type=int, default=384)
@@ -251,16 +281,17 @@ async def main() -> None:
     root.mkdir(parents=True)
 
     settings = {
+        "variant": arguments.variant,
         "sources": arguments.sources,
         "pages": arguments.pages,
         "chunk_size": arguments.chunk_size,
         "chunk_overlap": arguments.chunk_overlap,
     }
     if arguments.order in {"both", "pair-then-group"}:
-        print("=== paired then grouped ===")
+        print(f"=== {arguments.variant}: before then after ===")
         report(*await compare(root, label="forward", reverse=False, **settings))
     if arguments.order in {"both", "group-then-pair"}:
-        print("=== grouped then paired ===")
+        print(f"=== {arguments.variant}: after then before ===")
         report(*await compare(root, label="reverse", reverse=True, **settings))
 
     shutil.rmtree(root, ignore_errors=True)

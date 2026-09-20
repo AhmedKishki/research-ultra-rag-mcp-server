@@ -78,12 +78,13 @@ here.
 - [x] D9 — Text normalization: (a) keep NFC, (b) full NFKC, **(c) targeted fold
       for math-alphanumeric and presentation forms (recommended)**, (d) c with a
       separate folded search field.
-- [ ] D10 — Chunker batching versus the redo window: (a) one unit per call and
+- [x] D10 — Chunker batching versus the redo window: (a) one unit per call and
       drop the per-unit checkpoint write, **(b) batch 16 units per call
-      (recommended)**, (c) leave chunking as it is. Options and measured numbers
-      are in `PLAN.md` §13 D10. Batching is the only one that removes the round
-      trip, but it widens the chunking redo window from one unit to one bounded
-      batch, which conflicts with D2's wording.
+      (recommended)**, (c) leave chunking as it is. Chosen **B with 16**
+      (2026-09-19). Implementation and both measurement orders are in `PLAN.md`
+      §13 D10: chunking 25.56 → 15.88 s and 29.03 → 19.66 s on the same 64-unit
+      HDD corpus, wall clock 22–26% lower, chunk identity unchanged by test, and
+      a crash re-chunks at most the batch in flight.
 
 ## Step A — Dense backend: exact search over portable vectors (Option 4)
 
@@ -305,12 +306,13 @@ Gate:
 
 Priority: reduce work and durability cost **without** widening the resume
 granularity. Every unit must still leave a durable, resumable state behind; a
-crash must never redo more than one extraction unit.
+crash must never redo more than one bounded batch, and each batch size stays a
+documented constant (D10 amended the original "one extraction unit" wording).
 
-Status: **partly done.** The write-cost half is measured and fixed — see
-`PLAN.md` §10.5 and the two gate rows below. The remaining half is batching
-extraction units per chunker call, which the same measurement now justifies on
-its own numbers rather than on assumption.
+Status: **done** for the reference path. The write-cost half was measured and
+fixed in Step 2a (`PLAN.md` §10.5), and the chunking round-trip half is D10-B
+(batch of 16). The two items left open are Qdrant-backend-only and off the
+reference path, and `assembly` remains unproven as a gate row below.
 
 - [ ] Keep one `QdrantClient` open for the entire dense-index phase instead of
       one client per batch. **Re-scoped, not done:** Step A made the exact scan
@@ -320,13 +322,12 @@ its own numbers rather than on assumption.
 - [ ] Replace the fixed 64-point upload batch with a time-boxed batch, with a
       single explicit verification before activation. Same re-scoping as above:
       Qdrant backend only.
-- [ ] If extraction units are batched for the chunker, write each unit's durable
+- [x] If extraction units are batched for the chunker, write each unit's durable
       state before the batch call so a crash resumes at the last durable unit
-      rather than at the batch start. **Still open, and now the largest remaining
-      item:** after Step 2a, chunking is 26–36 s of the 67–74 s phase sum on the
-      HDD A/B corpus because it still pays one MCP round trip plus one checkpoint
-      per extraction unit. Raw chunks carry `doc_id` = extraction-unit id, so
-      batching is exact.
+      rather than at the batch start. Done as D10-B/16: one call carries up to 16
+      units, the returned chunks are split back into per-unit output files in
+      unit order, each unit's `state.json` still records its own progress before
+      the batch checkpoint, and a crash re-chunks only the batch in flight.
 - [x] Keep `checkpoint.json` at unit granularity, and make each write cheap by
       moving the immutable source inventory and digests into a write-once file so
       the per-unit write stays small and constant-size. **Resolved by measurement
@@ -358,13 +359,17 @@ its own numbers rather than on assumption.
 Gate:
 
 - [x] `chunking` is measurably cheaper on HDD: 63.59 → 26.26 s and 53.32 →
-      35.83 s in the two orders of the A/B (identical 64-unit corpora).
+      35.83 s in the two orders of the Step 2a A/B, then a further 25.56 →
+      15.88 s and 29.03 → 19.66 s from D10-B/16 on the identical corpus
+      (identical 64-unit corpora, chunk identity asserted unchanged).
 - [ ] `assembly` is measurably cheaper on HDD: **not proven.** It stayed below
       1.7 s in all four runs, so its change is inside the noise at this corpus
       size. Do not claim it without a larger corpus.
 - [x] Reuse counts and the `unchanged` path are identical: chunk counts matched
       exactly between variants, and the reuse/bounded-build tests pass.
-- [x] A crash mid-chunking redoes at most one extraction unit.
+- [x] A crash mid-chunking redoes at most one batch, and D10-B/16 is covered by
+      `test_hard_crash_mid_chunking_redoes_at_most_one_batch` plus the batching
+      equivalence test.
 
 ## Step 2b — Incremental Qdrant append (P1-11; only if D6 chooses option C)
 

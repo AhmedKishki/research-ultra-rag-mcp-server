@@ -115,6 +115,12 @@ MINIMUM_WORK_BUDGET_SECONDS = 10
 MAXIMUM_WORK_BUDGET_SECONDS = 300
 EMBEDDING_BATCH_SIZE = 64
 PDF_PAGE_BATCH_SIZE = 8
+# Extraction units sent to one chunker call. The gateway round trip and the
+# per-call commit dominate the chunking phase on slow storage, so several units
+# share a call; a returned chunk names its unit in `doc_id`, and each unit still
+# gets its own durable output file and keeps its own redo boundary within a
+# crash. Setting this to 1 restores one call and one commit per unit.
+CHUNK_BATCH_UNITS = 16
 DEFAULT_RETRIEVAL_METHOD = "hybrid"
 RETRIEVAL_METHODS = frozenset({"bm25", "dense", "hybrid"})
 RRF_K = 60
@@ -2760,12 +2766,17 @@ class ResearchService:
                             return self._in_progress_result(checkpoint)
                         continue
                     if chunked_count < len(units):
-                        input_path = artifact_root / "chunking" / "unit.jsonl"
+                        batch_units = units[
+                            chunked_count : chunked_count + CHUNK_BATCH_UNITS
+                        ]
+                        requested_ids = {str(unit["id"]) for unit in batch_units}
+                        chunking_root = artifact_root / "chunking"
+                        input_path = chunking_root / "unit.jsonl"
                         working_path = artifact_root / "raw-chunks.jsonl"
                         # A handoff file is rewritten before every call and
                         # deleted afterwards, so it needs visibility, not
                         # durability.
-                        write_handoff_jsonl(input_path, [units[chunked_count]])
+                        write_handoff_jsonl(input_path, batch_units)
                         working_path.unlink(missing_ok=True)
                         await self.ultrarag.chunk(
                             input_path,
@@ -2773,25 +2784,45 @@ class ResearchService:
                             chunk_size=chunk_size,
                             chunk_overlap=chunk_overlap,
                         )
-                        atomic_write_jsonl(
-                            artifact_root / "chunking" / f"{chunked_count:08d}.jsonl",
-                            read_jsonl(working_path),
-                            fsync_parent=False,
+                        raw_by_unit: defaultdict[str, list[dict[str, Any]]] = (
+                            defaultdict(list)
                         )
+                        for raw in read_jsonl(working_path):
+                            raw_by_unit[str(raw.get("doc_id") or "")].append(raw)
                         working_path.unlink(missing_ok=True)
                         input_path.unlink(missing_ok=True)
-                        state["chunked_unit_count"] = chunked_count + 1
-                        checkpoint["chunking_work_completed"] = (
-                            int(checkpoint.get("chunking_work_completed") or 0) + 1
-                        )
+                        unknown = [
+                            unit_id
+                            for unit_id in raw_by_unit
+                            if unit_id not in requested_ids
+                        ]
+                        if unknown:
+                            raise ResearchError(
+                                "UltraRAG returned an unknown extraction unit: "
+                                f"{unknown[0]}"
+                            )
+                        # Every unit keeps its own durable output file and its own
+                        # index, written in unit order, so the ordinal assignment
+                        # in `_enrich_chunks` and the resume boundary per unit are
+                        # the same as when each unit had its own call.
+                        for position, unit in enumerate(batch_units):
+                            atomic_write_jsonl(
+                                chunking_root / f"{chunked_count + position:08d}.jsonl",
+                                raw_by_unit.get(str(unit["id"]), []),
+                                fsync_parent=False,
+                            )
+                        state["chunked_unit_count"] = chunked_count + len(batch_units)
+                        checkpoint["chunking_work_completed"] = int(
+                            checkpoint.get("chunking_work_completed") or 0
+                        ) + len(batch_units)
                         atomic_write_json(
                             artifact_root / "state.json",
                             state,
                             fsync_parent=False,
                         )
-                        # Both durable artifacts are on disk before the
-                        # checkpoint that claims this unit is complete.
-                        fsync_directories([artifact_root / "chunking", artifact_root])
+                        # The whole batch is on disk before the checkpoint that
+                        # claims it is complete.
+                        fsync_directories([chunking_root, artifact_root])
                         self._add_phase_time(
                             checkpoint,
                             "chunking",

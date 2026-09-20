@@ -2434,7 +2434,10 @@ async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
     assert [unit["locator"]["page"] for unit in units] == list(range(1, 10))
 
 
-def test_hard_crash_mid_chunking_redoes_at_most_one_unit(project: Path) -> None:
+def test_hard_crash_mid_chunking_redoes_at_most_one_batch(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def exercise() -> None:
         write_pdf(
             project / "sources" / "evidence.pdf",
@@ -2444,6 +2447,9 @@ def test_hard_crash_mid_chunking_redoes_at_most_one_unit(project: Path) -> None:
                 "Gamma copper evidence.",
             ],
         )
+        # Two units share a call, so the first batch commits and the second one
+        # dies mid-flight.
+        monkeypatch.setattr(service_module, "CHUNK_BATCH_UNITS", 2)
         config = resolve_config(project, vanilla_executable=sys.executable)
         crashing = CrashDuringChunkUltraRAG(fail_on_call=2)
         service = ResearchService(  # type: ignore[arg-type]
@@ -2455,19 +2461,20 @@ def test_hard_crash_mid_chunking_redoes_at_most_one_unit(project: Path) -> None:
         with pytest.raises(SimulatedProcessExit):
             await service.ingest(chunk_size=50, chunk_overlap=10)
 
-        # The unit chunked before the crash is durable; the crashing unit is not.
+        # The first batch of two units is durable; the failing batch left no
+        # durable state behind.
         staging_root = next(config.staging_root.iterdir())
         state = json.loads(
             next((staging_root / "work" / "sources").glob("*/state.json")).read_text(
                 encoding="utf-8"
             )
         )
-        assert state["chunked_unit_count"] == 1
-        # One unit was chunked and committed; the crashing call is the second
-        # one and left no durable output behind.
+        assert state["chunked_unit_count"] == 2
         assert len(crashing.requested_unit_ids) == 2
-        assert len(crashing.requested_unit_ids[0]) == 1
-        committed_unit_id = crashing.requested_unit_ids[0][0]
+        committed_ids = set(crashing.requested_unit_ids[0])
+        failed_ids = set(crashing.requested_unit_ids[1])
+        assert len(committed_ids) == 2
+        assert committed_ids.isdisjoint(failed_ids)
 
         resumed_ultrarag = CrashDuringChunkUltraRAG()
         resumed = ResearchService(  # type: ignore[arg-type]
@@ -2479,18 +2486,62 @@ def test_hard_crash_mid_chunking_redoes_at_most_one_unit(project: Path) -> None:
 
         assert ready["status"] == "ready"
         assert ready["resumed"] is True
-        requested = [
+        requested = {
             unit_id for call in resumed_ultrarag.requested_unit_ids for unit_id in call
-        ]
-        # Only the unfinished units are re-chunked: the committed unit is never
-        # sent to the chunker again, so a crash never redoes more than one unit.
-        assert committed_unit_id not in requested
-        assert requested
+        }
+        # Only the unfinished units are re-chunked: a crash mid-chunking redoes
+        # at most the batch that was in flight, never a committed one.
+        assert requested == failed_ids
         assert ready["chunk_count"] == 3
         units = read_jsonl(
             Path(ready["generation_root"]) / "corpus/extracted-units.jsonl"
         )
         assert len(units) == 3
+
+    asyncio.run(exercise())
+
+
+def test_chunker_batching_does_not_change_chunk_identity(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        # Distinct wording per page keeps the extraction from treating repeated
+        # text as a removable margin block.
+        write_pdf(
+            project / "sources" / "evidence.pdf",
+            [
+                f"Page {index} discusses {word} evidence and value."
+                for index, word in enumerate(
+                    ("cobalt", "amber", "copper", "lithium", "silicon")
+                )
+            ],
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+
+        async def build(units_per_call: int) -> Path:
+            monkeypatch.setattr(service_module, "CHUNK_BATCH_UNITS", units_per_call)
+            service = ResearchService(  # type: ignore[arg-type]
+                config,
+                FakeUltraRAG(),
+                dense=FakeDenseBackend(),
+            )
+            result = await service.ingest(
+                chunk_size=50,
+                chunk_overlap=10,
+                force_recompute=True,
+            )
+            assert result["status"] == "ready"
+            return Path(result["generation_root"])
+
+        batched = read_jsonl((await build(16)) / "chunks/chunks.jsonl")
+        per_unit = read_jsonl((await build(1)) / "chunks/chunks.jsonl")
+
+        assert batched and len(batched) == len(per_unit)
+        for field in ("chunk_id", "contents", "document_chunk_index", "unit_id"):
+            assert [chunk[field] for chunk in per_unit] == [
+                chunk[field] for chunk in batched
+            ]
 
     asyncio.run(exercise())
 

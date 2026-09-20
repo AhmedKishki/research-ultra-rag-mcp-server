@@ -1287,8 +1287,8 @@ when a moved project loses the mount.
 
 ### D10 — Chunker batching versus the redo window
 
-Chosen: **recording before asking** — this is the one place where Step 2's goal
-collides with D2, so it is the user's call rather than mine.
+Chosen: **B with a batch of 16** (2026-09-19) — several extraction units share one
+chunker call, and a crash redoes at most the batch that was in flight.
 
 Context: after Step 2a, chunking is the largest phase left — 26–36 s of a 67–74 s
 phase sum on the HDD A/B corpus — because it still pays one gateway round trip
@@ -1323,6 +1323,39 @@ exactly, so batching does not touch retrieval.
 
 Recommendation: **B**, with the batch size as one documented constant so setting
 it to 1 restores today's behaviour exactly. Reversible: yes, trivially.
+
+Outcome (2026-09-19): implemented as chosen with `CHUNK_BATCH_UNITS = 16`. Each
+returned chunk names its unit in `doc_id`, so the batch is split back into the
+same per-unit output files, in unit order, that a one-unit call produced; a unit
+the chunker did not mention gets an empty file, an unknown `doc_id` still fails
+the build with the same error the unbatched path raised, and the per-unit redo
+boundary inside a crash stays intact because `state.json` is still written before
+the batch checkpoint. The `AGENTS.md` granularity rule now reads "one bounded
+batch" with the batch sizes named, and `PDF_PAGE_BATCH_SIZE` and
+`EMBEDDING_BATCH_SIZE` were already bounded batches of the same kind.
+
+Equivalence is enforced by test, not by argument:
+`test_chunker_batching_does_not_change_chunk_identity` builds the same corpus with
+a batch of 16 and a batch of 1 and asserts identical chunk IDs, contents,
+ordinals, and unit ids in identical order, and
+`test_hard_crash_mid_chunking_redoes_at_most_one_batch` asserts that a crash
+mid-batch re-chunks only the units of the batch that was in flight.
+
+Measured on an identical 64-unit corpus on the HDD with the real gateway, both
+orders again, as `scripts/benchmark_write_pattern.py --variant chunk-batch`:
+
+| Phase | batch 1 → batch 16 | batch 16 → batch 1 |
+|---|---|---|
+| chunking | 25.56 → 15.88 s (−9.69) | 19.66 → 29.03 s (−9.36) |
+| phase sum | 64.75 → 53.61 s | 59.06 → 73.09 s |
+| wall clock | 117.66 → 86.82 s | 105.84 → 132.03 s (−26.20) |
+
+The saving is real and consistent but **smaller than the per-unit I/O breakdown
+predicted** (~1.5× on the phase, not the ~3.8× above). What batching removes is
+the 56 surplus round trips and the per-unit state and checkpoint writes; what
+remains is the chunker's own tokenizer work, which is device-independent, plus
+the per-unit output files that keep each unit's durable boundary. The estimate in
+option B was wrong; the measurement is the record.
 
 ### D6 — Dense backend
 

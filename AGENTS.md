@@ -409,9 +409,13 @@ Update tests and documentation when changing them.
   example chunk IDs in the search response, and record corpus-level withheld
   counts and reasons in the generation build metrics that `status` returns.
 - Keep checkpoints durable at the finest practical granularity: one extracted
-  document, one PDF scan batch, one extraction unit, one embedding batch, and
-  one index batch. Reduce the cost of each durable write rather than widening the
-  resume granularity, so a crash never redoes more than one unit.
+  document, one PDF scan batch, one extraction-unit batch, one embedding batch,
+  and one index batch. Reduce the cost of each durable write rather than widening
+  the resume granularity, so a crash never redoes more than one bounded batch.
+  Each phase's batch size is a documented constant — `PDF_PAGE_BATCH_SIZE`,
+  `CHUNK_BATCH_UNITS`, `EMBEDDING_BATCH_SIZE` — and it must stay bounded and
+  small enough that redoing one batch is cheap. Never replace a bounded batch
+  with a whole-phase commit.
 - Exclude every nonempty chunk that contains no Unicode alphanumeric content,
   both while ingesting and at retrieval time for older generations. Text,
   numbers, and formulas containing at least one letter or digit are not

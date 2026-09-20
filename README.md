@@ -611,7 +611,8 @@ format.
 Changed material is recomputed. The server always reconstructs complete new
 BM25 and dense indexes for a changed generation and atomically switches the
 pointer only after verification. Source hashes, fixed eight-page PDF
-scan/extraction batches, EPUB spine sections, extraction-unit chunking,
+scan/extraction batches, EPUB spine sections, chunking batches of up to 16
+extraction units (each unit keeps its own durable output and redo boundary),
 64-passage embedding batches, and 64-point dense uploads commit restartable
 atomic units; UltraRAG BM25 is a restartable finalization step. Every source is
 hashed again before activation.
