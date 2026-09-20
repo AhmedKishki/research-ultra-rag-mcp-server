@@ -28,6 +28,7 @@ The open work on this server. Everything listed here is unimplemented. Current b
 - **Align the UI's rerank control with the server default.** The pinned workspace's checkbox starts unticked and sends an explicit `rerank=false`, so UI searches stay unranked while agent searches rerank. Changing it belongs in `ui-ultra-rag-mcp`, followed by a pin bump here.
 - **Surface the retained-generation inventory in the UI.** `status` reports `generations` and `retained_generation_bytes`; the pinned status view renders none of them.
 - **Warn about a runtime-root mismatch in the standalone UI launcher,** which starts its own server and does not read an MCP client's configuration, so it can silently show a different generation than the agent. The server-hosted UI (`--ui-port`) is unaffected.
+- **Rebind or clear a lost `--ui-port` claim.** `EmbeddedUi.start` probes the port and then hands it to uvicorn, so two simultaneous server starts can both pass the probe: on a lost race uvicorn 0.53.0 exits the UI task through `sys.exit(STARTUP_FAILURE)` on the bind error, which leaves `ui_ready: false` with `ui_error: null`, and the documented reason is lost. A failed probe is never re-evaluated either, so once the winning instance exits the port stays unserved while `ui_error` still reports it as taken. Reproduce by starting two server instances simultaneously, comparing `status`'s `ui_ready` and `ui_error` against `ss -ltnp | grep <port>`, and then terminating the winner while the loser is still running.
 
 ## Verification
 
