@@ -1285,6 +1285,45 @@ for the default root. `status` reports the effective root as `runtime_root`
 alternative, with its limitation stated: the server cannot detect it or warn
 when a moved project loses the mount.
 
+### D10 — Chunker batching versus the redo window
+
+Chosen: **recording before asking** — this is the one place where Step 2's goal
+collides with D2, so it is the user's call rather than mine.
+
+Context: after Step 2a, chunking is the largest phase left — 26–36 s of a 67–74 s
+phase sum on the HDD A/B corpus — because it still pays one gateway round trip
+plus one checkpoint per extraction unit. Per unit that is roughly 34 ms for the
+chunk output, 34 ms for `state.json`, 34 ms plus a 57 ms directory fsync for the
+checkpoint, a now-free handoff write, and the round trip; the measured total is
+0.41–0.56 s per unit.
+
+Feasibility is verified, not assumed. A probe against the real vanilla gateway
+compared one call per unit with one call for three units, with units long enough
+to cross a chunk boundary: the per-unit chunk text and count were identical in
+both modes, chunks were emitted in unit order, and no `doc_id` was unknown. Raw
+chunks already carry `doc_id` = extraction-unit id, and the per-unit output files
+and chunk identities (`sha256(unit_id <NUL> ordinal <NUL> text)`) can be reconstructed
+exactly, so batching does not touch retrieval.
+
+- **A. Keep one unit per chunker call; stop writing the checkpoint per unit.**
+  *Pros:* redo stays exactly one unit, and it is a small contained edit.
+  *Cons:* saves only the ~91 ms checkpoint per unit (~26 s → ~20 s on the A/B
+  corpus) and leaves the round trip and the per-unit state write in place.
+- **B. Batch 16 extraction units per call — recommended.** *Pros:* measured
+  ≈6.4 s per 16-unit batch unbatched versus ≈0.9 s batched, removing the round
+  trip that dominates and the per-unit state and checkpoint writes; per-unit
+  durable state, chunk identity, and the final merge are unchanged. *Cons:* a
+  hard crash redoes up to one batch (≤16 units, ≈1–6 s of chunking CPU) instead
+  of one unit, so D2's "unit-level" wording and the `AGENTS.md` rule have to
+  become "one bounded batch per phase" — which is already the reality for the
+  8-page PDF scan batch and the 64-chunk embedding batch.
+- **C. Leave chunking as it is.** *Pros:* nothing reopened, zero risk.
+  *Cons:* the largest remaining measured cost on the reference HDD workload
+  stays, and it is paid on every build.
+
+Recommendation: **B**, with the batch size as one documented constant so setting
+it to 1 restores today's behaviour exactly. Reversible: yes, trivially.
+
 ### D6 — Dense backend
 
 Chosen: **B** (2026-09-19) — exact scan by default, `LocalQdrantDenseBackend` selectable above a documented threshold.

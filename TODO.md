@@ -78,6 +78,12 @@ here.
 - [x] D9 — Text normalization: (a) keep NFC, (b) full NFKC, **(c) targeted fold
       for math-alphanumeric and presentation forms (recommended)**, (d) c with a
       separate folded search field.
+- [ ] D10 — Chunker batching versus the redo window: (a) one unit per call and
+      drop the per-unit checkpoint write, **(b) batch 16 units per call
+      (recommended)**, (c) leave chunking as it is. Options and measured numbers
+      are in `PLAN.md` §13 D10. Batching is the only one that removes the round
+      trip, but it widens the chunking redo window from one unit to one bounded
+      batch, which conflicts with D2's wording.
 
 ## Step A — Dense backend: exact search over portable vectors (Option 4)
 
