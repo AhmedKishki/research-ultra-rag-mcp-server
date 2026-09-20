@@ -15,7 +15,7 @@ Plain-language summary of every capability, and why it is there:
 - **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
 - **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, per-field provenance and warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage.
-- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and an optional CPU reranker that reorders a candidate set. Metadata filters narrow results by category, keyword, or document.
+- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and an optional CPU reranker that reorders a candidate set. Metadata filters narrow results by category, keyword, or document. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
@@ -176,6 +176,12 @@ Search can legitimately return fewer results than `top_k`, including none, when 
 `result_view="passages"` (the default) is the plain global ranking.
 
 `result_view="references"` is for when one prolific source would otherwise dominate. It walks the same relevance-gated candidates but admits at most `passages_per_reference` passages from each stable `source_id`, keeping `top_k` as the total number of passages. The response reports how many references it returned and how many were available. It does not merge editions by title, DOI, or filename. Two flags tell you why a result set may look short: `relevance_limited` means the candidate pool ran short, and `grouping_limited` means the per-reference cap stopped the view from filling its passage budget.
+
+### Checking freshness per query
+
+By default a search also reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked.
+
+Pass `include_staleness=false` when a session has already checked `status` and only needs evidence. The response then reports `stale=null` and `staleness_checked=false`, which means "not checked", not "fresh". Everything else about the search is unchanged, including which hits are returned.
 
 ### What makes a generation stale
 
@@ -349,7 +355,7 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 |---|---|
 | `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, and build metrics. Read-only. |
 | `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. |
-| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval, metadata filters, optional reranking, and the passage or reference view. |
+| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval, metadata filters, optional reranking, and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its neighbors and provenance. |
 | `set_source_metadata` | Saves a reviewed metadata correction for one source. Applies immediately to an indexed source. |

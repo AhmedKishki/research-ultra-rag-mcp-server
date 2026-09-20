@@ -13,7 +13,11 @@ import pytest
 from conftest import write_epub, write_pdf
 
 import research_ultra_rag_mcp.service as service_module
-from research_ultra_rag_mcp.config import ConfigurationError, resolve_config
+from research_ultra_rag_mcp.config import (
+    ConfigurationError,
+    ResearchConfig,
+    resolve_config,
+)
 from research_ultra_rag_mcp.dense import (
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
@@ -745,6 +749,61 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
 
 def test_research_generation_and_structured_search(project: Path) -> None:
     asyncio.run(_assert_research_generation_and_structured_search(project))
+
+
+async def _assert_search_can_skip_the_staleness_walk(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = project / "sources" / "article.pdf"
+    write_pdf(source, ["Cobalt evidence about labour."], title="Research Article")
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    await service.ingest(chunk_size=100, chunk_overlap=10)
+
+    checked = await service.search("cobalt labour", top_k=1)
+    assert checked["staleness_checked"] is True
+    assert checked["stale"] is False
+
+    write_pdf(project / "sources" / "added.pdf", ["Another source."])
+    stale = await service.search("cobalt labour", top_k=1)
+    assert stale["stale"] is True
+    unchecked = await service.search("cobalt labour", top_k=1, include_staleness=False)
+    assert unchecked["staleness_checked"] is False
+    assert unchecked["stale"] is None
+    assert unchecked["hits"]
+    assert unchecked["generation_id"] == stale["generation_id"]
+
+    def unexpected_walk(_config: ResearchConfig) -> None:
+        raise AssertionError("search walked the source tree")
+
+    monkeypatch.setattr(service_module, "scan_sources", unexpected_walk)
+    with pytest.raises(AssertionError):
+        await service.search("cobalt labour", top_k=1)
+    no_walk = await service.search("cobalt labour", top_k=1, include_staleness=False)
+    assert no_walk["hits"]
+    assert no_walk["stale"] is None
+
+    monkeypatch.setattr(
+        service_module,
+        "RETRIEVAL_POLICY_FINGERPRINT",
+        "patched-retrieval-policy",
+    )
+    upgraded = await service.search("cobalt labour", top_k=1, include_staleness=False)
+    assert upgraded["generation_upgrade_required"] is True
+    assert upgraded["staleness_checked"] is False
+    assert upgraded["stale"] is None
+
+
+def test_search_can_skip_the_staleness_walk(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(_assert_search_can_skip_the_staleness_walk(project, monkeypatch))
 
 
 async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:

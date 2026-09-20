@@ -162,8 +162,8 @@ The plan predicted a larger gain (~3.8×); the measurement showed ~1.5×. The di
 ### Step 3 — per-query work (P1-4, P1-5)
 **Purpose.** Every query rescanned candidate text to decide whether a chunk was usable, at about 0.55 ms per candidate. **Done.** That verdict is a property of the chunk, not the query, so it is now computed once when the artifact lookup is built and stored as a small bitmask per chunk. The candidate gate measured 92.1 ms → 9.0 ms for 200 candidates (10.3×), with a fallback that recomputes the verdict for any lookup that predates the column. The query-dependent token check stays per query and is memoised, which also removed the widening loop's repeated work. `search` now hands its already-parsed manifest to the status summary instead of making it re-read one.
 
-### Step 4 — remove per-request work that scales with the corpus (planned)
-**Purpose.** `search` still walks the source tree and materialises some per-corpus structures on every call. **To do.** Cache the staleness verdict behind a cheap directory signature with an opt-out (D3), push dense filtering into the backend, reuse SQLite connections, and cache the effective-document map per manifest and metadata revision. **How we will know it worked.** An integration test asserting that `search` performs no source-tree walk when staleness was not requested.
+### Step 4 — per-request work (P1-6, D3)
+**Purpose.** Every query re-compared the source directory with the generation to decide whether it was stale, a cost that grows with the collection rather than with the question. **Done.** D3 chose an explicit opt-out over a cache: `search` now takes `include_staleness` (default `true`), and when it is `false` the source-tree walk is skipped entirely and the response reports `stale=null` with `staleness_checked=false` rather than implying freshness. Re-measured on the reference project, the walk is 9.69 ms for 55 sources, so the opt-out is worth about 0.18 ms per source — roughly 176 ms per query at 1,000 sources. Upgrade reporting was split out into a manifest-only computation, so a caller that skips the walk still learns that the generation needs rebuilding. Three further items from the original list were dropped on measurement; section 6 has the numbers.
 
 ### Step 5 — decompose the ingestion logic (planned)
 **Purpose.** The resumable ingestion loop is one very large method, which makes review risky. **To do.** Split it into per-phase handlers and turn the linter's complexity check back on.
@@ -299,6 +299,25 @@ Measured on 200 real chunk texts, doing the work a query used to do per candidat
 The verdict is stored as a bitmask per chunk, computed by one shared function that both the build and the query-time fallback use, so a rejection decision and the counters that report it cannot drift. Reason codes are recomputed only for a chunk the verdict flags as corrupt, because the response discloses them.
 
 Cross-check on the real corpus after the change: the sidecar holds 8,102 verdicts — 8,073 healthy, 25 corrupt, 4 extraction artifacts — and the 25 matches the withheld-chunk count measured independently in Step 1b.
+
+### 10.8 Per-request overhead: what was left alone, and why
+
+Step 4 also proposed three smaller changes. Measuring them first is what removed them from the plan.
+
+Measured on the reference project (53 indexed documents, 55 sources, 8,102 chunks), medians:
+
+| Operation | Cost |
+|---|---|
+| source-tree walk (`scan_sources`, the staleness check) | **9.69 ms** for 55 sources |
+| rebuilding the effective-document map | 0.615 ms |
+| fingerprinting the metadata that would key a cached map | 0.013 ms |
+| opening one artifact-lookup SQLite connection | 0.094 ms |
+| artifact lookup built from scratch, plus one count query | 1.32 ms |
+| the same count query on a warm instance | 0.319 ms |
+
+**What it means.** The staleness walk is an order of magnitude larger than everything else in a query's fixed overhead, which is why it was the only one worth a public flag. The document map and connection reuse are each worth fractions of a millisecond at this size: caching the map would save ~0.6 ms per query while adding cross-request state that has to be invalidated correctly, and reusing connections would save ~0.09 ms per call while requiring one SQLite connection to be reachable from whichever thread serves the next call. Neither is a good trade against a correctness risk, and at the scale where they would matter — tens of thousands of documents — parsing the manifest itself would dominate both, so the real answer there is a persistent document-metadata index, not a per-process cache.
+
+A cached staleness verdict behind a directory signature was rejected for a different reason: it would be wrong. The walk compares each source's recorded size and modification time, and a directory's own modification time does not change when a file inside it is replaced in place, so a signature-keyed cache would report a changed corpus as fresh. An explicit opt-out lets the caller choose; a cache would have made that choice for them, silently.
 
 ## 7. Deliberate limitations, and claims we are not making
 

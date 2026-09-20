@@ -85,6 +85,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "document_ids",
                 "retrieval_method",
                 "rerank",
+                "include_staleness",
             },
             "list_sources": {"categories", "keywords"},
             "get_passage": {"chunk_id", "context_chunks"},
@@ -139,6 +140,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert passages_per_reference["default"] == 2
         assert passages_per_reference["minimum"] == 1
         assert passages_per_reference["maximum"] == 5
+        assert search_properties["include_staleness"]["default"] is True
         work_budget = tools["ingest"].inputSchema["properties"]["work_budget_seconds"]
         assert work_budget["default"] == 45
         assert work_budget["minimum"] == 10
@@ -320,6 +322,18 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             dense_result.data["hits"][0]["component_scores"]["dense_cosine_similarity"]
             is not None
         )
+
+        unchecked = await client.call_tool(
+            "search",
+            {
+                "query": "cobalt heron amber marsh labour ecology",
+                "top_k": 1,
+                "include_staleness": False,
+            },
+        )
+        assert unchecked.data["staleness_checked"] is False
+        assert unchecked.data["stale"] is None
+        assert unchecked.data["hits"][0]["chunk_id"] == hit["chunk_id"]
 
         filtered_out = await client.call_tool(
             "search",

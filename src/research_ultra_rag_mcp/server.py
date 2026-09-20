@@ -178,6 +178,17 @@ Rerank: TypeAlias = Annotated[
         )
     ),
 ]
+IncludeStaleness: TypeAlias = Annotated[
+    bool,
+    Field(
+        description=(
+            "Whether to check whether the selected generation is stale. "
+            "Checking walks the source directory, so its cost grows with the "
+            "collection. When false, the response reports stale=null and "
+            "staleness_checked=false instead of a verdict."
+        )
+    ),
+]
 ForceRecompute: TypeAlias = Annotated[
     bool,
     Field(
@@ -404,6 +415,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         document_ids: DocumentIdFilter = None,
         retrieval_method: RetrievalMethod = "hybrid",
         rerank: Rerank = False,
+        include_staleness: IncludeStaleness = True,
     ) -> dict[str, Any]:
         """Search the current generation and return cleaned semantic evidence.
 
@@ -413,7 +425,9 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         local model. The default passage view preserves the flat ranking. The
         reference view groups selected passages by source and caps passages from
         each reference while top_k remains the total passage budget. Results may
-        be fewer than top_k when relevance gates reject weak candidates. Returned
+        be fewer than top_k when relevance gates reject weak candidates. Set
+        include_staleness=false to skip the source-directory walk that produces
+        the stale verdict; stale is then null. Returned
         text is not safe for direct quotation; use the original source path and
         locator.
         """
@@ -429,6 +443,7 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
                 document_ids=document_ids,
                 retrieval_method=retrieval_method,
                 rerank=rerank,
+                include_staleness=include_staleness,
             )
         )
 

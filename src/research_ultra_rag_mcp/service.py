@@ -1704,6 +1704,53 @@ class ResearchService:
         self._write_checkpoint(root, checkpoint)
         return root, checkpoint
 
+    def _generation_upgrade_reasons(self, manifest: dict[str, Any]) -> list[str]:
+        """Return the policy mismatches a generation has, without touching disk.
+
+        This is the part of a status report that depends only on the manifest and
+        the current policy constants, so a caller that skipped the staleness check
+        can still report whether the generation needs an upgrade.
+        """
+
+        retrieval = manifest.get("retrieval", {})
+        dense_policy = retrieval.get("dense", {})
+        fusion_policy = retrieval.get("fusion", {})
+        relevance_policy = retrieval.get("relevance_gates", {})
+        reasons: list[str] = []
+        if int(manifest.get("schema_version") or 0) != SCHEMA_VERSION:
+            reasons.append("generation_schema")
+        if (
+            int(manifest.get("extraction_policy_version") or 0)
+            != EXTRACTION_POLICY_VERSION
+        ):
+            reasons.append("layout_extraction")
+        if int(manifest.get("cleaning_policy_version") or 0) != CLEANING_POLICY_VERSION:
+            reasons.append("semantic_cleaning")
+        if int(manifest.get("artifact_policy_version") or 0) != ARTIFACT_POLICY_VERSION:
+            reasons.append("generation_artifacts")
+        if manifest.get("metadata_storage_policy") != METADATA_STORAGE_POLICY:
+            reasons.append("metadata_storage")
+        if manifest.get("project_id") != self.config.project_id:
+            reasons.append("project_identity")
+        if (
+            dense_policy.get("embedding_model") != EMBEDDING_MODEL
+            or dense_policy.get("embedding_model_revision") != EMBEDDING_MODEL_REVISION
+            or dense_policy.get("embedding_dimension") != EMBEDDING_DIMENSION
+        ):
+            reasons.append("embedding_model")
+        if (
+            manifest.get("retrieval_policy_fingerprint") != RETRIEVAL_POLICY_FINGERPRINT
+            or fusion_policy.get("method") != "weighted_reciprocal_rank_fusion"
+            or fusion_policy.get("rrf_k") != RRF_K
+            or fusion_policy.get("bm25_weight") != BM25_RRF_WEIGHT
+            or fusion_policy.get("dense_weight") != DENSE_RRF_WEIGHT
+            or relevance_policy.get("dense_minimum_cosine_similarity")
+            != DENSE_MINIMUM_COSINE_SIMILARITY
+            or relevance_policy.get("bm25_requires_query_token_overlap") is not True
+        ):
+            reasons.append("retrieval_policy")
+        return reasons
+
     def _status(
         self,
         current: tuple[Path, dict[str, Any]] | None = None,
@@ -1816,42 +1863,7 @@ class ResearchService:
         retrieval = manifest.get("retrieval", {})
         available_methods = retrieval.get("available_methods") or ["bm25"]
         hybrid_ready = "hybrid" in available_methods
-        upgrade_reasons: list[str] = []
-        if int(manifest.get("schema_version") or 0) != SCHEMA_VERSION:
-            upgrade_reasons.append("generation_schema")
-        if (
-            int(manifest.get("extraction_policy_version") or 0)
-            != EXTRACTION_POLICY_VERSION
-        ):
-            upgrade_reasons.append("layout_extraction")
-        if int(manifest.get("cleaning_policy_version") or 0) != CLEANING_POLICY_VERSION:
-            upgrade_reasons.append("semantic_cleaning")
-        if int(manifest.get("artifact_policy_version") or 0) != ARTIFACT_POLICY_VERSION:
-            upgrade_reasons.append("generation_artifacts")
-        if manifest.get("metadata_storage_policy") != METADATA_STORAGE_POLICY:
-            upgrade_reasons.append("metadata_storage")
-        if manifest.get("project_id") != self.config.project_id:
-            upgrade_reasons.append("project_identity")
-        dense_policy = retrieval.get("dense", {})
-        fusion_policy = retrieval.get("fusion", {})
-        relevance_policy = retrieval.get("relevance_gates", {})
-        if (
-            dense_policy.get("embedding_model") != EMBEDDING_MODEL
-            or dense_policy.get("embedding_model_revision") != EMBEDDING_MODEL_REVISION
-            or dense_policy.get("embedding_dimension") != EMBEDDING_DIMENSION
-        ):
-            upgrade_reasons.append("embedding_model")
-        if (
-            manifest.get("retrieval_policy_fingerprint") != RETRIEVAL_POLICY_FINGERPRINT
-            or fusion_policy.get("method") != "weighted_reciprocal_rank_fusion"
-            or fusion_policy.get("rrf_k") != RRF_K
-            or fusion_policy.get("bm25_weight") != BM25_RRF_WEIGHT
-            or fusion_policy.get("dense_weight") != DENSE_RRF_WEIGHT
-            or relevance_policy.get("dense_minimum_cosine_similarity")
-            != DENSE_MINIMUM_COSINE_SIMILARITY
-            or relevance_policy.get("bm25_requires_query_token_overlap") is not True
-        ):
-            upgrade_reasons.append("retrieval_policy")
+        upgrade_reasons = self._generation_upgrade_reasons(manifest)
         indexed_source_paths = {
             str(document.get("source_relative_path") or "")
             for document in manifest.get("documents", [])
@@ -4161,6 +4173,7 @@ class ResearchService:
         rerank: bool = False,
         result_view: str = "passages",
         passages_per_reference: int = 2,
+        include_staleness: bool = True,
     ) -> dict[str, Any]:
         query = query.strip()
         if not query:
@@ -4521,12 +4534,22 @@ class ResearchService:
                 candidate_count,
             )
 
-            status = await asyncio.to_thread(self._status, current)
+            if include_staleness:
+                # Walking the source tree is the only per-request work here that
+                # grows with the collection, so a caller that does not need a
+                # freshness verdict can skip it.
+                status = await asyncio.to_thread(self._status, current)
+                stale: bool | None = status["stale"]
+                upgrade_reasons = list(status["upgrade_reasons"])
+            else:
+                stale = None
+                upgrade_reasons = self._generation_upgrade_reasons(manifest)
             return {
                 "query": query,
                 "generation_id": manifest["generation_id"],
-                "stale": status["stale"],
-                "generation_upgrade_required": status["generation_upgrade_required"],
+                "stale": stale,
+                "staleness_checked": include_staleness,
+                "generation_upgrade_required": bool(upgrade_reasons),
                 "excluded_source_count": len(exclusions),
                 "retrieval_method": retrieval_method,
                 "reranked": rerank,

@@ -66,6 +66,7 @@ Second, **pinning a small upstream surface is a feature, not a gap**. It means a
 | Optional reranking (added here) | A CPU cross-encoder reorders up to 50 candidates, opt-in. | A second pass when the candidate set is close. |
 | Relevance gates with abstention (added here) | Weak candidates are dropped, so a search can legitimately return fewer results than `top_k`, including none, and the response explains which gate limited it. | An honest empty answer beats a confident irrelevant one. |
 | Precomputed usability verdict (added here) | The decision "is this candidate structurally unusable?" is computed once when the lookup is built and stored per chunk. | The per-query gate measured 10.3× cheaper without changing a single rejection decision. |
+| Per-query freshness opt-out (added here) | A search re-compares the source directory with the generation unless the caller passes `include_staleness=false`; the response then reports `stale=null` and `staleness_checked=false` instead of a verdict. | That comparison is the only per-query cost that grows with the collection (9.69 ms for 55 sources), so a follow-up search in a live session can skip it. Upgrade reporting is unaffected, because it depends only on the manifest. |
 
 ### Project model, review, and durability
 
@@ -100,6 +101,7 @@ These are choices, not missing pieces. Each one would change what the server is:
 - **It is not multilingual.** Embeddings and the text-health policy are English-oriented, and non-English-primary corpora are outside the design envelope. This is stated in `README.md` and in `PLAN.md`.
 - **It does not require an external service.** No hosted embedding API, no vector database server, no credentials. Models are downloaded once and cached locally.
 - **It exposes no MCP resources.** Its surface is tools, with the local UI covering human inspection.
+- **It does not cache freshness.** A directory signature cannot see a source replaced in place, so a cached verdict could call a changed corpus current. Callers opt out of the check explicitly instead, and the response says when freshness was not checked.
 
 ## 4. Planned additions
 
@@ -120,8 +122,8 @@ Everything here is deferred work, recorded in `ROADMAP.md` and `TODO.md`. None o
 
 ### Per-request efficiency
 
-- Caching the staleness verdict behind a cheap directory signature, with an `include_staleness=false` opt-out for `search` so a caller can skip the source-tree walk.
-- Pushing category and keyword filtering into the dense backend instead of materialising document-ID lists per query, plus SQLite connection reuse and a cached document map.
+- A persistent document-metadata index, which is what a corpus of tens of thousands of sources would need before per-process caches of the document map or the staleness verdict are worth their invalidation risk.
+- Pushing category and keyword filtering into the embedded dense index. This is only relevant above 200,000 chunks, where that index is used.
 
 ### Citations and quotation
 
