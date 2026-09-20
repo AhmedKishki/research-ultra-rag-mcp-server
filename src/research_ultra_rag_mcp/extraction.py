@@ -318,6 +318,31 @@ def text_health_reasons(value: str) -> list[str]:
     return reasons
 
 
+# Retrieval rejects a candidate for exactly two reasons, and both are properties
+# of the chunk text plus its stored quality flags rather than of the query. They
+# are therefore computed once when the artifact lookup is built and stored as a
+# bitmask, which removes the per-query text scans from the candidate gate.
+CHUNK_FLAG_CORRUPT_TEXT = 1
+CHUNK_FLAG_EXTRACTION_ARTIFACT = 2
+
+
+def chunk_health_flags(text: str, *, quality_flags: object = None) -> int:
+    """Return the precomputed retrieval-rejection verdict for one chunk.
+
+    A chunk is an extraction artifact when it carries that quality flag or when
+    it has no searchable alphanumeric content, which mirrors the query-time
+    check exactly so the rejection counters cannot change.
+    """
+
+    flags = 0
+    if text_corruption_reasons(text):
+        flags |= CHUNK_FLAG_CORRUPT_TEXT
+    stored = {str(item) for item in quality_flags or ()}
+    if "extraction_artifact" in stored or not has_searchable_alphanumeric_content(text):
+        flags |= CHUNK_FLAG_EXTRACTION_ARTIFACT
+    return flags
+
+
 def _normalize_text_list(values: list[Any]) -> list[str]:
     return [
         normalized

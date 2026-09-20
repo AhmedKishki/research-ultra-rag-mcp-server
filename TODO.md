@@ -480,18 +480,43 @@ Gate:
 
 ## Step 3 — Per-query CPU (P1-4, P1-5)
 
-- [ ] Precompute the corrupt-text, symbol-only, and query-token verdicts at
+Status: **done.** The candidate gate no longer scans chunk text per query; the
+verdict is computed once when the artifact lookup is built. Measurements and the
+design notes are in `PLAN.md` §10.7.
+
+- [x] Precompute the corrupt-text, symbol-only, and query-token verdicts at
       artifact-lookup build time and filter on the stored flags at query time.
-- [ ] Cache parsed chunk tokens per chunk for the duration of a query.
-- [ ] Keep retrieval-time guards for legacy generations that lack stored flags.
-- [ ] Make `_bm25_ranking` accumulate accepted results across widening
-      iterations and process only newly returned passages.
-- [ ] Pass the already-parsed manifest into `_status` instead of re-reading it.
+      Done for the first two, which are properties of the chunk: the lookup
+      schema now stores one `health_flags` bitmask per chunk. The query-token
+      verdict is *query-dependent* by definition, so it stays a per-query
+      computation and is memoised instead; storing a token index would put
+      derived vocabulary into a sidecar that is deliberately text-free, to save
+      the ~2 ms memoisation already covers.
+- [x] Cache parsed chunk tokens per chunk for the duration of a query. Both the
+      flags and the content tokens are cached per chunk for the call, which also
+      removes the widening loop's repeated work.
+- [x] Keep retrieval-time guards for legacy generations that lack stored flags.
+      `_candidate_flags` recomputes through the same `chunk_health_flags` the
+      build uses, so results and counters cannot differ; the lookup is rebuilt on
+      a schema-version mismatch, and the fallback covers the rest.
+- [x] Make `_bm25_ranking` accumulate accepted results across widening
+      iterations and process only newly returned passages. Done by memoising the
+      per-candidate verdict and tokens rather than by reordering the loop, so
+      which candidates are accepted cannot change; the rejection counters stay
+      per-iteration as before.
+- [x] Pass the already-parsed manifest into `_status` instead of re-reading it.
+      `_status` takes the pointer `search` already loaded.
 
 Gate:
 
-- [ ] A benchmark test shows candidate-filter cost is independent of the number
-      of queries, with all existing relevance rejection counters unchanged.
+- [x] A benchmark test shows candidate-filter cost is independent of the number
+      of queries, with all existing relevance rejection counters unchanged. The
+      gate measured 92.06 ms → 8.96 ms for 200 candidates on live corpus text
+      (10.3×), with every text scan moved to build time; the new tests assert
+      that a query with a current lookup never calls the fallback, that a lookup
+      without a stored verdict recomputes identical results, and that the stored
+      verdict equals a query-time scan for healthy, symbol-only, and corrupt
+      samples. Existing rejection-counter tests are unchanged and pass.
 
 ## Step 4 — Remove per-request O(corpus) work (P1-6, P1-7, P1-9)
 

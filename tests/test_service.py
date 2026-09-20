@@ -2546,6 +2546,78 @@ def test_chunker_batching_does_not_change_chunk_identity(
     asyncio.run(exercise())
 
 
+def test_query_gate_uses_the_stored_chunk_verdict(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "evidence.pdf",
+            ["Cobalt heron evidence from the amber marsh."],
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        ready = await service.ingest(chunk_size=50, chunk_overlap=10)
+        assert ready["status"] == "ready"
+        # The first search builds or reuses the verdict-carrying lookup.
+        assert (await service.search("cobalt heron", top_k=1))["hits"]
+
+        def explode(_text: str, *, quality_flags: object = None) -> int:
+            raise AssertionError("the query rescanned chunk text for health")
+
+        # Only the retrieval fallback is intercepted; the document-title health
+        # check reaches text_corruption_reasons through a different caller.
+        monkeypatch.setattr(service_module, "chunk_health_flags", explode)
+        result = await service.search("cobalt heron", top_k=1)
+
+        assert result["hits"]
+
+    asyncio.run(exercise())
+
+
+def test_query_gate_falls_back_without_a_stored_verdict(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "evidence.pdf",
+            ["Cobalt heron evidence from the amber marsh."],
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+        first = await service.search("cobalt heron", top_k=1)
+
+        calls: list[str] = []
+        real_flags = service_module.chunk_health_flags
+
+        def counting_flags(_text: str, *, quality_flags: object = None) -> int:
+            calls.append(_text)
+            return real_flags(_text, quality_flags=quality_flags)
+
+        monkeypatch.setattr(service_module, "chunk_health_flags", counting_flags)
+        # Model a lookup that predates the stored verdict: the query path has to
+        # recompute the same flags from the text, with identical results.
+        monkeypatch.setattr(service_module, "LOOKUP_HEALTH_FLAGS_KEY", "_absent_key")
+        second = await service.search("cobalt heron", top_k=1)
+
+        assert calls, "the guard must recompute the verdict when none is stored"
+        assert [hit["chunk_id"] for hit in second["hits"]] == [
+            hit["chunk_id"] for hit in first["hits"]
+        ]
+
+    asyncio.run(exercise())
+
+
 def test_partial_pdf_batch_is_replayed_after_hard_crash(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,

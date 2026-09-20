@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import numpy as np
 import pytest
 
 from research_ultra_rag_mcp.artifact_lookup import (
+    LOOKUP_HEALTH_FLAGS_KEY,
     ArtifactLookup,
     ArtifactLookupError,
     DocumentArtifactMapping,
@@ -15,6 +17,10 @@ from research_ultra_rag_mcp.artifact_lookup import (
     build_artifact_lookup,
     ensure_artifact_lookup,
     validate_artifact_lookup,
+)
+from research_ultra_rag_mcp.extraction import (
+    CHUNK_FLAG_EXTRACTION_ARTIFACT,
+    chunk_health_flags,
 )
 from research_ultra_rag_mcp.storage import write_jsonl
 
@@ -138,6 +144,110 @@ def test_content_digest_candidates_still_require_exact_text(tmp_path: Path) -> N
     assert [
         item["chunk_id"] for item in lookup.chunks_by_contents([target])[target]
     ] == ["chunk-2", "chunk-3"]
+
+
+def test_lookup_stores_the_chunk_rejection_verdict(tmp_path: Path) -> None:
+    chunks_path = tmp_path / "chunks.jsonl"
+    units_path = tmp_path / "units.jsonl"
+    lookup_path = tmp_path / "artifact-lookup.sqlite3"
+    write_jsonl(
+        chunks_path,
+        [
+            {
+                "chunk_id": "chunk-healthy",
+                "document_id": "document-a",
+                "document_chunk_index": 0,
+                "contents": "Cobalt heron evidence from the amber marsh.",
+            },
+            {
+                "chunk_id": "chunk-symbol-only",
+                "document_id": "document-a",
+                "document_chunk_index": 1,
+                "contents": "\u2014 \u2022 \u220e",
+            },
+            {
+                "chunk_id": "chunk-flagged",
+                "document_id": "document-a",
+                "document_chunk_index": 2,
+                "contents": "Amber marsh evidence.",
+                "quality_flags": ["extraction_artifact"],
+            },
+        ],
+    )
+    write_jsonl(
+        units_path,
+        [
+            {
+                "id": "unit-a",
+                "document_id": "document-a",
+                "contents": "Cobalt heron evidence.",
+            }
+        ],
+    )
+
+    lookup = ensure_artifact_lookup(chunks_path, units_path, lookup_path)
+    records = lookup.chunks_by_ids(
+        ["chunk-healthy", "chunk-symbol-only", "chunk-flagged"]
+    )
+
+    assert records["chunk-healthy"][LOOKUP_HEALTH_FLAGS_KEY] == 0
+    assert (
+        records["chunk-symbol-only"][LOOKUP_HEALTH_FLAGS_KEY]
+        & CHUNK_FLAG_EXTRACTION_ARTIFACT
+    )
+    assert (
+        records["chunk-flagged"][LOOKUP_HEALTH_FLAGS_KEY]
+        & CHUNK_FLAG_EXTRACTION_ARTIFACT
+    )
+    # The verdict never appears in a canonical record or a public projection.
+    assert "health_flags" not in json.loads(
+        chunks_path.read_text(encoding="utf-8").splitlines()[0]
+    )
+
+
+def test_lookup_verdict_matches_a_query_time_scan(tmp_path: Path) -> None:
+    chunks_path = tmp_path / "chunks.jsonl"
+    units_path = tmp_path / "units.jsonl"
+    lookup_path = tmp_path / "artifact-lookup.sqlite3"
+    samples = [
+        "Cobalt heron evidence from the amber marsh.",
+        "\u2014 \u2022 \u220e",
+        "Amber marsh evidence.",
+        "",
+        "\ufffd evidence with a replacement character",
+    ]
+    write_jsonl(
+        chunks_path,
+        [
+            {
+                "chunk_id": f"chunk-{index}",
+                "document_id": "document-a",
+                "document_chunk_index": index,
+                "contents": text,
+            }
+            for index, text in enumerate(samples)
+            if text
+        ],
+    )
+    write_jsonl(
+        units_path,
+        [
+            {
+                "id": "unit-a",
+                "document_id": "document-a",
+                "contents": "Cobalt heron evidence.",
+            }
+        ],
+    )
+
+    lookup = ensure_artifact_lookup(chunks_path, units_path, lookup_path)
+
+    for record in lookup.chunks_by_ids(
+        [f"chunk-{index}" for index, text in enumerate(samples) if text]
+    ).values():
+        stored = record[LOOKUP_HEALTH_FLAGS_KEY]
+        recomputed = chunk_health_flags(record["contents"])
+        assert stored == recomputed
 
 
 def test_ensure_rebuilds_missing_corrupt_and_stale_lookup(tmp_path: Path) -> None:

@@ -329,11 +329,20 @@ Update tests and documentation when changing them.
   document metadata and provenance remain canonical in the manifest, so filtering
   resolves current metadata to document IDs at query time.
 - The generation-local SQLite artifact lookup contains only identifiers,
-  ordinals, content hashes, and byte offsets into canonical chunk/unit JSONL.
-  It must never duplicate passage or extraction text. Use it for candidate
-  retrieval, neighboring passages, document-scoped reuse, and exact-text vector
-  reuse; reconstruct it from canonical artifacts when a legacy generation or
-  portable bundle does not contain it.
+  ordinals, content hashes, byte offsets into canonical chunk/unit JSONL, and one
+  integer retrieval verdict per chunk. It must never duplicate passage or
+  extraction text. Use it for candidate retrieval, neighboring passages,
+  document-scoped reuse, and exact-text vector reuse; reconstruct it from
+  canonical artifacts when a legacy generation or portable bundle does not
+  contain it.
+- Precompute a retrieval verdict when the lookup is built and reject candidates
+  from that stored value rather than rescanning text per query. The verdict is a
+  bitmask over properties of the chunk alone (`chunk_health_flags`: corrupt text,
+  extraction artifact), never a property of the query, and it must mirror the
+  query-time check exactly so rejection counters and withheld disclosures cannot
+  change. Keep a fallback that recomputes it from text when a lookup predates the
+  column, and recompute reason codes only for a chunk the verdict flags as
+  corrupt, because the response discloses them.
 - Qdrant is used instead of FAISS here because payload filtering and scored
   results are needed. FAISS remains an upstream vanilla capability. Milvus is
   intentionally not required because this server targets local project use.

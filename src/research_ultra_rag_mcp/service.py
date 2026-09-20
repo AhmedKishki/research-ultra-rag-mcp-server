@@ -11,7 +11,7 @@ import shutil
 import time
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +22,7 @@ from filelock import AsyncFileLock
 from filelock import Timeout as FileLockTimeout
 
 from .artifact_lookup import (
+    LOOKUP_HEALTH_FLAGS_KEY,
     LOOKUP_RELATIVE_PATH,
     ArtifactLookup,
     ArtifactLookupError,
@@ -52,7 +53,10 @@ from .dense import (
     LocalVectorDenseBackend,
 )
 from .extraction import (
+    CHUNK_FLAG_CORRUPT_TEXT,
+    CHUNK_FLAG_EXTRACTION_ARTIFACT,
     ExtractionError,
+    chunk_health_flags,
     extract_epub_spine_item,
     extract_scanned_pdf_pages,
     has_searchable_alphanumeric_content,
@@ -671,10 +675,27 @@ def _is_extraction_artifact(chunk: dict[str, Any]) -> bool:
     )
 
 
+def _candidate_flags(chunk: dict[str, Any]) -> int:
+    """Return the stored retrieval-rejection verdict for one candidate.
+
+    The artifact lookup computes this when it is built, so a query does not
+    rescan chunk text. A generation whose lookup predates the stored verdict
+    falls back to computing the same flags here.
+    """
+
+    stored = chunk.get(LOOKUP_HEALTH_FLAGS_KEY)
+    if isinstance(stored, int):
+        return stored
+    return chunk_health_flags(
+        _chunk_text(chunk),
+        quality_flags=chunk.get("quality_flags"),
+    )
+
+
 def _record_withheld(
     withheld: dict[str, dict[str, Any]],
     chunk: dict[str, Any],
-    reasons: list[str],
+    reasons: Sequence[str],
 ) -> None:
     """Record why a candidate was withheld so the response can disclose it."""
 
@@ -1683,7 +1704,16 @@ class ResearchService:
         self._write_checkpoint(root, checkpoint)
         return root, checkpoint
 
-    def _status(self) -> dict[str, Any]:
+    def _status(
+        self,
+        current: tuple[Path, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Summarize the project, reusing a caller already-parsed pointer.
+
+        `search` already holds the selected generation and its manifest, so it
+        passes them in rather than making this read and parse them again.
+        """
+
         try:
             scan = scan_sources(self.config)
         except SourcePolicyError as exc:
@@ -1703,7 +1733,8 @@ class ResearchService:
             if checkpoint_state is not None
             else None
         )
-        current = self._load_current_optional()
+        if current is None:
+            current = self._load_current_optional()
         if current is None:
             if ingestion_progress is not None:
                 message = (
@@ -4000,6 +4031,10 @@ class ResearchService:
         query_tokens = _content_tokens(query)
         by_contents: dict[str, list[dict[str, Any]]] = {}
         loaded_contents: set[str] = set()
+        # A candidate's verdict depends only on the chunk, so a repeat in a
+        # widening iteration reuses it instead of rescanning the text.
+        flags_cache: dict[str, int] = {}
+        tokens_cache: dict[str, frozenset[str]] = {}
         while True:
             passages = await self.ultrarag.search_bm25(query, requested)
             missing_contents = [
@@ -4049,15 +4084,28 @@ class ResearchService:
                 chunk_id = str(chunk["chunk_id"])
                 used.add(chunk_id)
                 resolved[chunk_id] = chunk
-                if _is_extraction_artifact(chunk):
+                flags = flags_cache.get(chunk_id)
+                if flags is None:
+                    flags = _candidate_flags(chunk)
+                    flags_cache[chunk_id] = flags
+                if flags & CHUNK_FLAG_EXTRACTION_ARTIFACT:
                     rejected["extraction_artifact"] += 1
                     continue
-                corruption = text_corruption_reasons(_chunk_text(chunk))
-                if corruption:
+                if flags & CHUNK_FLAG_CORRUPT_TEXT:
                     rejected["corrupt_text"] += 1
-                    _record_withheld(withheld, chunk, corruption)
+                    # Reason codes are recomputed only here, because the
+                    # response discloses them and they are not stored.
+                    _record_withheld(
+                        withheld,
+                        chunk,
+                        text_corruption_reasons(_chunk_text(chunk)),
+                    )
                     continue
-                if not query_tokens.intersection(_content_tokens(_chunk_text(chunk))):
+                tokens = tokens_cache.get(chunk_id)
+                if tokens is None:
+                    tokens = frozenset(_content_tokens(_chunk_text(chunk)))
+                    tokens_cache[chunk_id] = tokens
+                if not query_tokens.intersection(tokens):
                     rejected["no_query_token_overlap"] += 1
                     continue
                 ranking.append(chunk_id)
@@ -4291,13 +4339,17 @@ class ResearchService:
                         "The dense index returned a chunk absent from the current "
                         f"chunk store: {dense_hit.chunk_id}"
                     )
-                if _is_extraction_artifact(chunk):
+                dense_flags = _candidate_flags(chunk)
+                if dense_flags & CHUNK_FLAG_EXTRACTION_ARTIFACT:
                     dense_quality_rejected += 1
                     continue
-                dense_corruption = text_corruption_reasons(_chunk_text(chunk))
-                if dense_corruption:
+                if dense_flags & CHUNK_FLAG_CORRUPT_TEXT:
                     dense_corrupt_text_rejected += 1
-                    _record_withheld(withheld, chunk, dense_corruption)
+                    _record_withheld(
+                        withheld,
+                        chunk,
+                        text_corruption_reasons(_chunk_text(chunk)),
+                    )
                     continue
                 if not self._matches_filters(
                     chunk,
@@ -4469,7 +4521,7 @@ class ResearchService:
                 candidate_count,
             )
 
-            status = await asyncio.to_thread(self._status)
+            status = await asyncio.to_thread(self._status, current)
             return {
                 "query": query,
                 "generation_id": manifest["generation_id"],

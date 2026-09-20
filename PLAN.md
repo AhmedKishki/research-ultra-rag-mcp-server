@@ -941,9 +941,60 @@ because this benchmark corpus has less length dispersion inside each 64-chunk
 service batch; the live corpus, whose median chunk is 112 tokens and whose
 longest is 846, sits at the other end of that range.
 
+### 10.7 Per-query candidate gate: precomputed verdicts (Step 3)
+
+Measured on 200 chunk texts from the live corpus, with the same work the query
+path performs per candidate:
+
+| Stage | Before | After |
+|---|---|---|
+| sidecar fetch including offset parse | 6.90 ms | 6.78 ms |
+| `text_corruption_reasons` | 58.32 ms | — (build time) |
+| `has_searchable_alphanumeric_content` | 13.65 ms | — (build time) |
+| `_is_extraction_artifact` | 14.12 ms | — (build time) |
+| `_content_tokens` | 8.37 ms | 2.18 ms |
+| **gate total** | **92.06 ms** | **8.96 ms** |
+
+The gate is **10.3× cheaper** at the reference view's 200 candidates, and about
+1.4 ms instead of 15 ms at the default depth of 32. What remains is the sidecar
+read plus the query-dependent token check; every text scan now happens once,
+when the lookup is built, which is what the gate asked for.
+
+Design points that keep the rejection behaviour identical:
+
+- `chunk_health_flags` is the single implementation of the verdict, used both
+  when the lookup is built and by the query-time fallback, so the two cannot
+  drift. It returns a bitmask: corrupt text, extraction artifact (which includes
+  a chunk with no searchable alphanumeric content, exactly as the old
+  `_is_extraction_artifact` did).
+- The stored value rides on the loaded record under an internal key that public
+  projections never select. `_lookup_is_current` compares the lookup's schema
+  version, so a generation whose sidecar predates the column is rebuilt on first
+  use; the fallback exists for the case where it is not.
+- Reason codes are recomputed only for a chunk the verdict flags as corrupt,
+  because the response discloses them.
+- The token check stays a per-query computation, memoised per chunk for the
+  duration of a query, which also removes the widening loop's repeated work
+  (P1-5) without changing which candidates are accepted.
+- `_status` now takes the pointer `search` already parsed instead of re-reading
+  and re-parsing `current.json` and the manifest.
+
+Recorded deviation: the sidecar's contract said "only identifiers, ordinals,
+content hashes, and byte offsets". It now also stores one integer verdict per
+chunk. That is derived metadata about a chunk, not passage or extraction text, so
+the reason for the rule — never copy corpus text into a second artifact — still
+holds, and `AGENTS.md` states the narrower rule explicitly. A token-index
+(Bloom filter) was considered for the query-dependent half and rejected: it would
+store derived vocabulary in a sidecar that is deliberately text-free, to save the
+2 ms that memoisation already covers.
+
+Fix in passing: `sqlite3.Row` iterates its *values*, so testing a column with
+`"column" in row` is always False. The column check has to use `row.keys()`.
+
 ## 11. Options for cheap incremental adds — pros and cons
 
 ### 11.1 The stated priorities, in order
+
 1. **Resumability first.** A long first build is acceptable; losing progress is
    not. This is already satisfied and should not be weakened: progress is
    durable per extracted document, per 8-page PDF scan batch, per extraction

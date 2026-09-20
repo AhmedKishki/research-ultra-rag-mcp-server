@@ -587,9 +587,10 @@ identifiers — the embedded ANN backend stores vectors with lean lookup payload
 (`chunk_id`, `document_id`, and `source_id`) — so canonical passage content and
 locators stay in `chunks.jsonl`, while document metadata and provenance stay in
 the manifest. A compact SQLite
-sidecar stores only IDs, content hashes, vector ordinals, and JSONL byte offsets
-so query and reuse paths load selected records without copying corpus text into
-another artifact. Weighted
+sidecar stores only IDs, content hashes, vector ordinals, JSONL byte offsets, and
+one precomputed retrieval verdict per chunk, so query and reuse paths load
+selected records without copying corpus text into another artifact and can
+reject an unusable candidate without rescanning its text. Weighted
 reciprocal-rank fusion combines BM25 weight `1.25` and dense weight `1.0`. The
 MCP returns structured passages; the calling agent performs interpretation and
 answer generation.

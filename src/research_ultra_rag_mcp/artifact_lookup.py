@@ -17,9 +17,12 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .extraction import chunk_health_flags
 from .storage import fsync_directory
 
-LOOKUP_SCHEMA_VERSION = 2
+# Key under which a loaded chunk record carries its stored rejection verdict.
+LOOKUP_HEALTH_FLAGS_KEY = "_lookup_health_flags"
+LOOKUP_SCHEMA_VERSION = 3
 LOOKUP_RELATIVE_PATH = Path("indexes") / "artifact-lookup.sqlite3"
 _SQL_BATCH_SIZE = 500
 
@@ -86,7 +89,8 @@ def _create_schema(connection: sqlite3.Connection) -> None:
             document_chunk_index INTEGER NOT NULL,
             content_sha256 BLOB NOT NULL,
             byte_offset INTEGER NOT NULL,
-            byte_length INTEGER NOT NULL
+            byte_length INTEGER NOT NULL,
+            health_flags INTEGER NOT NULL
         );
         CREATE UNIQUE INDEX chunks_document_position
             ON chunks(document_id, document_chunk_index);
@@ -141,8 +145,8 @@ def _index_chunks(
                     INSERT INTO chunks(
                         ordinal, chunk_id, document_id,
                         document_chunk_index, content_sha256,
-                        byte_offset, byte_length
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        byte_offset, byte_length, health_flags
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         count,
@@ -152,6 +156,10 @@ def _index_chunks(
                         hashlib.sha256(contents.encode("utf-8")).digest(),
                         offset,
                         len(line),
+                        chunk_health_flags(
+                            contents,
+                            quality_flags=record.get("quality_flags"),
+                        ),
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -302,6 +310,22 @@ def _read_metadata(connection: sqlite3.Connection) -> dict[str, str]:
     return dict(connection.execute("SELECT key, value FROM metadata"))
 
 
+def _stored_health_flags(row: sqlite3.Row) -> int | None:
+    """Return the stored rejection verdict for a chunk row, if it has one.
+
+    A lookup built before the verdict was stored, or a unit row, has no such
+    column, and the caller then falls back to scanning the text at query time.
+    """
+
+    # `sqlite3.Row` iterates values, so membership has to be tested against its
+    # column names explicitly.
+    columns = row.keys()
+    if "health_flags" not in columns:
+        return None
+    value = row["health_flags"]
+    return None if value is None else int(value)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -388,6 +412,12 @@ class ArtifactLookup:
                     handle.seek(int(row["byte_offset"]))
                     line = handle.read(int(row["byte_length"]))
                     record = _read_json_line(path, line, int(row["ordinal"]) + 1)
+                    stored = _stored_health_flags(row)
+                    if stored is not None:
+                        # An internal key, read by the query path so it can reject
+                        # a candidate without re-scanning its text. Public
+                        # projections select their own fields and never expose it.
+                        record[LOOKUP_HEALTH_FLAGS_KEY] = stored
                     loaded.append((row, record))
         except OSError as exc:
             raise ArtifactLookupError(
