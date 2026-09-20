@@ -133,6 +133,7 @@ Then open `http://127.0.0.1:5051`. What this does and does not do:
 - The UI stops when the server stops. Measured on the reference project: the UI answers `/api/health` about six seconds after the server starts, and the port is released within half a second of the server being terminated, so there is no orphan process and nothing to clean up by hand.
 - `status` reports `ui_url`, `ui_ready`, and `ui_error`. If the port is already in use, the MCP server keeps serving tools, `ui_ready` stays false, and `ui_error` says the port was taken.
 - This is the option that keeps the UI and the agent on the same state. A separately launched `research-ultra-rag-ui` has to be given the same `--runtime-root` by hand, because it never reads your MCP client's configuration.
+- An MCP client that keeps one settings file for every window gives each window's server the same `--ui-port`. Only the first server binds it; the others keep serving tools with `ui_ready: false` and `ui_error` naming the taken port, and every window still carries its own server, gateway and UI stack. With more than one window or project open, a per-project launcher that starts `research-ultra-rag-ui` with that project's `--project-root`, `--runtime-root`, and `--port` stays predictable in a way a shared `--ui-port` cannot.
 - One agent-facing note: reranking is on by default for tool calls, while the UI's **CPU rerank** checkbox starts unticked, so a UI search returns the unranked order until you tick it.
 
 Two practical notes:
@@ -265,6 +266,8 @@ RESEARCH_ULTRARAG_RUNTIME_ROOT=/ssd/research-runtime/my-project \
 ```
 
 Without it, the UI and your agent read different runtime roots and can show different generations for the same project — the agent on the fast device and the UI on the old in-project copy. The simpler option is to let the MCP server host the UI with `--ui-port`, described under [Connect an AI agent](#connect-an-ai-agent): it reuses the server's settings, so the two can never disagree.
+
+To make the separate process repeatable, keep those three settings in a small launcher script per project — `--project-root`, `--runtime-root`, and `--port` — and always start the UI from it, so nothing depends on remembering the flags. Do not export `RESEARCH_ULTRARAG_UI_PORT` into such a launcher: the servers it starts read that variable as the default for `--ui-port`, so each one hosts a UI of its own and starts the next.
 
 Two differences between a UI session and an agent session are worth knowing before you compare results. The **CPU rerank** checkbox is off unless you tick it, so a UI search sends `rerank=false` explicitly while an agent search reranks by default. And the retained-generation inventory that `status` reports (`generations`, `retained_generation_bytes`) is not shown in the current UI views; use an agent or `research-ultra-rag-verify` to see what retained generations occupy.
 
