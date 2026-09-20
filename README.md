@@ -179,7 +179,7 @@ Search can legitimately return fewer results than `top_k`, including none, when 
 
 ### Checking freshness per query
 
-By default a search also reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked.
+By default a search also reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked. At this size it is a small share of a query, so the flag removes a cost that scales rather than a latency you feel today.
 
 Pass `include_staleness=false` when a session has already checked `status` and only needs evidence. The response then reports `stale=null` and `staleness_checked=false`, which means "not checked", not "fresh". Everything else about the search is unchanged, including which hits are returned.
 

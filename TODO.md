@@ -44,7 +44,7 @@ How the list is organised:
 - Embedding runs one sequence per inference instead of batches of 64, which is 1.5× to 4.5× faster depending on how varied chunk lengths are, with bit-identical vectors.
 - The per-query candidate gate is 10.3× cheaper (92.06 ms → 8.96 ms at 200 candidates) because the usability verdict is computed once when the lookup is built instead of rescanned on every query.
 - `--runtime-root` lets a project keep derived state on fast storage without an OS-level bind mount, with validation so two projects cannot share one root.
-- `search` can skip the source-directory freshness check with `include_staleness=false`. That check is the only per-query cost that grows with the collection: measured at 9.69 ms for 55 sources (about 0.18 ms per source, so roughly 176 ms at 1,000 sources). When the check is skipped the response says so, reporting `stale=null` and `staleness_checked=false` rather than implying the generation is current.
+- `search` can skip the source-directory freshness check with `include_staleness=false`. That check is the only per-query cost that grows with the collection: measured at 9.69 ms for 55 sources (about 0.18 ms per source, so roughly 176 ms at 1,000 sources, though at this size it is too small to see in end-to-end latency). When the check is skipped the response says so, reporting `stale=null` and `staleness_checked=false` rather than implying the generation is current.
 
 **Docs and tooling**
 
