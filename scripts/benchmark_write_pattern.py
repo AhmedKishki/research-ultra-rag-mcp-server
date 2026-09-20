@@ -1,13 +1,13 @@
 """Measure the per-unit write pattern on a real project build.
 
-This is the harness behind the numbers in ``PLAN.md`` §10.5. It builds the same
+This is the harness behind the numbers in ``MEASUREMENTS.md``. It builds the same
 corpus twice on the device you point ``--root`` at, using the real vanilla
 gateway, real tokenizer chunking, and real embeddings, and changes nothing but
 the write pattern:
 
 * ``paired`` formats every atomic write durably, one directory fsync per file,
-  and makes the handoff file durable too — the pattern before Step 2a.
-* ``grouped`` is the current code: a unit's artifacts defer their directory
+  and makes the handoff file durable too.
+* ``grouped`` is what the server does: a unit's artifacts defer their directory
   fsync and the group is committed once, before the checkpoint that claims the
   unit is complete.
 

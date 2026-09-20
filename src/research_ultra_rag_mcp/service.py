@@ -51,6 +51,7 @@ from .dense import (
     DenseTokenAuditUnavailable,
     LocalQdrantDenseBackend,
     LocalVectorDenseBackend,
+    RerankerUnavailable,
 )
 from .extraction import (
     CHUNK_FLAG_CORRUPT_TEXT,
@@ -90,6 +91,7 @@ from .storage import (
     StorageError,
     atomic_write_json,
     atomic_write_jsonl,
+    directory_statistics,
     fsync_directories,
     fsync_directory,
     iter_jsonl,
@@ -1967,9 +1969,70 @@ class ResearchService:
             "message": status_message,
         }
 
+    def _generation_inventory(
+        self, current_generation_id: str | None
+    ) -> dict[str, Any]:
+        """Describe every retained generation on disk without validating it.
+
+        These are exactly the directories a prune would consider, so `status`
+        reports them with their size and file count. A generation whose manifest
+        is missing, unreadable, or not JSON is reported with a ``manifest_error``
+        instead of raising: the purpose is transparency about what occupies disk,
+        and a status call must still answer when one retained generation is
+        damaged. This runs only on the read-only ``status`` surface, never on the
+        search path, because it walks each generation's files.
+        """
+
+        root = self.config.generations_root
+        records: list[dict[str, Any]] = []
+        if root.is_dir():
+            for entry in root.iterdir():
+                if entry.is_symlink() or not entry.is_dir():
+                    continue
+                record: dict[str, Any] = {
+                    "generation_id": entry.name,
+                    "is_current": entry.name == current_generation_id,
+                }
+                try:
+                    manifest = read_json(entry / "manifest.json")
+                except StorageError as exc:
+                    record["manifest_error"] = str(exc)
+                else:
+                    if isinstance(manifest, dict):
+                        record.update(
+                            created_at=manifest.get("created_at"),
+                            chunk_count=manifest.get("chunk_count"),
+                            document_count=manifest.get("document_count"),
+                            schema_version=manifest.get("schema_version"),
+                        )
+                    else:
+                        record["manifest_error"] = "manifest.json is not a JSON object"
+                file_count, size_bytes = directory_statistics(entry)
+                record["file_count"] = file_count
+                record["size_bytes"] = size_bytes
+                records.append(record)
+        records.sort(
+            key=lambda item: (str(item.get("created_at") or ""), item["generation_id"]),
+            reverse=True,
+        )
+        return {
+            "generations": records,
+            "retained_generation_count": len(records),
+            "retained_generation_bytes": sum(
+                int(item["size_bytes"]) for item in records
+            ),
+        }
+
     async def status(self) -> dict[str, Any]:
         async with self._operation():
-            return await asyncio.to_thread(self._status)
+            payload = await asyncio.to_thread(self._status)
+            payload.update(
+                await asyncio.to_thread(
+                    self._generation_inventory,
+                    payload.get("generation_id"),
+                )
+            )
+            return payload
 
     async def set_source_metadata(
         self,
@@ -4175,6 +4238,14 @@ class ResearchService:
         passages_per_reference: int = 2,
         include_staleness: bool = True,
     ) -> dict[str, Any]:
+        """Retrieve evidence.
+
+        The public MCP tool defaults ``rerank`` to true because it is the
+        largest measured quality gain (``MEASUREMENTS.md``); this lower-level API
+        keeps the neutral default so internal callers and tests state what they
+        want. When the reranker model cannot be loaded the search still succeeds
+        with the unranked candidate order and reports ``rerank_fallback``.
+        """
         query = query.strip()
         if not query:
             raise ResearchError("query must not be empty")
@@ -4409,6 +4480,7 @@ class ResearchService:
                 chunk_id: rank for rank, chunk_id in enumerate(ordered_ids, 1)
             }
             rerank_scores: dict[str, float] = {}
+            rerank_fallback: dict[str, Any] | None = None
             if rerank and ordered_ids:
                 rerank_count = min(
                     len(ordered_ids),
@@ -4417,23 +4489,35 @@ class ResearchService:
                 )
                 rerank_ids = ordered_ids[:rerank_count]
                 rerank_tail = ordered_ids[rerank_count:]
-                scores = await asyncio.to_thread(
-                    self.dense.rerank,
-                    query,
-                    [_chunk_text(chunks_by_id[item]) for item in rerank_ids],
-                )
-                rerank_scores = dict(zip(rerank_ids, scores, strict=True))
-                ordered_ids = (
-                    sorted(
-                        rerank_ids,
-                        key=lambda chunk_id: (
-                            -rerank_scores[chunk_id],
-                            base_ranks[chunk_id],
-                            chunk_id,
-                        ),
+                try:
+                    scores = await asyncio.to_thread(
+                        self.dense.rerank,
+                        query,
+                        [_chunk_text(chunks_by_id[item]) for item in rerank_ids],
                     )
-                    + rerank_tail
-                )
+                except RerankerUnavailable as exc:
+                    # Requested reranking cannot run without its model, so the
+                    # unranked candidate order is returned unchanged and the
+                    # response discloses why instead of failing the search.
+                    rerank_fallback = {
+                        "reason": "reranker_model_unavailable",
+                        "message": str(exc),
+                        "effect": "unranked_candidate_order_returned",
+                    }
+                else:
+                    rerank_scores = dict(zip(rerank_ids, scores, strict=True))
+                    ordered_ids = (
+                        sorted(
+                            rerank_ids,
+                            key=lambda chunk_id: (
+                                -rerank_scores[chunk_id],
+                                base_ranks[chunk_id],
+                                chunk_id,
+                            ),
+                        )
+                        + rerank_tail
+                    )
+            reranked_applied = bool(rerank_scores)
 
             candidate_count = len(ordered_ids)
             candidate_distinct_reference_count = len(
@@ -4552,7 +4636,9 @@ class ResearchService:
                 "generation_upgrade_required": bool(upgrade_reasons),
                 "excluded_source_count": len(exclusions),
                 "retrieval_method": retrieval_method,
-                "reranked": rerank,
+                "reranked": reranked_applied,
+                "rerank_requested": rerank,
+                "rerank_fallback": rerank_fallback,
                 "candidate_depth": candidate_depth,
                 "candidate_count": candidate_count,
                 "candidate_distinct_reference_count": (
@@ -4640,9 +4726,9 @@ class ResearchService:
                 "embedding_model_revision": (
                     EMBEDDING_MODEL_REVISION if use_dense else None
                 ),
-                "reranker_model": RERANKER_MODEL if rerank else None,
+                "reranker_model": RERANKER_MODEL if reranked_applied else None,
                 "reranker_model_revision": (
-                    RERANKER_MODEL_REVISION if rerank else None
+                    RERANKER_MODEL_REVISION if reranked_applied else None
                 ),
                 "result_count": len(hits),
                 "distinct_reference_count": distinct_reference_count,

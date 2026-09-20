@@ -8,7 +8,7 @@ Three labels are used throughout:
 - **Added here** — the research layer around UltraRAG. This is where most of the product lives.
 - **Planned** — described in `ROADMAP.md` or `TODO.md`, not built yet. Nothing in this document claims otherwise.
 
-For measurements behind the performance-related features, see `PLAN.md`. For how to use them, see `README.md`.
+For measurements behind the performance-related features, see `MEASUREMENTS.md`. For how to use them, see `README.md`. Where UltraRAG offers a capability that this server does not use, the reason and what the upstream component would have added are recorded in section 1.1: an unused upstream feature here is a documented decision, not an oversight.
 
 ## 1. What UltraRAG provides, and what this server actually uses
 
@@ -20,18 +20,74 @@ This server deliberately uses only three upstream capabilities, and owns everyth
 |---|---|---|
 | GPT-2 token chunking (`corpus_chunk_documents`) | Yes | Splits extraction units into token chunks with a configured size and overlap. Several units share one call for speed; each unit still gets its own durable output. |
 | BM25 lexical index and search (`retriever_retriever_init`, `retriever_bm25_index`, `retriever_bm25_search`) | Yes | Supplies the lexical half of retrieval, in English, on CPU. |
-| FAISS, Qdrant and Milvus dense backends | No | The dense path is built here instead: FastEmbed embeddings plus either an exact scan of the portable vectors or an embedded Qdrant index, chosen per generation and recorded in its manifest. |
-| Reranking components | No | This server uses its own optional CPU cross-encoder, applied to at most 50 candidates. |
-| Prompt assembly and answer generation | No | The connected agent generates. The server returns evidence, not prose. |
-| Routing, memory, benchmark, evaluation components | No | Not part of this server's contract. Retrieval-quality evaluation is planned as its own work (see section 4). |
-| Web-search retrieval | No | Out of scope: this server answers from a project's own documents only. |
-| Upstream web interface | No | This server ships its own local UI for its own nine tools. |
+| FAISS, Qdrant and Milvus dense index backends (`retriever_init(index_backend=...)`) | No | The dense path is built here instead: FastEmbed CPU embeddings plus either an exact scan of the generation's portable vectors or an embedded Qdrant collection created with the same pinned `qdrant-client` library, chosen per generation and recorded in its manifest. See section 1.1. |
+| Reranking components (`reranker_init`, `reranker_rerank`) | No | An optional FastEmbed CPU cross-encoder reorders at most 50 candidates and keeps its scores. See section 1.1. |
+| Prompt assembly and answer generation | No | The connected agent generates. The server returns evidence, not prose. See section 1.2. |
+| Routing, memory, benchmark, evaluation components | No | Not part of this server's contract. Retrieval-quality evaluation is planned as its own work (see section 4 and section 1.2). |
+| Web-search retrieval | No | Out of scope: this server answers from a project's own documents only. See section 1.2. |
+| Upstream web interface | No | This server ships its own local UI for its own nine tools. See section 1.3. |
 
-Two consequences are worth stating plainly.
+Three consequences are worth stating plainly.
 
 First, **the chunker and BM25 are upstream, but the parameters and the surrounding policy are not**: chunk size, overlap, which units are chunked, how results are filtered, and what is disclosed about rejected text are all decided here.
 
 Second, **pinning a small upstream surface is a feature, not a gap**. It means an UltraRAG upgrade can be evaluated against three well-understood call sites instead of dozens, and that this server never depends on an upstream service, credential, GPU, or vector database being available.
+
+Third, **every capability marked No in the table above has a recorded reason**. Each one is either replaced by a component whose output the research contract can actually use (section 1.1) or left out deliberately (sections 1.2 and 1.3).
+
+### 1.1 Reuse decisions: when this server builds a component instead of reusing one
+
+The rule applied here is to reuse an upstream component whenever it can satisfy the research contract without adding a dependency or an operational requirement this project refuses to take. That contract needs, for every hit, a stable `chunk_id`, `document_id`, and `source_id`; a locator into the original file; query-time metadata filtering resolved against the reviewed overlay; a visible ranking signal; and CPU-only, offline-capable, credential-free operation in which no external service is required. A component is replaced only when at least one of those cannot be met.
+
+Any decision below would be revisited if the upstream component gained all four of the following.
+
+- It returns identifiers and a score, not only anonymous passage text.
+- It filters by metadata at query time, using values the server can verify against canonical records rather than copies baked into an index.
+- It runs on CPU, offline, pinned by revision, with no server, GPU, or API credential.
+- It can be validated as one index of an immutable generation, so a failed index can never be selected.
+
+**FAISS (`retriever_init(index_backend="faiss")`, `servers/retriever/src/index_backends/faiss_backend.py`).**
+
+- **Benefit if reused:** a mature, in-process CPU index with no server, less custom code to maintain, and alignment with the backend upstream's own Vanilla RAG pipeline uses.
+- **Why not:** its `search()` returns `List[List[str]]` built from `self.contents[doc_id]`, so chunk identity and scores are discarded and no metadata filter exists, which means reviewed category or keyword filters could only be applied by copying mutable metadata into the index or by dropping hits after the fact; the index is also built from the corpus during `retriever_init` and rebuilt over the whole corpus, which costs 3,040.73 s for the reference corpus on the project's HDD and 75.5× less on NVMe (`MEASUREMENTS.md`), while the exact scan the server uses instead costs 0.07 s of index work.
+- **What replaced it:** an exact cosine scan of the generation's portable float32 vectors, whose descriptor builds in 0.03 s and 0.58 MB on the reference corpus and returned the same top 20 as a brute-force ranking; rows are excluded by document ID during the scan, so an exclusion or a reviewed metadata change takes effect without rebuilding anything.
+- **Threshold:** the exact scan is the default; an ANN backend earns its build cost only above 200,000 chunks, and there the embedded Qdrant backend is preferred because it returns scored hits under a payload filter, which the upstream FAISS component cannot do.
+
+**Qdrant (`retriever_init(index_backend="qdrant")`, `servers/retriever/src/index_backends/qdrant_backend.py`).**
+
+- **Benefit if reused:** the payload filtering and scored results this server actually wants, delivered by the same `qdrant-client` library it already depends on.
+- **Why not:** the upstream component's `search()` returns only the payload text field (`str((hit.payload or {}).get(self.text_field, ""))`) and discards ids and scores, assigns `uuid5` point IDs derived from values instead of canonical chunk IDs, and creates its collection at init. The library is reused; the component is not.
+- **Benefit of the reuse that does happen:** this server's own thin backend stores integer point IDs with `chunk_id`, `document_id`, and `source_id` as payload, applies Qdrant's `MatchAny` payload filter to the document IDs the service already resolved from the reviewed overlay, and returns `point.score` as a ranking signal.
+- **Threshold:** selected per generation only above 200,000 chunks and recorded in that generation's manifest; below that, the exact scan is both simpler and faster.
+
+**Milvus (`retriever_init(index_backend="milvus")`, `servers/retriever/src/index_backends/milvus_backend.py`).**
+
+- **Benefit if reused:** a server-grade, horizontally scalable vector database with multi-client access, which is genuinely useful for a shared collection far larger than this project targets.
+- **Why not:** it needs a running Milvus service, or Milvus Lite, alongside the process, which conflicts with portable project-local derived state, the no-external-service rule, and the 5,000–50,000 chunk design envelope; its `search()` also returns passage strings only. Upstream itself logs a warning that using Milvus outside demo mode is not recommended in its simplified architecture, and its demo mode forces OpenAI embeddings with Milvus, which adds a network credential on top.
+- **Why the workload does not need it:** at the reference corpus size the exact scan answers a query in tens of milliseconds from vectors the generation already stores, so a vector database would add an operational dependency without adding a capability.
+
+**Reranking components (`reranker_init`, `reranker_rerank`, `servers/reranker`).**
+
+- **Benefit if reused:** upstream's reranker model catalogue, including `openbmb/MiniCPM-Reranker-Light` as its shipped default, and consistency with the upstream pipeline.
+- **Why not:** every upstream backend adds something this project refuses. The `sentence_transformers` backend pulls PyTorch into a package that otherwise needs only ONNX Runtime; the `infinity` backend is a model-serving engine; the `openai` backend needs a network credential and would send research queries to a third party; and upstream's shipped parameters target `device: cuda`. Its result is also `rerank_psg` — reordered passage strings with the scores discarded.
+- **Why scores matter here:** the server reorders at most 50 candidates by score and then appends the unreranked candidate tail, so a reference group can still reach a source whose best passage fell outside the reranked prefix; a string-only reranker cannot express that ordering.
+- **Why the gateway could not simply be asked for it:** `reranker` is one of the stateful namespaces the vanilla gateway can start, but the research transport requests `corpus` and `retriever` only, so no reranker child process runs today and adding one would add a second model-serving surface.
+- **What replaced it:** FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2` through the already-pinned FastEmbed ONNX dependency and the same shared model cache, lazily loaded, opt-in, and applied to at most 50 candidates.
+- **Measured benefit of the custom component, and its default:** on the judged set, reranked hybrid reaches 81.2% first-position success against 65.6% unreranked and 59.4% for BM25, at 2.30 s per query against 0.17 s. It is therefore the server default, with `rerank=false` as the opt-out and a disclosed fallback to the unranked order when its model cannot be loaded.
+
+The net position is narrower than it may look. These are not weaker technologies, and none of the decisions is permanent: the Qdrant library is already reused, the reranker is a pinned model whose revision is a one-line change, and an upstream component that returned identity and scores under a CPU-friendly backend would be adopted rather than rebuilt. What this server will not do is trade chunk identity, ranking signals, query-time filtering, or local-only operation for the sake of delegating to an upstream class.
+
+### 1.2 Capabilities that are left out instead of replaced
+
+These upstream components have no custom replacement, because adopting them would change what the server is rather than how it is built.
+
+- **Prompt assembly and answer generation.** Adopting upstream's prompt and generation components would add a model-serving or API dependency and move prose generation into the server. The contract instead has the connected agent write the answer and cite returned evidence, which is why `search` returns structured passages with provenance rather than an answer string.
+- **Routing, memory, benchmark, and evaluation.** These serve multi-corpus pipelines, conversational memory, and benchmark scoring with boxed answers. This server is one project, one corpus, and one immutable generation, and retrieval quality is measured offline against a judged query set rather than by an upstream evaluation component.
+- **Web-search retrieval.** It would send a researcher's query to a third-party provider and mix outside text into evidence that must be traceable to a project source, so retrieval stays inside the project's own documents.
+
+### 1.3 The upstream web interface
+
+The upstream interface is bound to upstream pipeline and session state, and it exposes tools this server deliberately does not. The bundled local UI is a pinned, dependency-free browser workspace that talks to the same nine public MCP tools through the private stdio client, is bound to loopback, and may serve only an allowlisted original PDF or EPUB. Reusing the upstream interface would mean either exposing the upstream surface through this server or maintaining a second, divergent view of the same project.
 
 ## 2. Features added on top of UltraRAG
 
@@ -59,11 +115,13 @@ Second, **pinning a small upstream surface is a feature, not a gap**. It means a
 |---|---|---|
 | BM25 lexical search (UltraRAG) | Matches the words you typed. | Exact names, terms, and phrases. Also the honest baseline when a semantic result surprises you. |
 | Dense semantic search (added here) | FastEmbed `bge-small-en-v1.5` embeddings, 384 dimensions, CPU, revision-pinned. | Finds passages phrased differently from your question. |
-| Hybrid search (UltraRAG plus added here) | Weighted reciprocal-rank fusion of the two rankings, with an opt-out to inspect either signal alone. | The default that behaves well on real questions. |
+| Hybrid search (UltraRAG plus added here) | Weighted reciprocal-rank fusion of the two rankings, with an opt-out to inspect either signal alone. | The default that behaves well on real questions: 65.6% first-position success on the judged set, against 59.4% for BM25 alone. |
 | Exact dense scan by default (added here) | Dense search scans the generation's portable float32 vectors directly; an embedded index is used above a documented corpus size. The manifest records which backend built the generation. | Nothing to build or keep in sync at normal sizes, and results are exactly reproducible. |
 | Metadata filters (added here) | Narrow by category, keyword, or document. | Keeps a search inside the part of the collection you care about. |
 | Reference-grouped results (added here) | `result_view="references"` caps how many passages each source contributes while keeping `top_k` as the total. | One prolific book chapter cannot fill the answer. |
-| Optional reranking (added here) | A CPU cross-encoder reorders up to 50 candidates, opt-in. | A second pass when the candidate set is close. |
+| Optional reranking, on by default (added here) | A CPU cross-encoder reorders up to 50 candidates and runs unless the caller passes `rerank=false`; when its pinned model cannot be loaded the search returns the unranked order and reports `rerank_fallback`. | The largest measured quality gain: first-position success rises from 65.6% to 81.2% and document-level success from 90.6% to 93.8%, for about thirteen times the query latency of unreranked hybrid — and a missing model degrades instead of failing. |
+| Measured retrieval quality (added here) | A 32-query judged set over 19 passages of a real corpus and a harness that measures it through the public `search` tool, reported per mode and per query class. | "Is hybrid better than BM25 here?" is answered by measurement: reranking gains most, dense alone is weakest, and paraphrase queries defeat every mode. |
+| Honest evaluation limits (added here) | The judged set is known-item and single-annotator, so a passage that makes the same point is scored as a miss and true recall is not claimed. | The numbers say what they do not cover instead of implying benchmark-grade precision. |
 | Relevance gates with abstention (added here) | Weak candidates are dropped, so a search can legitimately return fewer results than `top_k`, including none, and the response explains which gate limited it. | An honest empty answer beats a confident irrelevant one. |
 | Precomputed usability verdict (added here) | The decision "is this candidate structurally unusable?" is computed once when the lookup is built and stored per chunk. | The per-query gate measured 10.3× cheaper without changing a single rejection decision. |
 | Per-query freshness opt-out (added here) | A search re-compares the source directory with the generation unless the caller passes `include_staleness=false`; the response then reports `stale=null` and `staleness_checked=false` instead of a verdict. | That comparison is the only per-query cost that grows with the collection (9.69 ms for 55 sources), so a follow-up search in a live session can skip it. Upgrade reporting is unaffected, because it depends only on the manifest. |
@@ -85,10 +143,11 @@ Second, **pinning a small upstream surface is a feature, not a gap**. It means a
 |---|---|---|
 | Nine focused MCP tools | `status`, `ingest`, `search`, `list_sources`, `get_passage`, `set_source_metadata`, `set_source_inclusion`, `export_bundle`, `import_bundle`. | A small, reviewable surface for an agent, instead of upstream's ~78 tools. |
 | Local evidence UI | A loopback-only browser workspace over the same nine tools and the same project state. | You can inspect and correct the knowledge base without an agent in the loop. |
+| UI hosted by the MCP server (added here) | An opt-in `--ui-port` serves that same UI from the MCP server process, reusing its resolved project, runtime root, model cache, and offline settings. `status` reports `ui_url`, `ui_ready`, and `ui_error`; a taken port is reported instead of failing, and the UI stops with the server. | The UI and your agent always read the same project state, including when derived state lives on another disk, and there is no second process to clean up. |
 | Terminal verifier | A read-only status and search check, with optional ingestion and forced recomputation. | Fast confidence that an installation works, and a scriptable smoke test. |
-| Staleness and upgrade reporting | `status` says whether the selected generation is stale, and why, and whether a policy upgrade is required. | You know when a search is answering from older material, and why. |
+| Staleness, upgrade, and retained-generation reporting | `status` says whether the selected generation is stale, and why, whether a policy upgrade is required, and what every retained generation occupies on disk, including any whose manifest is unreadable. | You know when a search is answering from older material, and you can see what the retained generations cost without a shell command. |
 | Build metrics and failure records | Phase timings, reuse counts, rejection counts, and truncation totals are recorded per generation; non-resumable failures leave a small record. | Slow or surprising builds can be diagnosed without guessing. |
-| Documented performance characteristics | Measured, reproducible numbers for index builds, durability writes, embedding, and the query gate, plus a benchmark script to reproduce them on your hardware. | Claims can be checked instead of trusted. |
+| Documented performance characteristics | Measured, reproducible numbers for index builds, durability writes, embedding, and the query gate, plus retrieval quality against a judged query set, and a benchmark script to reproduce them on your hardware. | Claims can be checked instead of trusted. |
 
 ## 3. What this server deliberately does not do
 
@@ -98,45 +157,14 @@ These are choices, not missing pieces. Each one would change what the server is:
 - **It does not provide quote-safe transcripts.** Returned text is cleaned for retrieval, and every result says `direct_quote_safe: false`. Open the original.
 - **It does not decide what is true, and never deletes or excludes sources on its own.** Duplicate and metadata decisions are reviewed and reversible.
 - **It does not run OCR.** Scanned PDFs need OCR first; password-protected PDFs are rejected.
-- **It is not multilingual.** Embeddings and the text-health policy are English-oriented, and non-English-primary corpora are outside the design envelope. This is stated in `README.md` and in `PLAN.md`.
+- **It is not multilingual.** Embeddings and the text-health policy are English-oriented, and non-English-primary corpora are outside the design envelope. This is stated in `README.md` and in `MEASUREMENTS.md`.
 - **It does not require an external service.** No hosted embedding API, no vector database server, no credentials. Models are downloaded once and cached locally.
 - **It exposes no MCP resources.** Its surface is tools, with the local UI covering human inspection.
 - **It does not cache freshness.** A directory signature cannot see a source replaced in place, so a cached verdict could call a changed corpus current. Callers opt out of the check explicitly instead, and the response says when freshness was not checked.
 
 ## 4. Planned additions
 
-Everything here is deferred work, recorded in `ROADMAP.md` and `TODO.md`. None of it is claimed as present.
-
-### Retrieval quality
-
-- A judged query set for the reference corpus, so "is hybrid better than BM25 here?" has a measured answer rather than an assumption.
-- Recall and ranking measurements for BM25, dense, hybrid, and reranked modes.
-- Configurable fusion weights *only* if that measurement shows a repeatable benefit.
-
-### Ingestion lifecycle
-
-- Listing, inspecting, and pruning retained generations, which are roughly 101 MB each today and accumulate.
-- Deliberate rollback to an earlier generation.
-- A disk-space check before a build starts.
-- Splitting the resumable ingestion loop into per-phase handlers, so review of that code is safer.
-
-### Per-request efficiency
-
-- A persistent document-metadata index, which is what a corpus of tens of thousands of sources would need before per-process caches of the document map or the staleness verdict are worth their invalidation risk.
-- Pushing category and keyword filtering into the embedded dense index. This is only relevant above 200,000 chunks, where that index is used.
-
-### Citations and quotation
-
-- Character offsets inside extraction units, so a hit can point at a span rather than a whole unit.
-- Distinguishing a PDF's physical page from its printed label more explicitly.
-- An exact-quote verification tool — the missing piece between "cleaned semantic text" and "safe to quote".
-- Citation export in common bibliographic styles, without inventing metadata.
-
-### Scale and operations
-
-- Incremental dense-index construction for very large collections. This matters only above the exact-scan threshold, where the embedded backend currently rebuilds its index for each changed generation.
-- Optional backup profiles that exclude originals, for users who store their PDFs elsewhere.
-- Optional cross-project search that keeps each project's boundary explicit.
+Deferred work is tracked in two places and not repeated here: `TODO.md` lists the open work inside this repository's scope, and `ROADMAP.md` lists product ideas that are not in scope yet. Nothing in either is claimed as present.
 
 ## 5. Comparison with another MCP RAG server
 
@@ -158,8 +186,8 @@ Read this as two profiles rather than a scoreboard. It reflects that project's R
 | Cancellation and restart behaviour | Checkpointed: a build resumes where it stopped | Progress is reported; resumability is not documented |
 | Interface | Nine tools, a local evidence UI, and a terminal verifier; no MCP resources | Five tools and four MCP resources (`rag://documents`, `rag://document/{path}`, `rag://query-document/{chunks}/{query}`, `rag://embedding/status`) |
 | Human review | Reviewed metadata corrections and reversible exclusions in the UI | Not part of the documented feature set |
-| Retrieval evaluation | Not yet measured — planned | Not part of the documented feature set |
-| Licence | No licence file is present in this repository; `NOTICE` records UltraRAG and third-party attribution | MIT |
+| Retrieval evaluation | Measured: 32 known-item judged queries on one reference corpus, reported per mode and per query class, with pooled recall still pending | Not part of the documented feature set |
+| Licence | Apache-2.0 for this repository's own code, which is recorded in `NOTICE` | MIT |
 
 Which to choose:
 

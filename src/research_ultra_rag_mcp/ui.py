@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import contextlib
 import os
+import socket
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Protocol
 
+import uvicorn
 from fastmcp import Client
 from ui_ultra_rag_mcp import (
     AdapterFactory,
@@ -174,6 +178,98 @@ def create_ui_app(
         profile=RESEARCH_UI_PROFILE,
         adapter_factory=_adapter_factory(config),
     )
+
+
+UI_HOST = "127.0.0.1"
+
+
+def _port_is_available(host: str, port: int) -> bool:
+    """Whether the loopback port can still be bound."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+class EmbeddedUi:
+    """An opt-in browser UI served inside the MCP server process.
+
+    The MCP server has already resolved the project, runtime root, model cache,
+    dense backend, and offline mode, so hosting the UI here removes the mismatch
+    a separately launched ``research-ultra-rag-ui`` can have, and the UI stops
+    with the server instead of outliving it. The host is fixed to loopback, no
+    browser is opened, and ``status`` reports ``ui_url``, ``ui_ready``, and
+    ``ui_error`` so an agent can hand the URL to the user without pretending it
+    started anything itself.
+
+    The UI shares this process's event loop, so every blocking operation it
+    triggers must keep going through ``asyncio.to_thread`` the way the service
+    already does; a synchronous call on the loop would stall the UI it serves.
+    """
+
+    def __init__(self, config: ResearchConfig, *, port: int) -> None:
+        if not 1 <= port <= 65535:
+            raise ConfigurationError("--ui-port must be between 1 and 65535")
+        self.config = config
+        self.host = UI_HOST
+        self.port = port
+        self.error: str | None = None
+        self._server: uvicorn.Server | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.host}:{self.port}"
+
+    @property
+    def ready(self) -> bool:
+        """Whether the UI is serving right now.
+
+        uvicorn sets ``Server.started`` once and never clears it, so the live
+        task is part of the test: after ``stop`` and after a bind failure the
+        task is finished and the UI is not serving.
+        """
+
+        return (
+            self._server is not None
+            and bool(self._server.started)
+            and self._task is not None
+            and not self._task.done()
+        )
+
+    async def start(self, *, research_client: ResearchToolClient | None = None) -> None:
+        """Serve the UI for the life of the MCP server."""
+
+        if not _port_is_available(self.host, self.port):
+            self.error = (
+                f"Port {self.port} is already in use on {self.host}, so the UI was "
+                "not started; choose another --ui-port."
+            )
+            return
+        app = create_ui_app(self.config, research_client=research_client)
+        self._server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=self.host,
+                port=self.port,
+                log_level="warning",
+                access_log=False,
+            )
+        )
+        self._task = asyncio.create_task(self._server.serve())
+
+    async def stop(self) -> None:
+        """Ask the UI to stop and wait for its task to finish."""
+
+        if self._server is not None:
+            self._server.should_exit = True
+        if self._task is not None:
+            task, self._task = self._task, None
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def _parser() -> argparse.ArgumentParser:

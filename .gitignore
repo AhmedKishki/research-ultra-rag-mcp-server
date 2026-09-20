@@ -11,3 +11,31 @@ dist/
 .env
 .env.*
 !.env.example
+# Generated retrieval-evaluation reports (regenerate with scripts/evaluate_retrieval.py).
+evaluation/*-report.json
+
+# Original documents never belong in this repository; the originals are the
+# quote authority and stay in the project that owns them.
+*.pdf
+*.epub
+!tests/fixtures/**/*.pdf
+!tests/fixtures/**/*.epub
+
+# A research corpus copied in whole, and one project's own server state.
+/sources/
+/projects/
+/.research-rag/
+
+# Portable project bundles contain complete original works.
+*.research-rag.zip
+*.research-rag.zip.sha256
+
+# Personal notes, writing, and skill folders.
+/obsidian-vault/
+/zettlr/
+/agent-skills/
+draft-writing*.zip
+
+# The author's local MCP client configuration, which names absolute personal
+# project paths. mcp_settings.example.json stays tracked on purpose.
+mcp_settings.json

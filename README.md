@@ -15,7 +15,7 @@ Plain-language summary of every capability, and why it is there:
 - **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
 - **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, per-field provenance and warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage.
-- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and an optional CPU reranker that reorders a candidate set. Metadata filters narrow results by category, keyword, or document. A freshness check can be skipped per query when a caller only needs evidence.
+- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. Metadata filters narrow results by category, keyword, or document. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
@@ -108,6 +108,33 @@ The same installation can serve two isolated projects, which is why `--project-r
 
 A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.example.json).
 
+### Let the server host the browser UI (optional)
+
+Add `--ui-port` (or set `RESEARCH_ULTRARAG_UI_PORT`) and the same server also serves the local UI on that loopback port for as long as it runs, reusing exactly the project, runtime root, model cache, dense backend, and offline setting it was launched with:
+
+```json
+{
+  "mcpServers": {
+    "research-ultra-rag": {
+      "command": "/ABSOLUTE/PATH/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+      "args": [
+        "--project-root", "/ABSOLUTE/PATH/my-research-project",
+        "--ui-port", "5051"
+      ],
+      "timeout": 3600
+    }
+  }
+}
+```
+
+Then open `http://127.0.0.1:5051`. What this does and does not do:
+
+- The port is bound on `127.0.0.1` only, and no browser window is opened for you.
+- The UI stops when the server stops. Measured on the reference project: the UI answers `/api/health` about six seconds after the server starts, and the port is released within half a second of the server being terminated, so there is no orphan process and nothing to clean up by hand.
+- `status` reports `ui_url`, `ui_ready`, and `ui_error`. If the port is already in use, the MCP server keeps serving tools, `ui_ready` stays false, and `ui_error` says the port was taken.
+- This is the option that keeps the UI and the agent on the same state. A separately launched `research-ultra-rag-ui` has to be given the same `--runtime-root` by hand, because it never reads your MCP client's configuration.
+- One agent-facing note: reranking is on by default for tool calls, while the UI's **CPU rerank** checkbox starts unticked, so a UI search returns the unranked order until you tick it.
+
 Two practical notes:
 
 - Running the executable by hand looks like nothing happens. That is correct — it is a stdio server waiting for an MCP client to send protocol messages.
@@ -164,12 +191,12 @@ Prompts that work well:
 
 Hybrid is the normal choice. Use the others to look at one signal at a time:
 
-- **BM25** is lexical: it matches the words you typed. Best for exact names, terms, and phrases, and useful when a semantic result surprises you.
-- **Dense** is semantic: it matches meaning. Useful for concepts phrased differently from the sources.
-- **Hybrid** combines both rankings.
-- **Reranking** is optional and slower. It reorders a candidate set that already looks plausible, so it is not needed for routine lookups.
+- **BM25** is lexical: it matches the words you typed. Best for exact names, terms, and phrases, and useful when a semantic result surprises you. In measurement it is the strongest single signal when a question names a person, place, or project, and it finds remembered phrasings almost perfectly.
+- **Dense** is semantic: it matches meaning. Useful for concepts phrased differently from the sources, though on its own it is the weakest of the three modes — it found the judged passage within ten results for 63% of questions, returns fewer passages because of its similarity gate, and is worst on names, which need the words to match. Use it with BM25 rather than instead of it.
+- **Hybrid** combines both rankings. It put the judged passage first more often than BM25 alone did, with the same reach at ten results.
+- **Reranking** is on by default and is slower — about 2.3 s per warm query against 0.17 s for hybrid without it, plus a second model downloaded on first use — because it is the largest measured quality gain available: the judged passage came back first for 81% of questions against 66% without it, and the right document was among the results for 94% against 91%. Pass `rerank=false` when latency matters more than ranking. If the pinned model cannot be loaded, the search returns the unranked order and says so in `rerank_fallback` rather than failing. In the browser UI the **CPU rerank** checkbox is the opt-in: it is unticked by default, so a UI search sends `rerank=false` explicitly.
 
-Search can legitimately return fewer results than `top_k`, including none, when candidates fail the relevance gates — abstaining is a feature, not an error. A rank or similarity score is an ordering signal, never a truth or confidence probability.
+Search can legitimately return fewer results than `top_k`, including none, when candidates fail the relevance gates — abstaining is a feature, not an error. A rank or similarity score is an ordering signal, never a truth or confidence probability. The mode comparisons above are measurements, not impressions: the judged question set and the harness that runs it are in `evaluation/` and `scripts/evaluate_retrieval.py`, and the full tables, including the fact that questions phrased in your own words are much harder for every mode than remembered phrasing, are in `MEASUREMENTS.md`.
 
 ### Passage view versus reference view
 
@@ -229,6 +256,17 @@ What you can do in it:
 - import a bundle already placed in `.research-rag/bundles/`.
 
 One UI process serves one project; to keep two open at once, start a second process with another project root and port, for example `--port 5052`. During ingestion the UI shows the operation as busy. A project lock serialises agent and UI operations, so a second request waits instead of reading a half-built index. The UI follows checkpointed `in_progress` responses automatically until the generation is ready or nothing changed.
+
+**Give the UI the same runtime settings you gave your agent.** The UI starts its own MCP server and never reads your MCP client's configuration, so a project whose derived state lives outside it needs the setting repeated:
+
+```bash
+RESEARCH_ULTRARAG_RUNTIME_ROOT=/ssd/research-runtime/my-project \
+  uv run research-ultra-rag-ui --project-root /absolute/path/to/my-research-project
+```
+
+Without it, the UI and your agent read different runtime roots and can show different generations for the same project — the agent on the fast device and the UI on the old in-project copy. The simpler option is to let the MCP server host the UI with `--ui-port`, described under [Connect an AI agent](#connect-an-ai-agent): it reuses the server's settings, so the two can never disagree.
+
+Two differences between a UI session and an agent session are worth knowing before you compare results. The **CPU rerank** checkbox is off unless you tick it, so a UI search sends `rerank=false` explicitly while an agent search reranks by default. And the retained-generation inventory that `status` reports (`generations`, `retained_generation_bytes`) is not shown in the current UI views; use an agent or `research-ultra-rag-verify` to see what retained generations occupy.
 
 ## Use the terminal verifier
 
@@ -301,11 +339,11 @@ How to read that tree:
 
 On first use after upgrading, an existing `.ultrarag/research/` directory is moved automatically to `.research-rag/runtime/`. If both locations already hold runtime data, startup stops rather than guessing. Other `.ultrarag/` content belonging to different tools is left alone. Stop every research MCP and UI process before the first launch of the upgraded package.
 
-`current.json` names the one generation search uses. Earlier successful generations stay on disk but are not searched, and automatic pruning is not implemented.
+`current.json` names the one generation search uses. Earlier successful generations stay on disk but are not searched, and automatic pruning is not implemented. `status` lists them (`generations`) with their creation time, chunk and document counts, file count, and size, marks the current one, and reports `retained_generation_count` and `retained_generation_bytes`, so you can see what they occupy. A directory whose manifest is missing or unreadable is reported with `manifest_error` rather than failing the call. Nothing is ever deleted by `status`; remove an old generation directory yourself, and only when you are sure no MCP or UI process is using it. On the reference project two retained generations occupy 208 MB in total.
 
 ### Put derived state on fast local storage
 
-If your project lives on a slow disk, point the working files at a fast one. Embedding work lives on the CPU, but staging, vectors, and index writes are disk-bound, so this is often the single biggest speed-up available.
+If your project lives on a slow disk, you can point the working files at a fast one. The measured benefit is narrow, and worth stating precisely: the dense index is an exact scan of the portable vectors the generation already stores (0.03 s of index work on the reference corpus, against 3,040.73 s to build an embedded index for the same vectors), so what a rebuild still does on disk is staging writes and reading the sources — grouping durability writes per unit is worth 17–37 s of chunking on the reference HDD, and source reads cost whatever the device costs. Use it when the project's disk is genuinely the bottleneck, not as a routine default.
 
 ```bash
 research-ultra-rag-mcp \
@@ -353,9 +391,9 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, and build metrics. Read-only. |
+| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
 | `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. |
-| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval, metadata filters, optional reranking, and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
+| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval, metadata filters, reranking (on by default, `rerank=false` to skip), and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its neighbors and provenance. |
 | `set_source_metadata` | Saves a reviewed metadata correction for one source. Applies immediately to an indexed source. |
@@ -419,7 +457,7 @@ Things to know before you rely on a result:
 - The text-health policy withholds a passage only for corruption evidence, never for mixing scripts, so a quotation in another language stays retrievable and comes back with `text_notes`.
 - A chunk longer than the embedding model's token limit is embedded from its beginning only. BM25 still matches its full text, while dense search covers the start. Ingestion counts and reports these chunks (`dense_truncated`) but does not split them.
 - Duplicate sources are a judgement call. The server never deletes an original; you review and exclude.
-- Large CPU ingestions and optional reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget.
+- Large CPU ingestions and reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget. Reranking is on by default for `search`; pass `rerank=false` when you want the fastest answer.
 - Cleaned text is not a quote-verification surface — open the original.
 - Earlier successful generations are kept. Automatic pruning is not implemented, so old generations accumulate until you remove them yourself.
 
@@ -438,3 +476,5 @@ This independent server directly uses UltraRAG and gratefully credits the UltraR
 The dependency is pinned to UltraRAG `0.3.0.2`, commit [`3a709a2aea3fbe46acca59c422621c94b6e86857`](https://github.com/OpenBMB/UltraRAG/tree/3a709a2aea3fbe46acca59c422621c94b6e86857). UltraRAG is distributed under the [Apache License 2.0](https://github.com/OpenBMB/UltraRAG/blob/3a709a2aea3fbe46acca59c422621c94b6e86857/LICENSE.txt). The installed upstream snapshot retains its license and notices.
 
 This repository is not an official UltraRAG release and is not affiliated with or endorsed by OpenBMB, THUNLP, NEUIR, AI9stars, or UltraRAG contributors. See [`NOTICE`](NOTICE) for full upstream, model, retrieval-component, and UI attribution.
+
+This repository's own code is licensed under the [Apache License 2.0](LICENSE), matching the pinned upstream's terms. That grant covers this repository's code only. Two extraction dependencies are licensed differently and matter to anyone redistributing or operating this server: PyMuPDF (AGPL-3.0, or an Artifex commercial licence) and EbookLib (AGPL-3.0-or-later). Their obligations apply separately from this repository's licence, and [`NOTICE`](NOTICE) records them. Nothing here is legal advice; confirm the combination that applies to your use.

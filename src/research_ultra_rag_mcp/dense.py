@@ -24,7 +24,7 @@ EMBEDDING_MAXIMUM_TOKENS = 512
 # large batch spends most of its compute on padding: on the reference corpus
 # (mean 152 tokens, max 846) one sequence per inference measured 23.7
 # chunks/s against 6.2 at a batch of 64, and a batch of 1 returns exactly
-# the same floats as a batch of 64. See PLAN.md 10.6.
+# the same floats as a batch of 64. See MEASUREMENTS.md.
 EMBEDDING_INFERENCE_BATCH_SIZE = 1
 RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 RERANKER_MODEL_REVISION = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
@@ -32,7 +32,7 @@ COLLECTION_NAME = "research_chunks"
 QDRANT_BACKEND_NAME = "embedded-qdrant"
 EXACT_BACKEND_NAME = "portable-exact-vectors"
 # Above this many chunks the exact scan stops being the right default and an ANN
-# backend earns its build cost. See PLAN.md P1-13/Step A for the measurements.
+# backend earns its build cost. See MEASUREMENTS.md for the measurements.
 EXACT_BACKEND_CHUNK_LIMIT = 200_000
 EXACT_INDEX_FILENAME = "index.json"
 EXACT_DOCUMENTS_FILENAME = "documents.json"
@@ -41,6 +41,15 @@ _EXACT_VECTORS_RELATIVE = Path("portable") / "embeddings.npy"
 
 class DenseTokenAuditUnavailable(RuntimeError):
     """Raised when the embedding tokenizer cannot be inspected safely."""
+
+
+class RerankerUnavailable(RuntimeError):
+    """Raised when the optional reranker model cannot be loaded.
+
+    The service treats this as a recoverable condition: reranking is skipped,
+    the unranked candidate order is returned, and the response discloses the
+    fallback instead of failing the search.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +129,7 @@ def _load_embedder(
     """Load the pinned CPU embedding model from the shared model cache.
 
     `threads` sets the ONNX Runtime intra-op and inter-op thread count. The
-    default is left to the runtime; PLAN.md 10.6 records the measured effect
+    default is left to the runtime; MEASUREMENTS.md records the measured effect
     of setting it on one machine.
     """
 
@@ -136,16 +145,31 @@ def _load_embedder(
 
 
 def _load_cross_encoder(cache_root: Path, *, offline: bool) -> TextCrossEncoder:
-    """Load the optional pinned CPU cross-encoder from the shared model cache."""
+    """Load the optional pinned CPU cross-encoder from the shared model cache.
+
+    Any load failure means the reranker cannot run — most often an offline call
+    whose model is not cached yet — so it is reported as ``RerankerUnavailable``
+    for the caller to degrade from rather than as an opaque model error.
+    """
 
     cache_root.mkdir(parents=True, exist_ok=True)
-    return TextCrossEncoder(
-        model_name=RERANKER_MODEL,
-        cache_dir=str(cache_root),
-        cuda=False,
-        local_files_only=offline,
-        revision=RERANKER_MODEL_REVISION,
-    )
+    try:
+        return TextCrossEncoder(
+            model_name=RERANKER_MODEL,
+            cache_dir=str(cache_root),
+            cuda=False,
+            local_files_only=offline,
+            revision=RERANKER_MODEL_REVISION,
+        )
+    except Exception as exc:
+        hint = (
+            " offline mode requires it to be cached already"
+            if offline
+            else " it is downloaded on first use"
+        )
+        raise RerankerUnavailable(
+            f"The reranker model {RERANKER_MODEL} cannot be loaded:{hint}. {exc}"
+        ) from exc
 
 
 def _load_audit_tokenizer(embedder: TextEmbedding) -> Tokenizer:

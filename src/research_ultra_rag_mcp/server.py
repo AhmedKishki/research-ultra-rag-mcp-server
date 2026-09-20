@@ -173,8 +173,11 @@ Rerank: TypeAlias = Annotated[
     bool,
     Field(
         description=(
-            "Whether to apply the optional CPU cross-encoder reranker. This is slower "
-            "and may download its pinned model on first use."
+            "Whether to apply the CPU cross-encoder reranker. It is on by default "
+            "because it is the largest measured retrieval-quality gain; set it false "
+            "for the lowest latency or to skip loading its model. When the pinned "
+            "model cannot be loaded, the search returns the unranked candidate order "
+            "and reports rerank_fallback."
         )
     ),
 ]
@@ -319,8 +322,13 @@ async def _tool_call(operation: Callable[[], Awaitable[T]]) -> T:
         raise ToolError(f"Research workflow failed: {exc}") from exc
 
 
-def create_server(config: ResearchConfig) -> FastMCP[Any]:
+def create_server(
+    config: ResearchConfig,
+    *,
+    ui_port: int | None = None,
+) -> FastMCP[Any]:
     holder: dict[str, ResearchService] = {}
+    ui_holder: dict[str, Any] = {}
 
     @asynccontextmanager
     async def lifespan(_: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
@@ -332,9 +340,20 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
             init_timeout=1800,
         ) as client:
             holder["service"] = ResearchService(config, VanillaUltraRAG(client))
+            if ui_port is not None:
+                # Imported lazily so a server that serves no UI never loads the
+                # browser stack (uvicorn and starlette).
+                from .ui import EmbeddedUi
+
+                embedded = EmbeddedUi(config, port=ui_port)
+                await embedded.start()
+                ui_holder["ui"] = embedded
             try:
                 yield {}
             finally:
+                active_ui = ui_holder.pop("ui", None)
+                if active_ui is not None:
+                    await active_ui.stop()
                 holder.clear()
 
     app = FastMCP(
@@ -359,8 +378,30 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         }
     )
     async def status() -> dict[str, Any]:
-        """Report project identity, staleness, and required generation upgrades."""
-        return await _tool_call(service().status)
+        """Report project identity, staleness, required generation upgrades, and retained generations.
+
+        generations lists every generation still on disk with its creation time,
+        chunk and document counts, file count, and size, marks the one that is
+        current, and reports the retained count and total bytes. A generation
+        whose manifest is unreadable is reported with manifest_error instead of
+        failing the call. Pruning is not offered; this only shows what a prune
+        would consider.
+
+        When this server was started with --ui-port, ui_url names the browser UI
+        it is serving on loopback, ui_ready says whether it finished starting,
+        and ui_error explains a port that was already in use. Without that
+        option all three are null, false, and null, and no UI is running.
+        """
+        payload = await _tool_call(service().status)
+        embedded = ui_holder.get("ui")
+        if embedded is None:
+            return {**payload, "ui_url": None, "ui_ready": False, "ui_error": None}
+        return {
+            **payload,
+            "ui_url": embedded.url,
+            "ui_ready": embedded.ready,
+            "ui_error": embedded.error,
+        }
 
     @app.tool(
         annotations={
@@ -414,15 +455,18 @@ def create_server(config: ResearchConfig) -> FastMCP[Any]:
         keywords: KeywordFilter = None,
         document_ids: DocumentIdFilter = None,
         retrieval_method: RetrievalMethod = "hybrid",
-        rerank: Rerank = False,
+        rerank: Rerank = True,
         include_staleness: IncludeStaleness = True,
     ) -> dict[str, Any]:
         """Search the current generation and return cleaned semantic evidence.
 
         Optional filters require every requested category or keyword to be
         present. Hybrid is the default; BM25 and dense retrieval can be inspected
-        separately. Optional CPU reranking is slower and lazily loads another
-        local model. The default passage view preserves the flat ranking. The
+        separately. CPU reranking is on by default because it is the largest
+        measured quality gain, and it is slower and lazily loads another local
+        model; set rerank=false to skip it. When that model cannot be loaded the
+        unranked candidate order is returned and rerank_fallback explains why.
+        The default passage view preserves the flat ranking. The
         reference view groups selected passages by source and caps passages from
         each reference while top_k remains the total passage budget. Results may
         be fewer than top_k when relevance gates reject weak candidates. Set
@@ -690,11 +734,34 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ui-port",
+        default=os.environ.get("RESEARCH_ULTRARAG_UI_PORT"),
+        help=(
+            "Also serve the local browser UI on this loopback port for the life "
+            "of this server, reusing the resolved project, runtime, model, and "
+            "offline settings. Omit to serve no UI."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         choices=("debug", "info", "warn", "error"),
         default="warn",
     )
     return parser
+
+
+def _ui_port_from(raw: Any) -> int | None:
+    """Normalize --ui-port, which may arrive from the environment as text."""
+
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        raise SystemExit("--ui-port must be an integer between 1 and 65535") from None
+    if not 1 <= port <= 65535:
+        raise SystemExit("--ui-port must be between 1 and 65535")
+    return port
 
 
 def main() -> None:
@@ -717,7 +784,9 @@ def main() -> None:
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
-    create_server(config).run(transport="stdio", show_banner=False)
+    create_server(config, ui_port=_ui_port_from(args.ui_port)).run(
+        transport="stdio", show_banner=False
+    )
 
 
 if __name__ == "__main__":

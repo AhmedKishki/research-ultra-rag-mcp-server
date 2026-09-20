@@ -101,7 +101,7 @@ def test_features_document_separates_upstream_from_added_work() -> None:
         "corpus_chunk_documents",
         "retriever_bm25_search",
         "mcp-rag-server",
-        "Not yet measured",
+        "known-item",
     ):
         assert value in features
 
@@ -109,6 +109,32 @@ def test_features_document_separates_upstream_from_added_work() -> None:
     lowered = features.casefold()
     assert "is implemented" not in lowered
     assert "we have measured retrieval quality" not in lowered
+
+
+def test_features_document_justifies_unused_upstream_components() -> None:
+    """Every replaced upstream component must state its benefit and its reason."""
+
+    with (Path(__file__).parents[1] / "FEATURES.md").open(encoding="utf-8") as handle:
+        features = handle.read()
+
+    assert "### 1.1 Reuse decisions" in features
+
+    # The dense index backends and the reranking components are the upstream
+    # capabilities this server replaces, so each must be named with its
+    # upstream entrypoint rather than dismissed in one line.
+    for entrypoint in (
+        'retriever_init(index_backend="faiss")',
+        'retriever_init(index_backend="qdrant")',
+        'retriever_init(index_backend="milvus")',
+        "reranker_init",
+        "reranker_rerank",
+    ):
+        assert entrypoint in features
+
+    # A label alone is not a justification: each replacement states what reuse
+    # would have brought and why it was not taken.
+    assert features.count("**Benefit if reused:**") >= 4
+    assert features.count("**Why not:**") >= 4
 
 
 def test_markdown_has_no_hard_wrapped_prose() -> None:

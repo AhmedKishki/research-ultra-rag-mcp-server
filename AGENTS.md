@@ -12,12 +12,22 @@ The package builds on the separately versioned `vanilla-ultra-rag-mcp-server`. N
 
 - `README.md` is a standalone user manual: capability summary, operation, installation, MCP configuration, concrete usage, expected results, storage, and user-visible limitations. It must not compare or link to sibling MCP-server projects.
 - `AGENT_GUIDE.md` is operational policy for an AI agent using the nine research tools. Do not put installation or contributor workflows there.
-- `AGENTS.md` is this engineering contract. It may document internal dependency boundaries, but must not become a second user manual.
-- `FEATURES.md` is the capability inventory: what comes from UltraRAG, what this server adds on top, what is deliberately excluded, what is only planned, and how it differs from a general-purpose MCP RAG server. Keep the upstream/added/planned labels accurate; never present planned work as shipped.
-- `ROADMAP.md` contains only deferred work.
-- `PLAN.md` records review findings, their evidence, and the agreed strengthening sequence. It is a review and plan document, not a description of shipped behaviour.
-- `TODO.md` is the actionable checklist derived from `PLAN.md`. It may repeat `PLAN.md` items as checkboxes but must not introduce capability that is absent from `PLAN.md` or `ROADMAP.md`.
+- `AGENTS.md` is this engineering contract. It is the single place for current engineering rules, and it may document internal dependency boundaries, but it must not become a second user manual.
+- `FEATURES.md` is the capability inventory: what comes from UltraRAG, what this server adds on top, what is deliberately excluded, what is only planned, and how it differs from a general-purpose MCP RAG server. Keep the upstream/added/planned labels accurate; never present planned work as shipped. Whenever UltraRAG offers a capability that this server does not use, section 1.1 must state the reason, what reuse would have added, and the criteria under which the decision would be revisited; an unused upstream feature must never appear unexplained.
+- `MEASUREMENTS.md` holds the current numbers and the current limits: ingestion and query cost, retrieval quality against the judged set, and what those numbers do not establish. Every measurement quoted anywhere else in the repository is reproduced there.
+- `ROADMAP.md` contains only deferred product ideas that are not in scope yet.
+- `TODO.md` contains only open work: what is unimplemented, grouped by area, with the commands that verify the repository's current state.
 - `NOTICE` contains attribution and legal notices.
+
+### Markdown describes the present, never the past
+
+Every markdown file states what the software does now and what remains open. Git is the archive, and its history is the only record of how the current state was reached.
+
+- Do not add review logs, finding lists, change histories, before/after narratives, "Step N" sequences, decision logs, or "previously"/"used to"/"was" framing. If a fact changed, state the current fact and let the diff carry the rest.
+- Do not keep a finished item as a record of itself. Once work is done it leaves `TODO.md`; once a measurement is superseded, the superseded number leaves `MEASUREMENTS.md`.
+- Keep numbers current. When the corpus, the extraction policy, or a retrieval default changes, re-measure with the harnesses named in `MEASUREMENTS.md` and update every quoted figure rather than leaving one stale value that contradicts the rest.
+- Keep each fact in one place. Current rules live in this file, current behaviour in `README.md`, capabilities in `FEATURES.md`, numbers and limits in `MEASUREMENTS.md`, open work in `TODO.md`, and deferred ideas in `ROADMAP.md`; other files point at them instead of repeating them.
+- Cross-references must resolve after any edit: code comments, scripts, and documents name these files by path or by harness name, never by a section number that can drift.
 
 ## Presenting decisions to the user
 
@@ -29,7 +39,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - mark exactly one option as the recommendation and say why in one sentence;
 - include an explicit "no change" or "decide later" option whenever work can proceed without an answer;
 - keep options mutually exclusive, and complete enough that choosing one is sufficient to proceed;
-- record the options in `PLAN.md` with the same identifiers before asking, and record the chosen option there afterwards, so the decision stays traceable;
+- keep no decision log: a choice becomes a current rule in this file when it changes behaviour, or an entry in `TODO.md` or `ROADMAP.md` when it defers work;
 - never implement a choice that changes generation artifacts, retrievable evidence, the portable-state contract, or on-disk layouts before the user has chosen it.
 
 ## Current compatibility baseline
@@ -37,6 +47,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
 - Version: `0.11.0`
+- Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
@@ -64,6 +75,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Search results must identify `text` as cleaned semantic text with `direct_quote_safe=false`; direct quotations must come from the original.
 - Keep MCP stdout reserved for protocol messages.
 - Keep the UI bound to loopback addresses. Do not add remote exposure or authentication assumptions without an explicit security design.
+- An opt-in `--ui-port` may host that UI inside the MCP server process so it reuses the server's resolved project, runtime, and offline settings. It must stay loopback-only, must never open a browser by itself, must keep `Status` reporting `ui_url`, `ui_ready`, and `ui_error`, and must stop when the server stops: no orphan UI process and no port left bound.
 - Keep browser write endpoints same-origin, JSON-only, and constrained to the nine public MCP operations.
 - Do not let UI code read or mutate generation artifacts directly. It must use the private stdio MCP client, except for safely serving an allowlisted original PDF or EPUB from the configured source root.
 - Keep the shared UI dependency pinned by commit. Keep MCP transport, research tool mapping, and source authorization in this repository's adapter; do not copy the shared static workspace back into this package.
@@ -124,6 +136,9 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `ui.py`: shared-UI profile, private MCP client, public-tool mapping, and safe original-source authorization.
 - `ui-ultra-rag-mcp` dependency: loopback HTTP host, constrained JSON API, and packaged dependency-free browser workspace.
 - `verify.py`: terminal MCP client for end-to-end project verification.
+- `scripts/benchmark_write_pattern.py`: reproduces the write, chunking, and embedding measurements in `MEASUREMENTS.md`.
+- `scripts/evaluate_retrieval.py`: runs the judged query set through the public `search` tool and reports BM25, dense, hybrid, and reranked quality; its JSON report is a generated, gitignored artifact.
+- `evaluation/`: the reference judged query set and its protocol, including the known-item limits that keep it from claiming true recall.
 - `tests/`: unit and real stdio integration coverage.
 - `ROADMAP.md`: explicitly deferred work.
 
@@ -156,7 +171,7 @@ Changed builds use a unique directory under `staging/`, then move a verified gen
 
 ## Public MCP tools
 
-- `status`: read-only source/current/staleness inspection.
+- `status`: read-only source/current/staleness inspection, retained-generation inventory, and the URL/readiness of a UI this server hosts when it was started with `--ui-port`.
 - `ingest`: return the current generation for an exact no-op, advance a checkpointed build and return `in_progress`, or select a complete new generation with verified reuse; `force_recompute` bypasses reuse but may resume its own matching checkpoint.
 - `search`: hybrid-by-default retrieval with selectable BM25/dense modes, optional reranking, and passage-ranked or reference-grouped structured evidence.
 - `list_sources`: inspect indexed documents and metadata, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
@@ -178,7 +193,7 @@ Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 - `top_k` is always a total returned-passage budget. The optional reference view scans the complete relevance-gated candidate ordering, admits at most two passages per `source_id` by default, and groups those passages without aggregating scores or rewarding documents for producing more chunks.
 - Reference grouping is presentation-time MCP orchestration. It must not alter indexes or the default passage ordering. Keep its cap explicit, report both returned and candidate-pool reference counts, and preserve the unreranked candidate tail after a reranked prefix so useful references remain reachable.
 - Chunking: UltraRAG token chunker with the GPT-2 tiktoken encoding, default and maximum 384 tokens, overlap 64. The cap stays below the embedding model's 512-token input limit despite tokenizer differences; do not raise it without an explicit long-input strategy and tests.
-- Optional reranker: FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2`, CPU, lazily loaded, applied to at most 50 candidates. Artifact revision: `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. It must remain opt-in because of latency and its extra model.
+- Reranking: FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2`, CPU, lazily loaded, applied to at most 50 candidates. Artifact revision: `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. It is **on by default** because it is the largest measured quality gain (`MEASUREMENTS.md`): `rerank=false` is the explicit opt-out, and an unavailable model must degrade to the unranked candidate order with `rerank_fallback` in the response, never fail the search.
 - A dense index owns only vectors and identifiers (`chunk_id`, `document_id`, `source_id`). `chunks.jsonl` remains the canonical passage and locator store; document metadata and provenance remain canonical in the manifest, so filtering resolves current metadata to document IDs at query time.
 - The generation-local SQLite artifact lookup contains only identifiers, ordinals, content hashes, byte offsets into canonical chunk/unit JSONL, and one integer retrieval verdict per chunk. It must never duplicate passage or extraction text. Use it for candidate retrieval, neighboring passages, document-scoped reuse, and exact-text vector reuse; reconstruct it from canonical artifacts when a legacy generation or portable bundle does not contain it.
 - Precompute a retrieval verdict when the lookup is built and reject candidates from that stored value rather than rescanning text per query. The verdict is a bitmask over properties of the chunk alone (`chunk_health_flags`: corrupt text, extraction artifact), never a property of the query, and it must mirror the query-time check exactly so rejection counters and withheld disclosures cannot change. Keep a fallback that recomputes it from text when a lookup predates the column, and recompute reason codes only for a chunk the verdict flags as corrupt, because the response discloses them.
@@ -202,7 +217,7 @@ Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 - Withhold text only for corruption evidence: replacement characters, private-use or unassigned code points, or a known damaged encoding sequence. A single replacement character counts only with corroborating corruption evidence. Script mixing and non-Latin dominance are advisory `text_notes` that never withhold a unit, a chunk, or a passage, because English-language scholarship legitimately quotes other scripts.
 - Fold only formula-font letters (Mathematical Alphanumeric Symbols) and the alphabetic presentation ligatures (fi, fl, ff) so a typed query can match the printed text. Leave every other character canonical: do not apply global NFKC, because it would also fold superscripts, subscripts, and symbols that carry meaning in citations and notation.
 - Audit every built chunk against the embedding model's token limit, record the count and a truncation flag on the chunk record, and report the aggregate in build metrics and per hit. When the tokenizer cannot be inspected, record the audit as unavailable rather than failing the build or inventing a count.
-- Treat the embedding inference batch size as a padding decision, not a throughput dial: FastEmbed pads every sequence to the longest member of its batch, so a larger batch makes short chunks pay for the longest one. Keep `EMBEDDING_INFERENCE_BATCH_SIZE` at 1 unless a measurement on the target corpus says otherwise, and record any change in `PLAN.md` §10.6. Do not raise it "to go faster" without measuring padded tokens, and keep `--embedding-threads` unset by default because its optimum is machine-specific.
+- Treat the embedding inference batch size as a padding decision, not a throughput dial: FastEmbed pads every sequence to the longest member of its batch, so a larger batch makes short chunks pay for the longest one. Keep `EMBEDDING_INFERENCE_BATCH_SIZE` at 1 unless a measurement on the target corpus says otherwise, and record any change in `MEASUREMENTS.md`. Do not raise it "to go faster" without measuring padded tokens, and keep `--embedding-threads` unset by default because its optimum is machine-specific.
 - Disclose withholding instead of hiding it. Report reason codes, counts, and example chunk IDs in the search response, and record corpus-level withheld counts and reasons in the generation build metrics that `status` returns.
 - Keep checkpoints durable at the finest practical granularity: one extracted document, one PDF scan batch, one extraction-unit batch, one embedding batch, and one index batch. Reduce the cost of each durable write rather than widening the resume granularity, so a crash never redoes more than one bounded batch. Each phase's batch size is a documented constant — `PDF_PAGE_BATCH_SIZE`, `CHUNK_BATCH_UNITS`, `EMBEDDING_BATCH_SIZE` — and it must stay bounded and small enough that redoing one batch is cheap. Never replace a bounded batch with a whole-phase commit.
 - Exclude every nonempty chunk that contains no Unicode alphanumeric content, both while ingesting and at retrieval time for older generations. Text, numbers, and formulas containing at least one letter or digit are not classified as symbol-only; the other extraction-artifact rules still apply.
@@ -232,6 +247,7 @@ Do not move the dense backend implementations into the vanilla gateway or patch 
 - Do not silently skip a selected PDF/EPUB that fails extraction; fail the new generation and leave the previous current generation intact.
 - Empty, symbol-only, or corrupt upstream chunk records may be discarded when their source still has at least one searchable chunk; record each discarded count separately. Fail the build when filtering leaves a source with none.
 - Retain explicit limitations when a feature is not implemented.
+- Keep the personal-material block in `.gitignore` accurate: the author's own research projects, notes, drafts, and every original PDF/EPUB are local-only and must never be committed, published, or pushed from this repository. Add new personal locations to that block rather than ignoring them silently.
 
 ## Validation
 
@@ -244,6 +260,8 @@ uv run ruff check .
 uv run pytest -q
 uv run python -m compileall -q src tests
 ```
+
+For a retrieval-quality claim, run `uv run python scripts/evaluate_retrieval.py --project <project> --offline` (add `--validate-only` to check the judged set first) and record the result in `MEASUREMENTS.md`. Never change a documented retrieval default from an unrecorded run or a single query.
 
 Research UI adapter changes must cover safe source-file resolution, forwarding to the public MCP tools, and the real UI host against an existing project without mutating its sources. Shared workspace, JSON validation, capability, and same-origin changes belong in `ui-ultra-rag-mcp` and must pass that package's own tests before updating the pinned commit here.
 

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import http.client
+import json
+import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from starlette.testclient import TestClient
 
 from research_ultra_rag_mcp.config import resolve_config
-from research_ultra_rag_mcp.ui import create_ui_app
+from research_ultra_rag_mcp.server import _ui_port_from
+from research_ultra_rag_mcp.ui import EmbeddedUi, create_ui_app
 
 
 class FakeResearchClient:
@@ -336,3 +342,86 @@ def test_ui_rejects_unsafe_writes_and_source_paths(project: Path) -> None:
     assert non_json.status_code == 415
     assert cross_origin.status_code == 403
     assert unknown.status_code == 400
+
+
+def _free_loopback_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+async def _wait_until_ready(embedded: EmbeddedUi) -> None:
+    for _ in range(300):
+        if embedded.ready:
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"embedded UI never became ready: {embedded.error}")
+
+
+def _get_json(url_host: str, port: int, path: str) -> tuple[int, dict[str, Any]]:
+    connection = http.client.HTTPConnection(url_host, port, timeout=10)
+    try:
+        connection.request("GET", path)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read().decode("utf-8"))
+    finally:
+        connection.close()
+
+
+async def _assert_embedded_ui_serves_and_stops(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    port = _free_loopback_port()
+    embedded = EmbeddedUi(config, port=port)
+
+    assert embedded.url == f"http://127.0.0.1:{port}"
+    assert embedded.ready is False
+    assert embedded.error is None
+
+    await embedded.start(research_client=FakeResearchClient())
+    try:
+        await _wait_until_ready(embedded)
+        # The HTTP call must not run on this loop: the embedded server shares it,
+        # so a blocking request here would deadlock the very server it calls.
+        status_code, payload = await asyncio.to_thread(
+            _get_json, embedded.host, port, "/api/health"
+        )
+        assert status_code == 200
+        assert payload["status"] == "ok"
+    finally:
+        await embedded.stop()
+
+    assert embedded.ready is False
+
+
+def test_embedded_ui_serves_loopback_and_stops(project: Path) -> None:
+    asyncio.run(_assert_embedded_ui_serves_and_stops(project))
+
+
+async def _assert_embedded_ui_reports_a_used_port(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen(1)
+        port = int(busy.getsockname()[1])
+        embedded = EmbeddedUi(config, port=port)
+        await embedded.start(research_client=FakeResearchClient())
+
+    # A taken port is reported, never raised: the MCP server keeps serving.
+    assert embedded.ready is False
+    assert embedded.error is not None
+    assert str(port) in embedded.error
+
+
+def test_embedded_ui_reports_a_used_port(project: Path) -> None:
+    asyncio.run(_assert_embedded_ui_reports_a_used_port(project))
+
+
+def test_ui_port_validation() -> None:
+    assert _ui_port_from(None) is None
+    assert _ui_port_from("") is None
+    assert _ui_port_from(5051) == 5051
+    assert _ui_port_from("5051") == 5051
+
+    for invalid in (0, 65536, -1, "not-a-port"):
+        with pytest.raises(SystemExit):
+            _ui_port_from(invalid)

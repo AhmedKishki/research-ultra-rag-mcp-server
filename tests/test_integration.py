@@ -130,7 +130,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "bm25",
             "dense",
         }
-        assert search_properties["rerank"]["default"] is False
+        assert search_properties["rerank"]["default"] is True
         assert search_properties["result_view"]["default"] == "passages"
         assert set(search_properties["result_view"]["enum"]) == {
             "passages",
@@ -199,6 +199,11 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         ready = await client.call_tool("status", {})
         assert ready.data["hybrid_ready"] is True
         assert ready.data["generation_upgrade_required"] is False
+        # No --ui-port was passed, so this server hosts no UI and says so.
+        assert ready.data["ui_url"] is None
+        assert ready.data["ui_ready"] is False
+        assert ready.data["ui_error"] is None
+        assert ready.data["retained_generation_count"] >= 1
 
         result = await client.call_tool(
             "search",

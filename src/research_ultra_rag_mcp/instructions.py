@@ -46,9 +46,14 @@ For research questions:
    then open the original source when exact wording is required.
 5. Use get_passage when surrounding context is needed. Verify important quotes
    directly against the original PDF or EPUB.
-6. Set rerank=true only when the user needs a smaller, precision-focused result
-   set or the first hybrid results are weak. It is slower on CPU and downloads a
-   second pinned model the first time it is used.
+6. Reranking is on by default because it is the largest measured quality gain:
+   first-position success on the judged set rises from 66% to 84% and entity
+   questions from 60% to 90%. It is slower on CPU (about 2.3 s against 0.6 s per
+   warm query) and downloads a second pinned model the first time it is used, so
+   pass rerank=false when latency matters more than ranking, and tell the user
+   when you have skipped it. If the response reports rerank_fallback, the model
+   could not be loaded and the order you received is the plain unranked candidate
+   order; say that instead of implying the results were reranked.
 7. If multiple files appear to represent the same source, do not count them as
    independent support. The server does not guess duplicates automatically.
    After agent/user review, set included=false with set_source_inclusion and a
@@ -86,11 +91,15 @@ hidden by a removed override, it returns a safe fallback with a warning until a
 later ingestion recovers the automatic value from the original.
 
 Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
-BM25 lexical retrieval; FastEmbed creates semantic vectors stored in embedded
-Qdrant; weighted reciprocal-rank fusion combines their independent rankings. A
+BM25 lexical retrieval; FastEmbed creates the semantic vectors, which dense
+search scans exactly by default and reads from an embedded index only above the
+documented corpus size; weighted reciprocal-rank fusion combines the two
+independent rankings. A
 hit's component ranks explain where it appeared. Dense similarity, fusion, and
 reranker scores are ranking signals, not confidence or truth probabilities, and
-scores should not be compared across different queries. Never invent missing
+scores should not be compared across different queries. Every search reports
+rerank_requested, reranked, and rerank_fallback, so whether the reranker really
+ran is visible rather than assumed. Never invent missing
 bibliographic fields, relevance scores, page numbers, or quotations. Search may
 return fewer than requested results, including zero, when relevance gates abstain.
 Corrupt extraction units are excluded whole under an English-oriented policy;

@@ -23,6 +23,7 @@ from research_ultra_rag_mcp.dense import (
     EMBEDDING_MODEL_REVISION,
     DenseSearchHit,
     DenseTokenAuditUnavailable,
+    RerankerUnavailable,
 )
 from research_ultra_rag_mcp.extraction import ExtractionError
 from research_ultra_rag_mcp.service import (
@@ -2064,18 +2065,18 @@ async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> No
     assert added["created_vector_count"] == 1
 
     previous_stat = second_path.stat()
-    second_path.unlink()
-    write_pdf(second_path, ["Cedar evidence in a second source."], title="Second")
-    # This case needs a byte change that preserves the file size, but pymupdf
-    # embeds a varying timestamp whose compressed length can shift the total by a
-    # few bytes, so retry until the replacement matches the original size.
-    for _ in range(20):
-        if second_path.stat().st_size == previous_stat.st_size:
-            break
-        second_path.unlink()
-        write_pdf(second_path, ["Cedar evidence in a second source."], title="Second")
-    else:  # pragma: no cover
-        pytest.skip("pymupdf produced no same-size replacement PDF")
+    original_bytes = second_path.read_bytes()
+    # Swap one same-length character inside the PDF's title entry so the bytes
+    # change while the size and mtime stay identical — the case under test. The
+    # page text stream is deflated, but the Info dictionary is plain bytes, and
+    # regenerating the file instead would depend on pymupdf's varying embedded
+    # timestamp, which shifts the total by a few bytes and made this case
+    # intermittently untestable.
+    assert b"/Title(Second)" in original_bytes
+    second_path.write_bytes(
+        original_bytes.replace(b"/Title(Second)", b"/Title(Secand)", 1)
+    )
+    assert second_path.stat().st_size == previous_stat.st_size
     os.utime(
         second_path,
         ns=(previous_stat.st_atime_ns, previous_stat.st_mtime_ns),
@@ -3654,3 +3655,137 @@ async def _assert_filtered_bm25_deepens_without_loading_the_corpus(
 
 def test_filtered_bm25_deepens_without_loading_the_corpus(project: Path) -> None:
     asyncio.run(_assert_filtered_bm25_deepens_without_loading_the_corpus(project))
+
+
+async def _assert_status_lists_retained_generations(project: Path) -> None:
+    write_pdf(
+        project / "sources" / "article.pdf",
+        ["Cobalt evidence about labour."],
+        title="Article",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    first = await service.ingest(chunk_size=50, chunk_overlap=10)
+    write_pdf(
+        project / "sources" / "second.pdf",
+        ["Amber evidence in a second source."],
+        title="Second",
+    )
+    second = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    status = await service.status()
+
+    records = status["generations"]
+    assert records[0]["generation_id"] == second["generation_id"]
+    assert {item["generation_id"] for item in records} == {
+        first["generation_id"],
+        second["generation_id"],
+    }
+    assert status["retained_generation_count"] == 2
+    assert status["retained_generation_bytes"] == sum(
+        item["size_bytes"] for item in records
+    )
+    assert all(item["file_count"] > 0 and item["size_bytes"] > 0 for item in records)
+    by_id = {item["generation_id"]: item for item in records}
+    assert by_id[first["generation_id"]]["chunk_count"] == 1
+    assert by_id[first["generation_id"]]["document_count"] == 1
+    assert by_id[second["generation_id"]]["chunk_count"] == 2
+    assert by_id[second["generation_id"]]["document_count"] == 2
+    assert (
+        by_id[first["generation_id"]]["created_at"]
+        <= by_id[second["generation_id"]]["created_at"]
+    )
+    current = [item for item in records if item["is_current"]]
+    assert len(current) == 1
+    assert current[0]["generation_id"] == second["generation_id"]
+    assert current[0]["schema_version"] is not None
+
+    # A damaged or orphaned directory is reported rather than breaking status:
+    # the point of the inventory is to show what occupies disk.
+    damaged = config.generations_root / "20260101T000000Z-orphan"
+    damaged.mkdir(parents=True)
+    (damaged / "manifest.json").write_text("{ not json", encoding="utf-8")
+    (damaged / "stray.bin").write_bytes(b"orphaned staging debris")
+
+    after = await service.status()
+
+    assert after["retained_generation_count"] == 3
+    orphan = next(
+        item for item in after["generations"] if item["generation_id"] == damaged.name
+    )
+    assert orphan["is_current"] is False
+    assert "manifest_error" in orphan
+    assert orphan["size_bytes"] > 0
+    assert after["retained_generation_bytes"] == sum(
+        item["size_bytes"] for item in after["generations"]
+    )
+    # The damaged directory must not make the selected generation unusable.
+    assert after["ready"] is True
+    assert after["generation_id"] == second["generation_id"]
+
+
+def test_status_lists_retained_generations(project: Path) -> None:
+    asyncio.run(_assert_status_lists_retained_generations(project))
+
+
+class UnavailableRerankerDenseBackend(FakeDenseBackend):
+    """A dense backend whose reranker model cannot be loaded."""
+
+    def rerank(self, query: str, documents: list[str]) -> list[float]:
+        raise RerankerUnavailable(
+            "The reranker model is not present in the shared model cache."
+        )
+
+
+async def _assert_search_falls_back_when_reranking_is_unavailable(
+    project: Path,
+) -> None:
+    write_pdf(
+        project / "sources" / "article.pdf",
+        [
+            "Cobalt evidence about labour and artificial intelligence.",
+            "Quartz material unrelated to the primary question.",
+        ],
+        title="Research Article",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=UnavailableRerankerDenseBackend(),
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    unranked = await service.search("cobalt labour", top_k=3)
+    fell_back = await service.search("cobalt labour", top_k=3, rerank=True)
+
+    # The requested reranking could not run, so the search still succeeds with
+    # the plain candidate order and says exactly why.
+    assert fell_back["rerank_requested"] is True
+    assert fell_back["reranked"] is False
+    assert fell_back["rerank_fallback"]["reason"] == "reranker_model_unavailable"
+    assert fell_back["rerank_fallback"]["effect"] == "unranked_candidate_order_returned"
+    assert (
+        "not present in the shared model cache"
+        in fell_back["rerank_fallback"]["message"]
+    )
+    assert fell_back["reranker_model"] is None
+    assert fell_back["reranker_model_revision"] is None
+    assert [hit["chunk_id"] for hit in fell_back["hits"]] == [
+        hit["chunk_id"] for hit in unranked["hits"]
+    ]
+    assert all(hit["rerank_score"] is None for hit in fell_back["hits"])
+
+    # A search that does not ask for reranking neither loads the model nor
+    # reports a fallback.
+    assert unranked["rerank_requested"] is False
+    assert unranked["reranked"] is False
+    assert unranked["rerank_fallback"] is None
+
+
+def test_search_falls_back_when_reranking_is_unavailable(project: Path) -> None:
+    asyncio.run(_assert_search_falls_back_when_reranking_is_unavailable(project))

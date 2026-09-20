@@ -60,6 +60,35 @@ The hybrid retrieval implementation also depends on:
     artifact revision a09144355adeed5f58c8ed011d209bf8ee5a1fec
     https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2
 
+DOCUMENT EXTRACTION COMPONENTS
+
+PDF page extraction and EPUB section extraction depend on components that are
+NOT permissively licensed. A recipient or redistributor must satisfy their
+terms, which are separate from whatever license this repository's own code
+carries:
+
+    PyMuPDF 1.28.2
+    Dual licensed: GNU Affero General Public License 3.0, or a commercial
+    license from Artifex Software.
+    https://github.com/pymupdf/PyMuPDF
+    https://www.gnu.org/licenses/agpl-3.0.html
+
+    EbookLib 0.20
+    GNU Affero General Public License 3.0 or later.
+    https://github.com/aerkalov/ebooklib
+
+Both are imported directly by this server's extraction code. The AGPL's
+obligations therefore apply to anyone who distributes or operates a covered
+combination of them with this server, independently of this repository's own
+license. The repository's own license terms do not change those obligations.
+
+LICENSE OF THIS REPOSITORY
+
+The code in this repository is licensed under the Apache License, Version 2.0.
+The full text is in LICENSE. That grant covers this repository's own code only;
+every upstream project, model, and extraction component named above keeps its
+own license and terms, which are listed so a recipient can satisfy them.
+
 These dependencies and model files retain their respective authorship and
 licenses. They are not bundled as source files in this repository; the Python
 packages are installed by the package manager and model files are downloaded
