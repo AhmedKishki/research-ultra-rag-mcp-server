@@ -1,33 +1,21 @@
 # Plan: what we reviewed, what we changed, and why
 
-This document is the working record behind `TODO.md`. It exists so that a
-person — not only an agent — can see what was investigated, what was measured,
-what was decided, and what is still open.
+This document is the working record behind `TODO.md`. It exists so that a person — not only an agent — can see what was investigated, what was measured, what was decided, and what is still open.
 
 How to read it:
 
-- **Section 3** lists everything the review found, in plain language, grouped by
-  how much it matters.
-- **Section 4** records the decisions that needed a choice, with the options and
-  the reasoning.
-- **Section 5** walks through the work in the order it was done, explaining what
-  each change was for.
-- **Section 6** holds the measurements. Every number quoted elsewhere in the
-  repository comes from there.
+- **Section 3** lists everything the review found, in plain language, grouped by how much it matters.
+- **Section 4** records the decisions that needed a choice, with the options and the reasoning.
+- **Section 5** walks through the work in the order it was done, explaining what each change was for.
+- **Section 6** holds the measurements. Every number quoted elsewhere in the repository comes from there.
 
-Finding identifiers (`P0-2`, `P1-13`) and decision identifiers (`D6`, `D10`) are
-kept because code comments and other documents refer to them.
+Finding identifiers (`P0-2`, `P1-13`) and decision identifiers (`D6`, `D10`) are kept because code comments and other documents refer to them.
 
 ## 1. The project and the workload it is designed for
 
-The server lets an AI agent search a personal collection of PDF and EPUB files
-and return evidence passages with provenance: cleaned semantic text, source
-path, locator, and metadata. It is built around UltraRAG for chunking and BM25,
-with a research layer around it for extraction, metadata, locators, and
-immutability. `README.md` is the user manual.
+The server lets an AI agent search a personal collection of PDF and EPUB files and return evidence passages with provenance: cleaned semantic text, source path, locator, and metadata. It is built around UltraRAG for chunking and BM25, with a research layer around it for extraction, metadata, locators, and immutability. `README.md` is the user manual.
 
-The review judged everything against one real corpus, the `ai-and-fetishism`
-project of 55 discovered and 53 indexed sources:
+The review judged everything against one real corpus, the `ai-and-fetishism` project of 55 discovered and 53 indexed sources:
 
 | Property | Value |
 |---|---|
@@ -39,29 +27,20 @@ project of 55 discovered and 53 indexed sources:
 | Runtime footprint | 101 MB per generation |
 | Character | English humanities and social-science prose with footnotes, reference lists, tables, and short quotations in other scripts |
 
-The design envelope is 25–250 English-primary sources, 5,000–50,000 chunks, and
-CPU-only execution. Deliberately out of scope: non-English-primary corpora,
-multilingual retrieval, OCR or scanned sources, handwriting, and formula-heavy
-corpora. Those limits are also stated in `README.md` so users are not surprised.
+The design envelope is 25–250 English-primary sources, 5,000–50,000 chunks, and CPU-only execution. Deliberately out of scope: non-English-primary corpora, multilingual retrieval, OCR or scanned sources, handwriting, and formula-heavy corpora. Those limits are also stated in `README.md` so users are not surprised.
 
 ## 2. How the review was done
 
 1. Read the source, the tests, and every public document.
-2. Ran the server against the real project above and checked what it actually
-   returned, rather than trusting the documentation.
-3. Benchmarked two identical corpora on the two devices that matter — an NVMe
-   SSD and the HDD where the real project lives — so device effects could be
-   separated from code effects.
-4. Measured individual operations in isolation when a guess about the cause did
-   not survive contact with the numbers.
-5. Stopped and asked before changing anything with a trade-off, rather than
-   silently reinterpreting an earlier decision.
+2. Ran the server against the real project above and checked what it actually returned, rather than trusting the documentation.
+3. Benchmarked two identical corpora on the two devices that matter — an NVMe SSD and the HDD where the real project lives — so device effects could be separated from code effects.
+4. Measured individual operations in isolation when a guess about the cause did not survive contact with the numbers.
+5. Stopped and asked before changing anything with a trade-off, rather than silently reinterpreting an earlier decision.
 6. Recorded measurements even when they contradicted the plan's own reasoning.
 
 ## 3. What we found
 
-Severity here means "how much it costs if left alone", not "how hard it is".
-Each finding also appears in `TODO.md` with its current status.
+Severity here means "how much it costs if left alone", not "how hard it is". Each finding also appears in `TODO.md` with its current status.
 
 ### 3.1 Correctness and fidelity (P0)
 
@@ -77,8 +56,7 @@ These were wrong or unverifiable, and they affected existing data.
 
 ### 3.2 Measured inefficiency (P1)
 
-These were not incorrect, but they cost time or space out of proportion to the
-work being done. Numbers are in section 6.
+These were not incorrect, but they cost time or space out of proportion to the work being done. Numbers are in section 6.
 
 | ID | Finding | What it meant |
 |---|---|---|
@@ -110,217 +88,97 @@ work being done. Numbers are in section 6.
 
 ### 3.4 Evaluation and product gaps (P3)
 
-The server has no judged query set, so "does it retrieve well?" could only be
-answered by inspection. Recall and ranking quality are unmeasured, and there is
-no built-in way to review or prune retained generations.
+The server has no judged query set, so "does it retrieve well?" could only be answered by inspection. Recall and ranking quality are unmeasured, and there is no built-in way to review or prune retained generations.
 
 ## 4. Decisions
 
-Each decision below was recorded *before* being acted on. Options are summarised;
-the chosen line states the answer.
+Each decision below was recorded *before* being acted on. Options are summarised; the chosen line states the answer.
 
 ### D1 — Scope of this pass
-Options: fidelity only; fidelity plus storage; **fidelity, storage, the dense
-backend change, and the write-path work**; everything through Step 7.
-**Chosen: the third.** It addressed the two findings that affect data and the
-three that affect the reference workload, and left evaluation and refactoring for
-later. Reversible: yes, the remaining steps are additive.
+Options: fidelity only; fidelity plus storage; **fidelity, storage, the dense backend change, and the write-path work**; everything through Step 7. **Chosen: the third.** It addressed the two findings that affect data and the three that affect the reference workload, and left evaluation and refactoring for later. Reversible: yes, the remaining steps are additive.
 
 ### D2 — Resumability granularity
-Options: **keep unit-level durable state and make each write cheaper**; keep
-unit-level state with a less frequent fsync; checkpoint at batch level.
-**Chosen: keep unit-level state.** Losing a long build is the failure people
-actually care about, so the granularity stays and the cost was attacked instead.
-Reversible: yes. Later amended once, deliberately, by D10.
+Options: **keep unit-level durable state and make each write cheaper**; keep unit-level state with a less frequent fsync; checkpoint at batch level. **Chosen: keep unit-level state.** Losing a long build is the failure people actually care about, so the granularity stays and the cost was attacked instead. Reversible: yes. Later amended once, deliberately, by D10.
 
 ### D3 — Should `search` return `stale`?
-Options: keep as is; **add `include_staleness=false`, defaulting to `true`**;
-cached signature; flag-only.
-**Chosen: add the opt-out.** Callers who do not need freshness stop paying for
-the source walk without changing the default for callers who do. Reversible: yes.
+Options: keep as is; **add `include_staleness=false`, defaulting to `true`**; cached signature; flag-only. **Chosen: add the opt-out.** Callers who do not need freshness stop paying for the source walk without changing the default for callers who do. Reversible: yes.
 
 ### D4 — When may a policy version be bumped?
-Options: **bump for semantic changes, keep cosmetic changes compatible**; bump
-for everything; never bump.
-**Chosen: semantic changes only.** Bumping for cosmetic edits would force
-needless rebuilds. Reversible: yes.
+Options: **bump for semantic changes, keep cosmetic changes compatible**; bump for everything; never bump. **Chosen: semantic changes only.** Bumping for cosmetic edits would force needless rebuilds. Reversible: yes.
 
 ### D5 — Where may derived state live?
-Options: document the fast-storage requirement; OS bind mount; **first-class
-validated `--runtime-root`, with the bind mount as the immediate stopgap**.
-**Chosen: `--runtime-root`.** Portable, validated, and it protects against two
-projects sharing one directory. Reversible: yes, drop the flag and move the data
-back.
+Options: document the fast-storage requirement; OS bind mount; **first-class validated `--runtime-root`, with the bind mount as the immediate stopgap**. **Chosen: `--runtime-root`.** Portable, validated, and it protects against two projects sharing one directory. Reversible: yes, drop the flag and move the data back.
 
 ### D6 — Dense backend
-Options: exact scan only; **exact scan by default with the embedded index
-selectable above a documented size**; keep the embedded index and make it
-incremental.
-**Chosen: exact by default, embedded index available.** It removes the dominant
-cost at the target corpus sizes while keeping an ANN path for very large
-collections. Reversible: yes, it is a policy field, not a schema.
+Options: exact scan only; **exact scan by default with the embedded index selectable above a documented size**; keep the embedded index and make it incremental. **Chosen: exact by default, embedded index available.** It removes the dominant cost at the target corpus sizes while keeping an ANN path for very large collections. Reversible: yes, it is a policy field, not a schema.
 
 ### D7 — Does `ingest` need scope control?
-Options: no change; source filter; **read-only dry run**.
-**Chosen: dry run.** Derivation is already incremental per document, so the
-useful thing is to explain what would happen before it happens. Reversible: yes.
+Options: no change; source filter; **read-only dry run**. **Chosen: dry run.** Derivation is already incremental per document, so the useful thing is to explain what would happen before it happens. Reversible: yes.
 
 ### D8 — Text-health rejection policy
-Options: keep as is; **corruption-only rejection, script mixing as an advisory
-flag, and disclosed withholding**; the same with a per-source override;
-flag-only.
-**Chosen: corruption-only with disclosure.** It restores legitimate quotations
-without hiding the decision. Reversible: yes.
+Options: keep as is; **corruption-only rejection, script mixing as an advisory flag, and disclosed withholding**; the same with a per-source override; flag-only. **Chosen: corruption-only with disclosure.** It restores legitimate quotations without hiding the decision. Reversible: yes.
 
 ### D9 — Text normalisation folding
-Options: keep NFC; full NFKC; **targeted fold of Mathematical Alphanumeric
-Symbols and Alphabetic Presentation Forms**; the fold plus a separate search
-field.
-**Chosen: the targeted fold.** Full NFKC would also fold superscripts,
-subscripts, and symbols that carry meaning in citations. Reversible: yes.
+Options: keep NFC; full NFKC; **targeted fold of Mathematical Alphanumeric Symbols and Alphabetic Presentation Forms**; the fold plus a separate search field. **Chosen: the targeted fold.** Full NFKC would also fold superscripts, subscripts, and symbols that carry meaning in citations. Reversible: yes.
 
 ### D10 — Chunker batching versus the redo window
-Options: one unit per call and drop the per-unit checkpoint write; **batch 16
-extraction units per call**; leave chunking alone.
-**Chosen: batch 16.** It removes the round trip that dominated the phase. The
-cost is that a hard crash redoes at most one batch (16 units, a second or two of
-work) instead of exactly one unit, so D2's wording became "one bounded batch".
-Reversible: yes, one constant set back to 1.
+Options: one unit per call and drop the per-unit checkpoint write; **batch 16 extraction units per call**; leave chunking alone. **Chosen: batch 16.** It removes the round trip that dominated the phase. The cost is that a hard crash redoes at most one batch (16 units, a second or two of work) instead of exactly one unit, so D2's wording became "one bounded batch". Reversible: yes, one constant set back to 1.
 
 ## 5. The work, step by step
 
-Each step states what it was for, what it changed, and how it ended. Steps 0–3
-are done; 4–7 are planned.
+Each step states what it was for, what it changed, and how it ended. Steps 0–3 are done; 4–7 are planned.
 
 ### Step 0 — make the tree shippable
-**Purpose.** Nothing can be measured or changed safely on a red tree.
-**Done.** Formatted four files; the suite went green. This is why every later
-number in this document is trustworthy.
+**Purpose.** Nothing can be measured or changed safely on a red tree. **Done.** Formatted four files; the suite went green. This is why every later number in this document is trustworthy.
 
 ### Step 1 — close the retrieval-fidelity gap
-**Purpose.** Two findings changed what users could actually retrieve, so they
-came before any speed work.
+**Purpose.** Two findings changed what users could actually retrieve, so they came before any speed work.
 
-**Step 1b — text-health policy (P0-4, D8, D9).** Split the internal text signals
-into *corruption* (which may withhold a passage) and *script notes* (advisory
-only), and made withholding visible: search responses now name the reason codes,
-counts, and example chunk IDs, and build metrics record corpus-level totals.
-Result on the real corpus: 29 withheld chunks became 25, restoring a Greek
-quotation, two Cyrillic bibliography entries, and one mixed-script chunk.
+**Step 1b — text-health policy (P0-4, D8, D9).** Split the internal text signals into *corruption* (which may withhold a passage) and *script notes* (advisory only), and made withholding visible: search responses now name the reason codes, counts, and example chunk IDs, and build metrics record corpus-level totals. Result on the real corpus: 29 withheld chunks became 25, restoring a Greek quotation, two Cyrillic bibliography entries, and one mixed-script chunk.
 
-**Step 1c — normalisation folding (P0-5, D9).** Folded only formula-font letters
-(`𝑀` → `M`) and the ligatures `ﬁ`, `ﬂ`, `ﬀ`, before NFC. Result: 39 chunks using
-mathematical alphanumerics became 0, and 751 chunks in total changed for the
-better. Accents, superscripts, subscripts, and symbols are untouched.
+**Step 1c — normalisation folding (P0-5, D9).** Folded only formula-font letters (`𝑀` → `M`) and the ligatures `ﬁ`, `ﬂ`, `ﬀ`, before NFC. Result: 39 chunks using mathematical alphanumerics became 0, and 751 chunks in total changed for the better. Accents, superscripts, subscripts, and symbols are untouched.
 
-**Step 1 — embedding audit (P0-2, P0-3).** Every chunk now records its embedding
-token count and whether its vector is truncated, using a non-truncating
-tokenizer loaded separately from the embedder. Per-hit and aggregate reporting
-follows. Confirmed the real numbers: 8 of 8,102 chunks exceed 512 tokens, the
-longest being 3,417. Over-limit chunks are *flagged, not split*, because
-splitting would change chunk identities and reuse behaviour.
+**Step 1 — embedding audit (P0-2, P0-3).** Every chunk now records its embedding token count and whether its vector is truncated, using a non-truncating tokenizer loaded separately from the embedder. Per-hit and aggregate reporting follows. Confirmed the real numbers: 8 of 8,102 chunks exceed 512 tokens, the longest being 3,417. Over-limit chunks are *flagged, not split*, because splitting would change chunk identities and reuse behaviour.
 
 ### Step 1d — put derived state where you want it (P1-12, D5)
-**Purpose.** The measured cost of index writes was ~290 ms per point on the HDD
-project versus ~4 ms on NVMe, so the device mattered more than any code change.
-**Done.** Documented the numbers and the bind-mount stopgap, then added
-`--runtime-root`: an absolute, validated location for derived state, claimed by a
-marker file naming its owning project. Portable review state stays in the
-project. `status` reports the effective location as `runtime_root`.
+**Purpose.** The measured cost of index writes was ~290 ms per point on the HDD project versus ~4 ms on NVMe, so the device mattered more than any code change. **Done.** Documented the numbers and the bind-mount stopgap, then added `--runtime-root`: an absolute, validated location for derived state, claimed by a marker file naming its owning project. Portable review state stays in the project. `status` reports the effective location as `runtime_root`.
 
 ### Step A — exact dense search (P1-1, P1-11, D6)
-**Purpose.** The embedded index was 99.1% of a real build for a 12.4 MB vector
-file that can simply be scanned.
-**Done.** Added an exact cosine-scan backend over the generation's portable
-vectors, and recorded in every manifest which backend built its index. Existing
-generations keep working because a manifest without the field resolves to the
-embedded backend. Measured on the real corpus: 0.03 s and 0.58 MB to build,
-versus 3,040.73 s for the embedded index, with the top 20 results identical to a
-brute-force ranking for every probe query. `--dense-backend` selects the backend;
-`auto` switches to the embedded index only above 200,000 chunks.
+**Purpose.** The embedded index was 99.1% of a real build for a 12.4 MB vector file that can simply be scanned. **Done.** Added an exact cosine-scan backend over the generation's portable vectors, and recorded in every manifest which backend built its index. Existing generations keep working because a manifest without the field resolves to the embedded backend. Measured on the real corpus: 0.03 s and 0.58 MB to build, versus 3,040.73 s for the embedded index, with the top 20 results identical to a brute-force ranking for every probe query. `--dense-backend` selects the backend; `auto` switches to the embedded index only above 200,000 chunks.
 
 ### Step 2a — make durability writes cheaper (P1-2, P1-3, D2)
-**Purpose.** On the HDD, one atomic JSON write cost about 91 ms — 34 ms for the
-file fsync plus 57 ms for the directory fsync — and each unit performed several.
-**Done.** Grouped a unit's directory fsyncs into one, committed before the
-checkpoint that claims the unit complete, and stopped fsyncing a handoff file
-that exists only to be read by another process and is deleted straight after.
-Measured on a 64-unit HDD corpus: chunking 63.6 s → 26.3 s and 53.3 s → 35.8 s in
-the two orders, wall clock down 16–30%.
+**Purpose.** On the HDD, one atomic JSON write cost about 91 ms — 34 ms for the file fsync plus 57 ms for the directory fsync — and each unit performed several. **Done.** Grouped a unit's directory fsyncs into one, committed before the checkpoint that claims the unit complete, and stopped fsyncing a handoff file that exists only to be read by another process and is deleted straight after. Measured on a 64-unit HDD corpus: chunking 63.6 s → 26.3 s and 53.3 s → 35.8 s in the two orders, wall clock down 16–30%.
 
-The plan's own proposal — shrinking the checkpoint file — was dropped because it
-would have saved about 0.2 ms per unit. The measurement, not the intuition, is
-recorded as the record in section 6.
+The plan's own proposal — shrinking the checkpoint file — was dropped because it would have saved about 0.2 ms per unit. The measurement, not the intuition, is recorded as the record in section 6.
 
 ### Step 2b — chunker batching (P1-2, D10)
-**Purpose.** After Step 2a, chunking was still the largest phase because every
-extraction unit paid its own gateway round trip and its own checkpoint.
-**Done.** Up to 16 units now share one chunker call. Each returned chunk names
-its unit, so results are split back into the same per-unit files, in the same
-order, that a one-unit call produced; a unit the chunker omits still gets its own
-empty file, and an unknown unit still fails the build. Measured: chunking
-25.6 s → 15.9 s and 29.0 s → 19.7 s, wall clock down 20–26%, with chunk
-identities asserted unchanged by test.
+**Purpose.** After Step 2a, chunking was still the largest phase because every extraction unit paid its own gateway round trip and its own checkpoint. **Done.** Up to 16 units now share one chunker call. Each returned chunk names its unit, so results are split back into the same per-unit files, in the same order, that a one-unit call produced; a unit the chunker omits still gets its own empty file, and an unknown unit still fails the build. Measured: chunking 25.6 s → 15.9 s and 29.0 s → 19.7 s, wall clock down 20–26%, with chunk identities asserted unchanged by test.
 
-The plan predicted a larger gain (~3.8×); the measurement showed ~1.5×. The
-difference is the chunker's own work and the per-unit output files, which
-batching cannot remove. The estimate was wrong and the measurement replaced it.
+The plan predicted a larger gain (~3.8×); the measurement showed ~1.5×. The difference is the chunker's own work and the per-unit output files, which batching cannot remove. The estimate was wrong and the measurement replaced it.
 
 ### Step 2c — embedding throughput (P1-13)
-**Purpose.** Embedding was 71.5% of a fresh build on fast storage.
-**Done.** Found that the inference batch size is really a *padding* decision:
-FastEmbed pads every sequence to the longest in its batch, so a batch of 64 made
-every short chunk as expensive as the longest one. The server now embeds one
-sequence per inference, which measured 23.7 chunks/s against 4.5 at a batch of
-64, and returns bit-identical vectors, so no retrieval result can change. The
-machine-specific thread count became an option (`--embedding-threads`) rather
-than a guess.
+**Purpose.** Embedding was 71.5% of a fresh build on fast storage. **Done.** Found that the inference batch size is really a *padding* decision: FastEmbed pads every sequence to the longest in its batch, so a batch of 64 made every short chunk as expensive as the longest one. The server now embeds one sequence per inference, which measured 23.7 chunks/s against 4.5 at a batch of 64, and returns bit-identical vectors, so no retrieval result can change. The machine-specific thread count became an option (`--embedding-threads`) rather than a guess.
 
 ### Step 3 — per-query work (P1-4, P1-5)
-**Purpose.** Every query rescanned candidate text to decide whether a chunk was
-usable, at about 0.55 ms per candidate.
-**Done.** That verdict is a property of the chunk, not the query, so it is now
-computed once when the artifact lookup is built and stored as a small bitmask
-per chunk. The candidate gate measured 92.1 ms → 9.0 ms for 200 candidates
-(10.3×), with a fallback that recomputes the verdict for any lookup that predates
-the column. The query-dependent token check stays per query and is memoised,
-which also removed the widening loop's repeated work. `search` now hands its
-already-parsed manifest to the status summary instead of making it re-read one.
+**Purpose.** Every query rescanned candidate text to decide whether a chunk was usable, at about 0.55 ms per candidate. **Done.** That verdict is a property of the chunk, not the query, so it is now computed once when the artifact lookup is built and stored as a small bitmask per chunk. The candidate gate measured 92.1 ms → 9.0 ms for 200 candidates (10.3×), with a fallback that recomputes the verdict for any lookup that predates the column. The query-dependent token check stays per query and is memoised, which also removed the widening loop's repeated work. `search` now hands its already-parsed manifest to the status summary instead of making it re-read one.
 
 ### Step 4 — remove per-request work that scales with the corpus (planned)
-**Purpose.** `search` still walks the source tree and materialises some
-per-corpus structures on every call.
-**To do.** Cache the staleness verdict behind a cheap directory signature with an
-opt-out (D3), push dense filtering into the backend, reuse SQLite connections,
-and cache the effective-document map per manifest and metadata revision.
-**How we will know it worked.** An integration test asserting that `search`
-performs no source-tree walk when staleness was not requested.
+**Purpose.** `search` still walks the source tree and materialises some per-corpus structures on every call. **To do.** Cache the staleness verdict behind a cheap directory signature with an opt-out (D3), push dense filtering into the backend, reuse SQLite connections, and cache the effective-document map per manifest and metadata revision. **How we will know it worked.** An integration test asserting that `search` performs no source-tree walk when staleness was not requested.
 
 ### Step 5 — decompose the ingestion logic (planned)
-**Purpose.** The resumable ingestion loop is one very large method, which makes
-review risky.
-**To do.** Split it into per-phase handlers and turn the linter's complexity
-check back on.
+**Purpose.** The resumable ingestion loop is one very large method, which makes review risky. **To do.** Split it into per-phase handlers and turn the linter's complexity check back on.
 
 ### Step 6 — real evaluation (planned)
-**Purpose.** Nobody has measured whether retrieval is *good*, only whether it
-works.
-**To do.** 30–50 judged queries against the real corpus, reporting BM25, dense,
-hybrid, and reranked quality.
+**Purpose.** Nobody has measured whether retrieval is *good*, only whether it works. **To do.** 30–50 judged queries against the real corpus, reporting BM25, dense, hybrid, and reranked quality.
 
 ### Step 7 — contract polish and retention (planned)
-**Purpose.** Small correctness-of-meaning issues and unbounded disk use.
-**To do.** Generation listing and pruning, structured activation failure
-reports, clearer `stale` semantics (P2-3), an `ingest` dry run (D7), and
-narrowing the two broad exception handlers (P2-7).
+**Purpose.** Small correctness-of-meaning issues and unbounded disk use. **To do.** Generation listing and pruning, structured activation failure reports, clearer `stale` semantics (P2-3), an `ingest` dry run (D7), and narrowing the two broad exception handlers (P2-7).
 
 ## 6. Measurements
 
-Every number quoted elsewhere comes from here. The `10.x` labels are kept
-unchanged so references in code and other documents still resolve.
+Every number quoted elsewhere comes from here. The `10.x` labels are kept unchanged so references in code and other documents still resolve.
 
-The benchmark harness is `scripts/benchmark_write_pattern.py`. Run it against a
-device to reproduce the write-pattern, chunker-batching, and embedding numbers.
+The benchmark harness is `scripts/benchmark_write_pattern.py`. Run it against a device to reproduce the write-pattern, chunker-batching, and embedding numbers.
 
 ### 6.1 Baseline before this work
 
@@ -360,11 +218,7 @@ Adding one 715 KB source to that corpus:
 | assembly | 0.19 s | 7.15 s | 38× |
 | **wall clock** | **96.1 s** | **950.7 s** | 9.9× |
 
-What that table means: derivation was already incremental — the 20 unchanged
-documents, 1,073 chunks, and 1,073 vectors were reused exactly — but both
-indexes were rebuilt over the whole corpus, and on the HDD that dominated
-everything. Adding one paper to a 53-source project therefore cost about the same
-order as rebuilding it, which is why P1-1 and P1-11 led the list.
+What that table means: derivation was already incremental — the 20 unchanged documents, 1,073 chunks, and 1,073 vectors were reused exactly — but both indexes were rebuilt over the whole corpus, and on the HDD that dominated everything. Adding one paper to a 53-source project therefore cost about the same order as rebuilding it, which is why P1-1 and P1-11 led the list.
 
 ### 10.5 Per-unit write cost
 
@@ -377,15 +231,9 @@ Isolating one atomic write (27 KB payload) on the same two devices:
 | + directory fsync | 91.25 ms | 2.67 ms |
 | 8 artifact files with one directory fsync | 803 ms/batch | 14.5 ms/batch |
 
-**What it means.** On the HDD, a file fsync costs ~34 ms and a directory fsync
-~57 ms, and payload size is irrelevant: a 17 KB checkpoint cost the same as a
-35 KB one (192–264 ms with the original per-file pattern). This is why the fix
-became *fewer* fsyncs rather than *smaller* files, and why the planned
-write-once-inventory split was dropped: it would have saved ~0.2 ms per unit
-while adding another durability surface.
+**What it means.** On the HDD, a file fsync costs ~34 ms and a directory fsync ~57 ms, and payload size is irrelevant: a 17 KB checkpoint cost the same as a 35 KB one (192–264 ms with the original per-file pattern). This is why the fix became *fewer* fsyncs rather than *smaller* files, and why the planned write-once-inventory split was dropped: it would have saved ~0.2 ms per unit while adding another durability surface.
 
-A/B on an identical 64-unit HDD corpus, real gateway, chunking, and embeddings,
-run in both orders because the second run of any pair sees a warmer cache:
+A/B on an identical 64-unit HDD corpus, real gateway, chunking, and embeddings, run in both orders because the second run of any pair sees a warmer cache:
 
 | Phase | before → after | after → before |
 |---|---|---|
@@ -401,18 +249,13 @@ Then the same measurement for chunker batching (D10):
 | chunking | 25.56 → 15.88 s (−9.69) | 19.66 → 29.03 s (−9.36) |
 | wall clock | 117.66 → 86.82 s | 105.84 → 132.03 s (−26.20) |
 
-`assembly` stayed under 1.7 s in all four runs, so its change is inside the
-noise. That claim is deliberately *not* made.
+`assembly` stayed under 1.7 s in all four runs, so its change is inside the noise. That claim is deliberately *not* made.
 
 ### 10.6 Embedding throughput: the inference batch is a padding decision
 
-FastEmbed pads every sequence to the longest member of its batch, and ONNX
-Runtime still computes the padded positions. Cost is therefore about
-`0.27 ms × padded tokens`, so a large batch makes every short chunk as expensive
-as the longest one in its batch.
+FastEmbed pads every sequence to the longest member of its batch, and ONNX Runtime still computes the padded positions. Cost is therefore about `0.27 ms × padded tokens`, so a large batch makes every short chunk as expensive as the longest one in its batch.
 
-Measured on 128 real chunk texts (mean 152 tokens, median 112, p90 330, max
-846), 64 texts per configuration:
+Measured on 128 real chunk texts (mean 152 tokens, median 112, p90 330, max 846), 64 texts per configuration:
 
 | Inference batch | 64 texts | chunks/s |
 |---|---|---|
@@ -425,25 +268,13 @@ Measured on 128 real chunk texts (mean 152 tokens, median 112, p90 330, max
 | 16, input sorted by length | 6.95 s | 9.21 |
 | 64, input sorted by length | 13.31 s | 4.81 |
 
-**What it means.** The token model predicts every row: batch 1 costs
-`sum(lengths) ≈ 9,728` tokens (2.6 s predicted, 2.70 s measured), batch 64 costs
-`64 × 846 = 54,144` (14.6 s predicted, 14.27 s measured). Sorting narrows each
-group but cannot beat a batch of one, which pads nothing. The previous
-`batch_size=64` — and FastEmbed's own default of 256 — were making this phase
-1.5× to 4.5× more expensive than necessary.
+**What it means.** The token model predicts every row: batch 1 costs `sum(lengths) ≈ 9,728` tokens (2.6 s predicted, 2.70 s measured), batch 64 costs `64 × 846 = 54,144` (14.6 s predicted, 14.27 s measured). Sorting narrows each group but cannot beat a batch of one, which pads nothing. The previous `batch_size=64` — and FastEmbed's own default of 256 — were making this phase 1.5× to 4.5× more expensive than necessary.
 
-Vector parity is exact rather than approximate: batch 1 and batch 64 returned
-**bit-identical** vectors (`max |delta| = 0.0`) on two independent 64-text
-slices, so no retrieval result can change.
+Vector parity is exact rather than approximate: batch 1 and batch 64 returned **bit-identical** vectors (`max |delta| = 0.0`) on two independent 64-text slices, so no retrieval result can change.
 
-Threads (ONNX intra-op and inter-op) at batch 1, same texts: runtime default
-23.65 chunks/s, 1 → 9.31, 4 → 23.97, 8 → **31.66**, 16 → 20.03. The optimum is
-the physical core count (8 here), which is machine-specific, so
-`--embedding-threads` exists and defaults to unset. Setting it to 16 was *worse*
-than leaving it alone, which is why nothing is auto-detected.
+Threads (ONNX intra-op and inter-op) at batch 1, same texts: runtime default 23.65 chunks/s, 1 → 9.31, 4 → 23.97, 8 → **31.66**, 16 → 20.03. The optimum is the physical core count (8 here), which is machine-specific, so `--embedding-threads` exists and defaults to unset. Setting it to 16 was *worse* than leaving it alone, which is why nothing is auto-detected.
 
-End-to-end through the harness (90 chunks, variable page lengths, HDD, real
-gateway and model), both orders:
+End-to-end through the harness (90 chunks, variable page lengths, HDD, real gateway and model), both orders:
 
 | Phase | batch 64 → 1 | batch 1 → 64 |
 |---|---|---|
@@ -452,8 +283,7 @@ gateway and model), both orders:
 
 ### 10.7 Per-query candidate gate: precomputed verdicts
 
-Measured on 200 real chunk texts, doing the work a query used to do per
-candidate:
+Measured on 200 real chunk texts, doing the work a query used to do per candidate:
 
 | Stage | Before | After |
 |---|---|---|
@@ -464,53 +294,28 @@ candidate:
 | content-token extraction | 8.37 ms | 2.18 ms |
 | **gate total** | **92.06 ms** | **8.96 ms** |
 
-**What it means.** The gate is 10.3× cheaper at the reference view's 200
-candidates, and about 1.4 ms instead of 15 ms at the default depth of 32. What
-remains is the sidecar read plus the query-dependent token check.
+**What it means.** The gate is 10.3× cheaper at the reference view's 200 candidates, and about 1.4 ms instead of 15 ms at the default depth of 32. What remains is the sidecar read plus the query-dependent token check.
 
-The verdict is stored as a bitmask per chunk, computed by one shared function
-that both the build and the query-time fallback use, so a rejection decision and
-the counters that report it cannot drift. Reason codes are recomputed only for a
-chunk the verdict flags as corrupt, because the response discloses them.
+The verdict is stored as a bitmask per chunk, computed by one shared function that both the build and the query-time fallback use, so a rejection decision and the counters that report it cannot drift. Reason codes are recomputed only for a chunk the verdict flags as corrupt, because the response discloses them.
 
-Cross-check on the real corpus after the change: the sidecar holds 8,102
-verdicts — 8,073 healthy, 25 corrupt, 4 extraction artifacts — and the 25 matches
-the withheld-chunk count measured independently in Step 1b.
+Cross-check on the real corpus after the change: the sidecar holds 8,102 verdicts — 8,073 healthy, 25 corrupt, 4 extraction artifacts — and the 25 matches the withheld-chunk count measured independently in Step 1b.
 
 ## 7. Deliberate limitations, and claims we are not making
 
 Honesty about what has *not* been established matters as much as the numbers:
 
-- **Retrieval quality is still unmeasured.** Everything here is about fidelity
-  (does the right text survive?) and cost. Whether the ranking is good needs the
-  judged query set in Step 6.
-- **`assembly` is not measurably faster.** It stayed under 1.7 s in every run, so
-  the change is inside the noise at the benchmark corpus size.
-- **Dense latency above the current corpus size is extrapolated.** 35–68 ms per
-  query was measured at 8,102 chunks. The 50k and 100k figures in earlier notes
-  were arithmetic, not measurements; the `auto` backend switch is set at 200,000
-  chunks on that basis.
-- **Over-limit chunks are flagged, not split.** Splitting them would change chunk
-  identities, reuse behaviour, and therefore generation compatibility. The audit
-  makes the limit visible instead.
-- **Legacy generations are reused as they are.** A manifest written before the
-  dense backend was recorded resolves to the embedded index, and a lookup written
-  before the verdict column is rebuilt on first use. Nothing is regenerated
-  silently.
-- **Generation retention is unbounded.** Old generations keep their disk space
-  until Step 7.
-- **Two Qdrant-backend optimisations are open.** Keeping one client per phase and
-  time-boxed upload batches only matter for corpora above 200,000 chunks now, so
-  they are off the reference path rather than done.
-- **The embedding thread count is left to the runtime.** The measured optimum is
-  machine-specific, and a wrong guess measured *worse* than the default.
+- **Retrieval quality is still unmeasured.** Everything here is about fidelity (does the right text survive?) and cost. Whether the ranking is good needs the judged query set in Step 6.
+- **`assembly` is not measurably faster.** It stayed under 1.7 s in every run, so the change is inside the noise at the benchmark corpus size.
+- **Dense latency above the current corpus size is extrapolated.** 35–68 ms per query was measured at 8,102 chunks. The 50k and 100k figures in earlier notes were arithmetic, not measurements; the `auto` backend switch is set at 200,000 chunks on that basis.
+- **Over-limit chunks are flagged, not split.** Splitting them would change chunk identities, reuse behaviour, and therefore generation compatibility. The audit makes the limit visible instead.
+- **Legacy generations are reused as they are.** A manifest written before the dense backend was recorded resolves to the embedded index, and a lookup written before the verdict column is rebuilt on first use. Nothing is regenerated silently.
+- **Generation retention is unbounded.** Old generations keep their disk space until Step 7.
+- **Two Qdrant-backend optimisations are open.** Keeping one client per phase and time-boxed upload batches only matter for corpora above 200,000 chunks now, so they are off the reference path rather than done.
+- **The embedding thread count is left to the runtime.** The measured optimum is machine-specific, and a wrong guess measured *worse* than the default.
 
 ## 8. Where to look next
 
-- `TODO.md` — the same work as an actionable checklist, with what is done and
-  what is open.
-- `AGENTS.md` and `AGENT_GUIDE.md` — the rules and invariants that keep this
-  codebase coherent; they explain *how* to change things, not *what* was changed.
+- `TODO.md` — the same work as an actionable checklist, with what is done and what is open.
+- `AGENTS.md` and `AGENT_GUIDE.md` — the rules and invariants that keep this codebase coherent; they explain *how* to change things, not *what* was changed.
 - `README.md` — the user manual.
-- `scripts/benchmark_write_pattern.py` — reproduce the write, chunking, and
-  embedding measurements on your own hardware.
+- `scripts/benchmark_write_pattern.py` — reproduce the write, chunking, and embedding measurements on your own hardware.
