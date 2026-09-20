@@ -58,6 +58,10 @@ Plain-language summary of every capability, and why it is there:
 - **Immutable, project-local generations.** A build creates a new generation and
   only becomes active after both indexes pass validation. A failed build leaves
   the previous generation searchable.
+- **Cheap updates.** Adding or changing a source reuses the unchanged documents,
+  chunks, and vectors, then rebuilds only the indexes. Dense search reads the
+  generation's portable vectors directly rather than maintaining a separate
+  index, so there is nothing to rebuild or keep in sync.
 
 It does not decide what is true, delete or exclude sources on its own, generate
 answers on the server, or provide exact quotation transcripts. Its job is to
@@ -608,11 +612,11 @@ batches, EPUB spine sections, chunking batches of up to 16 extraction units,
 again before activation. `force_recompute=true` bypasses reuse while still
 resuming its own checkpoint.
 
-Upstream extraction is not used because this contract needs layout-aware
-PDF/EPUB handling, bibliographic provenance, and original locators. Upstream
-dense output is not used because this server needs scored results, payload
-filters, portable vectors, and exact reuse accounting. Those responsibilities
-stay thin layers around UltraRAG rather than changes to its source.
+Upstream extraction and dense output are not reused: this server needs
+layout-aware PDF/EPUB handling, bibliographic provenance, original locators,
+scored results, payload filters, portable vectors, and exact reuse accounting.
+Those responsibilities stay thin layers around UltraRAG rather than changes to
+its source.
 
 ## Limitations and troubleshooting
 
