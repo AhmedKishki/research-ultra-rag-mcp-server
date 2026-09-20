@@ -78,6 +78,71 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
     assert "high-confidence" not in lowered
 
 
+def test_features_document_separates_upstream_from_added_work() -> None:
+    features = (Path(__file__).parents[1] / "FEATURES.md").read_text(encoding="utf-8")
+
+    headings = [
+        "# Features",
+        "## 1. What UltraRAG provides, and what this server actually uses",
+        "## 2. Features added on top of UltraRAG",
+        "## 3. What this server deliberately does not do",
+        "## 4. Planned additions",
+        "## 5. Comparison with another MCP RAG server",
+    ]
+    positions = [features.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+
+    # The document must keep naming what comes from upstream, what is added here,
+    # and which work is only planned.
+    for value in (
+        "**UltraRAG**",
+        "**Added here**",
+        "**Planned**",
+        "corpus_chunk_documents",
+        "retriever_bm25_search",
+        "mcp-rag-server",
+        "Not yet measured",
+    ):
+        assert value in features
+
+    # It must not claim unbuilt work as shipped.
+    lowered = features.casefold()
+    assert "is implemented" not in lowered
+    assert "we have measured retrieval quality" not in lowered
+
+
+def test_markdown_has_no_hard_wrapped_prose() -> None:
+    """Paragraphs and list items must each be one line, not wrapped at a column."""
+
+    import re
+
+    block_start = re.compile(
+        r"^(#{1,6}\s|\s*[-*+]\s|\s*\d+[.)]\s|\s*\||\s*>|\s*```|\s*~~~|\s*[-*_]{3,}\s*$)"
+    )
+    for path in sorted((Path(__file__).parents[1]).glob("*.md")):
+        in_code = False
+        previous_blank = True
+        previous_block = True
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip().startswith(("```", "~~~")):
+                in_code = not in_code
+                previous_blank = previous_block = True
+                continue
+            if in_code:
+                previous_blank = previous_block = True
+                continue
+            if not line.strip():
+                previous_blank = previous_block = True
+                continue
+            is_block = bool(block_start.match(line))
+            assert previous_blank or previous_block or is_block, (
+                f"{path.name}:{number} is a wrapped continuation line: "
+                f"{line.strip()[:60]!r}"
+            )
+            previous_blank = False
+            previous_block = is_block
+
+
 def test_agent_docs_define_source_identity_and_current_storage_contract() -> None:
     root = Path(__file__).parents[1]
     agent_guide = (root / "AGENT_GUIDE.md").read_text(encoding="utf-8")

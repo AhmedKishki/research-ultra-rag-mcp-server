@@ -91,6 +91,7 @@ Small items that affect meaning or disk use:
 - Add an `ingest` dry run that explains what would change without writing.
 - Narrow the two broad exception handlers at durability boundaries so real storage faults are not swallowed.
 - Two Qdrant-backend-only optimisations remain open and are off the reference path because that backend now applies only above 200,000 chunks: one client per phase, and time-boxed upload batches.
+- Decide and add a repository licence. There is currently no `LICENSE` file and no licence field in `pyproject.toml`, even though this server uses Apache-2.0 UltraRAG and depends on third-party models. `NOTICE` covers upstream attribution but not the licence of this repository's own code, so the terms a user receives today are unstated. This is a decision for the owner, not something to be guessed at.
 
 ## Decisions
 

@@ -26,6 +26,8 @@ Plain-language summary of every capability, and why it is there:
 - **Immutable, project-local generations.** A build creates a new generation and only becomes active after both indexes pass validation. A failed build leaves the previous generation searchable.
 - **Cheap updates.** Adding or changing a source reuses the unchanged documents, chunks, and vectors, then rebuilds only the indexes. Dense search reads the generation's portable vectors directly rather than maintaining a separate index, so there is nothing to rebuild or keep in sync.
 
+For the full inventory — which capabilities come from UltraRAG, which are added on top of it, what is deliberately excluded, what is only planned, and how this server compares with a general-purpose MCP RAG server — see [`FEATURES.md`](FEATURES.md).
+
 It does not decide what is true, delete or exclude sources on its own, generate answers on the server, or provide exact quotation transcripts. Its job is to return structured evidence for an agent and researcher to assess.
 
 ## Install once

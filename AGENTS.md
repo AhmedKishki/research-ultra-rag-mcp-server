@@ -13,6 +13,7 @@ The package builds on the separately versioned `vanilla-ultra-rag-mcp-server`. N
 - `README.md` is a standalone user manual: capability summary, operation, installation, MCP configuration, concrete usage, expected results, storage, and user-visible limitations. It must not compare or link to sibling MCP-server projects.
 - `AGENT_GUIDE.md` is operational policy for an AI agent using the nine research tools. Do not put installation or contributor workflows there.
 - `AGENTS.md` is this engineering contract. It may document internal dependency boundaries, but must not become a second user manual.
+- `FEATURES.md` is the capability inventory: what comes from UltraRAG, what this server adds on top, what is deliberately excluded, what is only planned, and how it differs from a general-purpose MCP RAG server. Keep the upstream/added/planned labels accurate; never present planned work as shipped.
 - `ROADMAP.md` contains only deferred work.
 - `PLAN.md` records review findings, their evidence, and the agreed strengthening sequence. It is a review and plan document, not a description of shipped behaviour.
 - `TODO.md` is the actionable checklist derived from `PLAN.md`. It may repeat `PLAN.md` items as checkboxes but must not introduce capability that is absent from `PLAN.md` or `ROADMAP.md`.
