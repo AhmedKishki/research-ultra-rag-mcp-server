@@ -48,7 +48,16 @@ def fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def atomic_write_json(path: Path, value: Any) -> None:
+def atomic_write_json(path: Path, value: Any, *, fsync_parent: bool = True) -> None:
+    """Write JSON atomically.
+
+    Pass ``fsync_parent=False`` to defer the directory fsync when several files
+    are committed together; a caller that defers must persist the parents with
+    :func:`fsync_directories` before committing any state that depends on them.
+    On a spinning disk a directory fsync costs about 57 ms, so a group of
+    related writes is much cheaper than one per file.
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
@@ -59,7 +68,8 @@ def atomic_write_json(path: Path, value: Any) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
-        fsync_directory(path.parent)
+        if fsync_parent:
+            fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -73,14 +83,42 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
         os.fsync(handle.fileno())
 
 
-def atomic_write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
+def write_handoff_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
+    """Write a file that only a peer process reads and no resume path trusts.
+
+    It must be *visible* to another process on this machine, which closing the
+    file guarantees, but it is rewritten before every use and deleted
+    afterwards, so paying for durability would only slow the caller down.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def atomic_write_jsonl(
+    path: Path,
+    records: Iterable[dict[str, Any]],
+    *,
+    fsync_parent: bool = True,
+) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         write_jsonl(temporary, records)
         os.replace(temporary, path)
-        fsync_directory(path.parent)
+        if fsync_parent:
+            fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def fsync_directories(paths: Iterable[Path]) -> None:
+    """Persist directory entries for writes that deferred their own fsync."""
+
+    for path in dict.fromkeys(paths):
+        if path.is_dir():
+            fsync_directory(path)
 
 
 def read_json(path: Path) -> Any:

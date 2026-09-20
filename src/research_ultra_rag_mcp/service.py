@@ -86,6 +86,7 @@ from .storage import (
     StorageError,
     atomic_write_json,
     atomic_write_jsonl,
+    fsync_directories,
     fsync_directory,
     iter_jsonl,
     load_current_generation,
@@ -94,6 +95,7 @@ from .storage import (
     load_source_exclusions,
     read_json,
     read_jsonl,
+    write_handoff_jsonl,
     write_metadata_overrides,
     write_source_catalog,
     write_source_exclusions,
@@ -2537,7 +2539,9 @@ class ResearchService:
                             atomic_write_json(
                                 artifact_root / "page-scans" / f"{page_index:08d}.json",
                                 page_scan,
+                                fsync_parent=False,
                             )
+                        fsync_directories([artifact_root / "page-scans"])
                         state["next_index"] = expected_indices[-1] + 1
                         checkpoint["extraction_work_completed"] = (
                             int(checkpoint.get("extraction_work_completed") or 0) + 1
@@ -2622,6 +2626,7 @@ class ResearchService:
                         atomic_write_jsonl(
                             artifact_root / "unit-batches" / f"{page_index:08d}.jsonl",
                             retained,
+                            fsync_parent=False,
                         )
                         state["empty_units"] = int(state.get("empty_units") or 0) + int(
                             empty
@@ -2637,7 +2642,8 @@ class ResearchService:
                     checkpoint["extraction_work_completed"] = (
                         int(checkpoint.get("extraction_work_completed") or 0) + 1
                     )
-                    atomic_write_json(state_path, state)
+                    atomic_write_json(state_path, state, fsync_parent=False)
+                    fsync_directories([artifact_root / "unit-batches", artifact_root])
                 elif extraction_stage == "finalize":
                     units = []
                     for index in range(int(state["total"])):
@@ -2756,7 +2762,10 @@ class ResearchService:
                     if chunked_count < len(units):
                         input_path = artifact_root / "chunking" / "unit.jsonl"
                         working_path = artifact_root / "raw-chunks.jsonl"
-                        atomic_write_jsonl(input_path, [units[chunked_count]])
+                        # A handoff file is rewritten before every call and
+                        # deleted afterwards, so it needs visibility, not
+                        # durability.
+                        write_handoff_jsonl(input_path, [units[chunked_count]])
                         working_path.unlink(missing_ok=True)
                         await self.ultrarag.chunk(
                             input_path,
@@ -2767,6 +2776,7 @@ class ResearchService:
                         atomic_write_jsonl(
                             artifact_root / "chunking" / f"{chunked_count:08d}.jsonl",
                             read_jsonl(working_path),
+                            fsync_parent=False,
                         )
                         working_path.unlink(missing_ok=True)
                         input_path.unlink(missing_ok=True)
@@ -2774,7 +2784,14 @@ class ResearchService:
                         checkpoint["chunking_work_completed"] = (
                             int(checkpoint.get("chunking_work_completed") or 0) + 1
                         )
-                        atomic_write_json(artifact_root / "state.json", state)
+                        atomic_write_json(
+                            artifact_root / "state.json",
+                            state,
+                            fsync_parent=False,
+                        )
+                        # Both durable artifacts are on disk before the
+                        # checkpoint that claims this unit is complete.
+                        fsync_directories([artifact_root / "chunking", artifact_root])
                         self._add_phase_time(
                             checkpoint,
                             "chunking",
@@ -2877,6 +2894,7 @@ class ResearchService:
                     chunks_path,
                     staged_records("chunks.jsonl", "chunks", record_counts),
                 )
+                batches_root = staging_root / "work" / "chunk-batches"
                 offset = 0
                 batch: list[dict[str, Any]] = []
                 for chunk in iter_jsonl(chunks_path):
@@ -2884,22 +2902,22 @@ class ResearchService:
                     if len(batch) < EMBEDDING_BATCH_SIZE:
                         continue
                     atomic_write_jsonl(
-                        staging_root
-                        / "work"
-                        / "chunk-batches"
-                        / f"{offset:012d}.jsonl",
+                        batches_root / f"{offset:012d}.jsonl",
                         batch,
+                        fsync_parent=False,
                     )
                     offset += len(batch)
                     batch = []
                 if batch:
                     atomic_write_jsonl(
-                        staging_root
-                        / "work"
-                        / "chunk-batches"
-                        / f"{offset:012d}.jsonl",
+                        batches_root / f"{offset:012d}.jsonl",
                         batch,
+                        fsync_parent=False,
                     )
+                if batches_root.is_dir():
+                    # One directory fsync covers every batch before embedding
+                    # resumes from any of them.
+                    fsync_directories([batches_root])
                 checkpoint["document_count"] = len(documents)
                 checkpoint["extraction_unit_count"] = record_counts["units"]
                 checkpoint["chunk_count"] = record_counts["chunks"]

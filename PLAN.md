@@ -832,7 +832,9 @@ Conclusions:
    targets: `chunking` (18.6× fresh, 31.4× incremental) is the per-unit MCP round
    trip plus roughly four atomic writes per unit (P1-2), and `assembly` (34–38×)
    is dominated by the per-unit checkpoint rewrites (P1-3). Both are fixable
-   without changing retrieval behaviour.
+   without changing retrieval behaviour. §10.5 corrects the second half: the cost
+   is fsync *latency* per write, not the rewritten bytes, and shrinking the
+   checkpoint file buys almost nothing.
 3. `embedding` is the only phase with the same cost on both devices, and it is
    the largest single cost of a fresh build on fast storage (71.5%). It scales
    with *new* chunks, so P1-11 also reduces it for incremental adds, and it is
@@ -840,6 +842,48 @@ Conclusions:
    or an optional accelerator).
 4. Storage footprint: a 6.1 MB source corpus produced a **27 MB runtime**
    (4.4× the corpus) while retaining two generations.
+
+### 10.5 Where the storage cost actually is (measured per-write latency)
+
+Isolating one write on the same two devices, with a 27 KB JSON payload:
+
+| Operation | HDD (`/dev/sda1`) | NVMe (`/dev/nvme0n1p2`) |
+|---|---|---|
+| write + `os.replace`, no fsync | 0.40 ms | 0.36 ms |
+| + file fsync | 33.95 ms | 1.62 ms |
+| + directory fsync | 91.25 ms | 2.67 ms |
+| 8 artifact files, one directory fsync | 803 ms/batch | 14.5 ms/batch |
+
+A file fsync costs about **34 ms** and a directory fsync about **57 ms** on the
+HDD; the median of 15 samples is shown, and the spread was small. Payload size
+does not matter: with the old per-file pattern a 17 KB checkpoint cost
+192–264 ms, the same as a 35 KB one. This **retires P1-3's proposed fix** —
+moving the immutable source inventory into a write-once file would save roughly
+0.2 ms per unit while adding a second durability surface. The real lever is the
+*number* of fsyncs, not the bytes written.
+
+Step 2a therefore groups directory fsyncs: within a unit, artifacts defer their
+directory fsync and the group is committed once, before the checkpoint that
+claims the unit is complete, and a handoff file that is rewritten before every
+use and deleted afterwards gets visibility without durability. Ordering is
+unchanged — a checkpoint is still never durable before the artifacts it
+describes.
+
+A/B on an identical 64-unit, 64-chunk corpus on the HDD, using the real vanilla
+gateway, real tokenizer chunking, and real embeddings, with only the write
+pattern differing. Both orders were run because the second run of any pair
+benefits from a warm page cache:
+
+| Phase | before → after | after → before |
+|---|---|---|
+| chunking | 63.59 → 26.26 s (**−37.33**) | 53.32 → 35.83 s (**−17.49**) |
+| extraction | 46.90 → 38.58 s (−8.31) | 49.07 → 35.56 s (−13.51) |
+| phase sum | 115.08 → 67.36 s (−47.72, −41%) | 105.59 → 73.98 s (−31.62, −30%) |
+| wall clock | 170.07 → 118.56 s (−51.50) | 161.03 → 134.94 s (−26.09) |
+
+Both orders agree in direction and rough size, chunk counts are identical, and
+every run resumed across several `ingest` calls. `assembly` stayed below 1.7 s
+in all four runs, so its change is inside the noise and is **not** claimed.
 
 ## 11. Options for cheap incremental adds — pros and cons
 

@@ -105,6 +105,41 @@ class FakeUltraRAG:
         return sorted(self.passages, key=score, reverse=True)[:top_k]
 
 
+class SimulatedProcessExit(BaseException):
+    """Models a hard process exit that no handler in the service can catch."""
+
+
+class CrashDuringChunkUltraRAG(FakeUltraRAG):
+    """Records the units each chunk call was given and can fail one call."""
+
+    def __init__(self, fail_on_call: int | None = None) -> None:
+        super().__init__()
+        self.fail_on_call = fail_on_call
+        self.requested_unit_ids: list[list[str]] = []
+
+    async def chunk(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> None:
+        self.requested_unit_ids.append(
+            [str(unit["id"]) for unit in read_jsonl(input_path)]
+        )
+        if self.fail_on_call is not None and len(self.requested_unit_ids) == (
+            self.fail_on_call
+        ):
+            raise SimulatedProcessExit
+        await super().chunk(
+            input_path,
+            output_path,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+
+
 class SymbolChunkUltraRAG(FakeUltraRAG):
     async def chunk(
         self,
@@ -2357,7 +2392,9 @@ async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
     original_atomic_write = service_module.atomic_write_json
     crashed = False
 
-    def fail_during_first_scan_batch(path: Path, value: object) -> None:
+    def fail_during_first_scan_batch(
+        path: Path, value: object, **kwargs: object
+    ) -> None:
         nonlocal crashed
         if (
             not crashed
@@ -2366,7 +2403,7 @@ async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
         ):
             crashed = True
             raise SimulatedProcessExit
-        original_atomic_write(path, value)
+        original_atomic_write(path, value, **kwargs)
 
     with monkeypatch.context() as patcher:
         patcher.setattr(
@@ -2395,6 +2432,67 @@ async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
     assert ready["resumed"] is True
     units = read_jsonl(Path(ready["generation_root"]) / "corpus/extracted-units.jsonl")
     assert [unit["locator"]["page"] for unit in units] == list(range(1, 10))
+
+
+def test_hard_crash_mid_chunking_redoes_at_most_one_unit(project: Path) -> None:
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "evidence.pdf",
+            [
+                "Alpha cobalt evidence.",
+                "Beta amber evidence.",
+                "Gamma copper evidence.",
+            ],
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        crashing = CrashDuringChunkUltraRAG(fail_on_call=2)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            crashing,
+            dense=FakeDenseBackend(),
+        )
+
+        with pytest.raises(SimulatedProcessExit):
+            await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        # The unit chunked before the crash is durable; the crashing unit is not.
+        staging_root = next(config.staging_root.iterdir())
+        state = json.loads(
+            next((staging_root / "work" / "sources").glob("*/state.json")).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert state["chunked_unit_count"] == 1
+        # One unit was chunked and committed; the crashing call is the second
+        # one and left no durable output behind.
+        assert len(crashing.requested_unit_ids) == 2
+        assert len(crashing.requested_unit_ids[0]) == 1
+        committed_unit_id = crashing.requested_unit_ids[0][0]
+
+        resumed_ultrarag = CrashDuringChunkUltraRAG()
+        resumed = ResearchService(  # type: ignore[arg-type]
+            config,
+            resumed_ultrarag,
+            dense=FakeDenseBackend(),
+        )
+        ready = await resumed.ingest(chunk_size=50, chunk_overlap=10)
+
+        assert ready["status"] == "ready"
+        assert ready["resumed"] is True
+        requested = [
+            unit_id for call in resumed_ultrarag.requested_unit_ids for unit_id in call
+        ]
+        # Only the unfinished units are re-chunked: the committed unit is never
+        # sent to the chunker again, so a crash never redoes more than one unit.
+        assert committed_unit_id not in requested
+        assert requested
+        assert ready["chunk_count"] == 3
+        units = read_jsonl(
+            Path(ready["generation_root"]) / "corpus/extracted-units.jsonl"
+        )
+        assert len(units) == 3
+
+    asyncio.run(exercise())
 
 
 def test_partial_pdf_batch_is_replayed_after_hard_crash(
@@ -3004,10 +3102,10 @@ def test_pending_activation_recovers_crash_window(
 
             original_atomic_write = service_module.atomic_write_json
 
-            def fail_journal(path: Path, value: object) -> None:
+            def fail_journal(path: Path, value: object, **kwargs: object) -> None:
                 if path == config.state_root / "pending-activation.json":
                     raise SimulatedProcessExit
-                original_atomic_write(path, value)
+                original_atomic_write(path, value, **kwargs)
 
             with monkeypatch.context() as patcher:
                 patcher.setattr(service_module, "atomic_write_json", fail_journal)
@@ -3030,10 +3128,10 @@ def test_pending_activation_recovers_crash_window(
         else:
             original_atomic_write = service_module.atomic_write_json
 
-            def fail_pointer(path: Path, value: object) -> None:
+            def fail_pointer(path: Path, value: object, **kwargs: object) -> None:
                 if path == config.current_path:
                     raise OSError("simulated crash before pointer write")
-                original_atomic_write(path, value)
+                original_atomic_write(path, value, **kwargs)
 
             with monkeypatch.context() as patcher:
                 patcher.setattr(service_module, "atomic_write_json", fail_pointer)

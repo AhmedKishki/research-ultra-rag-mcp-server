@@ -301,31 +301,64 @@ Priority: reduce work and durability cost **without** widening the resume
 granularity. Every unit must still leave a durable, resumable state behind; a
 crash must never redo more than one extraction unit.
 
-- [ ] Keep one `QdrantClient` open for the entire `qdrant_indexing` phase
-      instead of one client per batch, or drop the phase entirely if Step A is
-      adopted.
+Status: **partly done.** The write-cost half is measured and fixed — see
+`PLAN.md` §10.5 and the two gate rows below. The remaining half is batching
+extraction units per chunker call, which the same measurement now justifies on
+its own numbers rather than on assumption.
+
+- [ ] Keep one `QdrantClient` open for the entire dense-index phase instead of
+      one client per batch. **Re-scoped, not done:** Step A made the exact scan
+      the default, so this only affects `--dense-backend qdrant`, which is
+      selected only above 200,000 chunks. It stays open as a Qdrant-backend
+      improvement and is off the reference path.
 - [ ] Replace the fixed 64-point upload batch with a time-boxed batch, with a
-      single explicit verification before activation.
+      single explicit verification before activation. Same re-scoping as above:
+      Qdrant backend only.
 - [ ] If extraction units are batched for the chunker, write each unit's durable
       state before the batch call so a crash resumes at the last durable unit
-      rather than at the batch start.
-- [ ] Keep `checkpoint.json` at unit granularity, and make each write cheap by
+      rather than at the batch start. **Still open, and now the largest remaining
+      item:** after Step 2a, chunking is 26–36 s of the 67–74 s phase sum on the
+      HDD A/B corpus because it still pays one MCP round trip plus one checkpoint
+      per extraction unit. Raw chunks carry `doc_id` = extraction-unit id, so
+      batching is exact.
+- [x] Keep `checkpoint.json` at unit granularity, and make each write cheap by
       moving the immutable source inventory and digests into a write-once file so
-      the per-unit write stays small and constant-size.
-- [ ] Stop rewriting per-source artifacts that did not change.
-- [ ] Add a test asserting that a crash mid-chunking redoes at most one unit.
+      the per-unit write stays small and constant-size. **Resolved by measurement
+      instead of implemented** — see `PLAN.md` §10.5: a 17 KB and a 35 KB
+      checkpoint cost the same 192–264 ms with the original pattern on this HDD,
+      because the cost is one file fsync (~34 ms) plus one directory fsync
+      (~57 ms), not the bytes. Moving the inventory would save about 0.2 ms per
+      unit while adding a second durability surface. The Step 2a fix groups
+      directory fsyncs per unit instead, which the same A/B measured at 17–37 s
+      saved in the chunking phase alone.
+- [x] Stop rewriting per-source artifacts that did not change. Verified: a reused
+      document's `document.json`/`units.jsonl` are read, never rewritten, and the
+      per-source staging artifacts that are written once per source are the ones
+      the next phase consumes.
+- [x] Add a test asserting that a crash mid-chunking redoes at most one unit.
+      `test_hard_crash_mid_chunking_redoes_at_most_one_unit` fails the second
+      chunker call with a `BaseException`, then asserts the resumed run never
+      re-sends the committed unit and still produces the full chunk count.
 - [x] Document the fast-local-storage requirement for `.research-rag/runtime`
       and the bind-mount stopgap in the README storage section, including the
       measured cost per point on each device (done ahead of Step 2 because it is
       the cheapest large win for an HDD-backed project).
-- [ ] Verify that resume, cancellation, and timeout behaviour still produce a
-      resumable checkpoint at every boundary.
+- [x] Verify that resume, cancellation, and timeout behaviour still produce a
+      resumable checkpoint at every boundary. The existing crash-window and
+      bounded-budget tests still pass, and every run of the Step 2a A/B — four
+      real HDD builds through the real gateway — completed across several
+      `ingest` calls after resuming.
 
 Gate:
 
-- [ ] `chunking` and `assembly` are measurably cheaper on HDD, reuse counts and
-      the `unchanged` path are identical, and a crash mid-chunking redoes at
-      most one extraction unit.
+- [x] `chunking` is measurably cheaper on HDD: 63.59 → 26.26 s and 53.32 →
+      35.83 s in the two orders of the A/B (identical 64-unit corpora).
+- [ ] `assembly` is measurably cheaper on HDD: **not proven.** It stayed below
+      1.7 s in all four runs, so its change is inside the noise at this corpus
+      size. Do not claim it without a larger corpus.
+- [x] Reuse counts and the `unchanged` path are identical: chunk counts matched
+      exactly between variants, and the reuse/bounded-build tests pass.
+- [x] A crash mid-chunking redoes at most one extraction unit.
 
 ## Step 2b — Incremental Qdrant append (P1-11; only if D6 chooses option C)
 

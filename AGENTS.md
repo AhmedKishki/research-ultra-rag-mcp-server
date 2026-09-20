@@ -103,6 +103,12 @@ concrete options, never as an open question. For every decision:
   IDs are permanent across incompatible generations.
 - Keep BM25 and dense indexes in the same immutable generation, and never select
   the generation unless both indexes validate successfully.
+- Never let a checkpoint, `current.json`, or any other commit point become
+  durable before the artifacts it describes. Grouping directory fsyncs inside a
+  unit is required and expected (`fsync_directories` before the checkpoint
+  write); dropping the artifact write's own durability, the checkpoint's, or the
+  ordering is not. A file written only to hand off to a peer process and
+  rewritten before every use may skip fsync entirely.
 - Keep dense vectors and any dense index project-local; do not introduce a
   required external database service.
 - Record the dense backend in each generation manifest and dispatch retrieval
