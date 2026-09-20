@@ -735,10 +735,12 @@ class ResearchService:
                 QDRANT_BACKEND_NAME: LocalQdrantDenseBackend(
                     config.models_root,
                     offline=config.offline,
+                    embedding_threads=config.embedding_threads,
                 ),
                 EXACT_BACKEND_NAME: LocalVectorDenseBackend(
                     config.models_root,
                     offline=config.offline,
+                    embedding_threads=config.embedding_threads,
                 ),
             }
         # The primary backend answers model-only calls; indexing, validation, and

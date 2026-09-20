@@ -36,6 +36,8 @@ def create_research_transport(
         arguments.extend(["--runtime-cache-root", str(config.runtime_cache_root)])
     if config.runtime_root is not None:
         arguments.extend(["--runtime-root", str(config.runtime_root)])
+    if config.embedding_threads is not None:
+        arguments.extend(["--embedding-threads", str(config.embedding_threads)])
     if config.offline:
         arguments.append("--offline")
     return StdioTransport(

@@ -35,6 +35,7 @@ class ResearchConfig:
     log_level: str
     dense_backend: str = "auto"
     runtime_root: Path | None = None
+    embedding_threads: int | None = None
 
     @property
     def generations_root(self) -> Path:
@@ -365,6 +366,7 @@ def resolve_config(
     offline: bool = False,
     log_level: str = "warn",
     dense_backend: str = "auto",
+    embedding_threads: int | str | None = None,
 ) -> ResearchConfig:
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
@@ -413,6 +415,22 @@ def resolve_config(
 
     if log_level not in {"debug", "info", "warn", "error"}:
         raise ConfigurationError(f"Unsupported log level: {log_level}")
+
+    if (
+        embedding_threads is None
+        or isinstance(embedding_threads, str)
+        and not embedding_threads.strip()
+    ):
+        normalized_threads = None
+    else:
+        try:
+            normalized_threads = int(embedding_threads)
+        except (TypeError, ValueError) as exc:
+            raise ConfigurationError(
+                f"Invalid embedding thread count: {embedding_threads!r}"
+            ) from exc
+        if normalized_threads < 1:
+            raise ConfigurationError("--embedding-threads must be at least 1")
 
     normalized_dense_backend = dense_backend.strip().casefold()
     if normalized_dense_backend not in {"auto", "exact", "qdrant"}:
@@ -479,6 +497,7 @@ def resolve_config(
         log_level=log_level,
         dense_backend=normalized_dense_backend,
         runtime_root=custom_state if relocated else None,
+        embedding_threads=normalized_threads,
     )
 
 

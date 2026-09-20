@@ -405,6 +405,13 @@ Update tests and documentation when changing them.
   count and a truncation flag on the chunk record, and report the aggregate in
   build metrics and per hit. When the tokenizer cannot be inspected, record the
   audit as unavailable rather than failing the build or inventing a count.
+- Treat the embedding inference batch size as a padding decision, not a
+  throughput dial: FastEmbed pads every sequence to the longest member of its
+  batch, so a larger batch makes short chunks pay for the longest one. Keep
+  `EMBEDDING_INFERENCE_BATCH_SIZE` at 1 unless a measurement on the target
+  corpus says otherwise, and record any change in `PLAN.md` §10.6. Do not raise
+  it "to go faster" without measuring padded tokens, and keep
+  `--embedding-threads` unset by default because its optimum is machine-specific.
 - Disclose withholding instead of hiding it. Report reason codes, counts, and
   example chunk IDs in the search response, and record corpus-level withheld
   counts and reasons in the generation build metrics that `status` returns.

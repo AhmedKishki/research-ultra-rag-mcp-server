@@ -67,6 +67,10 @@ inside each project. Override the model location with
 `RESEARCH_ULTRARAG_MODEL_CACHE_ROOT`. Select the dense index backend with
 `--dense-backend auto|exact|qdrant` or `RESEARCH_ULTRARAG_DENSE_BACKEND`;
 `auto` (the default) uses the exact scan for corpora at or below the threshold.
+Embedding is CPU-only and runs one sequence per ONNX inference, because
+sequences are padded to the longest member of their batch; `--embedding-threads`
+or `RESEARCH_ULTRARAG_EMBEDDING_THREADS` overrides the runtime's thread choice,
+which is machine-specific (see `PLAN.md` §10.6 for the measurements).
 
 Use `--offline` only after the runtime and required model files have been
 downloaded. In offline mode, an existing legacy project-local model cache can

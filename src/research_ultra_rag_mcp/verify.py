@@ -87,6 +87,15 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--embedding-threads",
+        type=int,
+        default=os.environ.get("RESEARCH_ULTRARAG_EMBEDDING_THREADS"),
+        help=(
+            "ONNX Runtime threads for the embedding model; unset lets the "
+            "runtime decide"
+        ),
+    )
+    parser.add_argument(
         "--dense-backend",
         choices=("auto", "exact", "qdrant"),
         default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
@@ -132,6 +141,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         offline=args.offline,
         dense_backend=args.dense_backend,
         runtime_root=args.runtime_root,
+        embedding_threads=args.embedding_threads,
     )
     log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(

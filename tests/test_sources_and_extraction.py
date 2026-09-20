@@ -1193,6 +1193,36 @@ def test_relocated_runtime_root_refuses_another_project_and_foreign_data(
         )
 
 
+def test_embedding_threads_option_is_validated(project: Path) -> None:
+    default = resolve_config(project, vanilla_executable=sys.executable)
+    assert default.embedding_threads is None
+
+    # An environment variable arrives as a string, so it is coerced and checked.
+    configured = resolve_config(
+        project,
+        vanilla_executable=sys.executable,
+        embedding_threads="8",
+    )
+    assert configured.embedding_threads == 8
+    assert (
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            embedding_threads="",
+        ).embedding_threads
+        is None
+    )
+
+    with pytest.raises(ConfigurationError, match="at least 1"):
+        resolve_config(project, vanilla_executable=sys.executable, embedding_threads=0)
+    with pytest.raises(ConfigurationError, match="Invalid embedding thread count"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            embedding_threads="many",
+        )
+
+
 def test_default_runtime_root_needs_no_marker(project: Path) -> None:
     config = resolve_config(project, vanilla_executable=sys.executable)
 

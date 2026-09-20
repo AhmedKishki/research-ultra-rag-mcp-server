@@ -441,19 +441,42 @@ Gate:
 
 ## Step 2d — Embedding throughput (P1-13)
 
-- [ ] Establish the current baseline (0.16 s per new chunk, 71.5% of a fresh
-      fast-storage build) as a repeatable benchmark.
-- [ ] Measure the ONNX session thread count and provider configuration rather
-      than assuming defaults.
-- [ ] Evaluate chunk padding and sequence-length effects.
-- [ ] Consider an optional accelerator or a smaller model profile only if the
-      measurements justify it, keeping CPU as the default.
-- [ ] Re-check the embedding model input limit after any change (P0-2).
+Status: **done, and the finding inverted the assumption.** The batch size was not
+a memory setting: FastEmbed pads every sequence to the longest member of its
+inference batch, so a batch of 64 made every short chunk as expensive as the
+longest one. Measurements and the token-cost model are in `PLAN.md` §10.6.
+
+- [x] Establish the current baseline (0.16 s per new chunk, 71.5% of a fresh
+      fast-storage build) as a repeatable benchmark. Reproduced as 4.49–6.23
+      chunks/s at an inference batch of 64 on real corpus text, and the harness
+      gained an `embedding-batch` variant for the end-to-end comparison.
+- [x] Measure the ONNX session thread count and provider configuration rather
+      than assuming defaults. At batch 1 on 64 real texts: runtime default 23.65
+      chunks/s, 1 → 9.31, 4 → 23.97, 8 → **31.66**, 16 → 20.03. The optimum is
+      the physical core count, so `--embedding-threads` (and
+      `RESEARCH_ULTRARAG_EMBEDDING_THREADS`) was added and defaults to unset
+      rather than auto-detecting a machine-specific value.
+- [x] Evaluate chunk padding and sequence-length effects. This was the whole
+      win: `EMBEDDING_INFERENCE_BATCH_SIZE` is now 1, worth 23.68 chunks/s
+      against 4.49 at a batch of 64 on the live corpus's token distribution, and
+      25–41% off the embedding phase end to end.
+- [x] Consider an optional accelerator or a smaller model profile only if the
+      measurements justify it, keeping CPU as the default. Not justified: the
+      padding fix recovered most of the headroom on CPU, and no accelerator or
+      model swap is proposed.
+- [x] Re-check the embedding model input limit after any change (P0-2). The
+      512-token limit, the truncation flag, and the audit are unchanged: the
+      audit loads the pinned tokenizer separately from the embedder and never
+      used the inference batch path.
 
 Gate:
 
-- [ ] Embedding cost per new chunk improves measurably with no change in
-      retrieval results for the judged query set.
+- [x] Embedding cost per new chunk improves measurably with no change in
+      retrieval results for the judged query set. The improvement is measured
+      (below), and retrieval cannot change because batch 1 and batch 64 return
+      bit-identical vectors (`max |delta| = 0.0`) on two independent slices of
+      the live corpus. The judged-query regression suite itself is Step 6 and
+      remains open there.
 
 ## Step 3 — Per-query CPU (P1-4, P1-5)
 

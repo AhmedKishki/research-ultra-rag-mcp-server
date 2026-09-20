@@ -885,10 +885,65 @@ Both orders agree in direction and rough size, chunk counts are identical, and
 every run resumed across several `ingest` calls. `assembly` stayed below 1.7 s
 in all four runs, so its change is inside the noise and is **not** claimed.
 
+### 10.6 Embedding throughput: the inference batch is a padding decision
+
+FastEmbed pads every sequence to the **longest member of its inference batch**
+(batch-longest, not a fixed 512), and ONNX Runtime still computes the padded
+positions. Embedding cost is therefore `0.27 ms × padded tokens`, and a large
+batch makes every short chunk as expensive as the longest one.
+
+Measured on 128 real chunk texts from the live corpus (tokens: mean 152, median
+112, p90 330, max 846), pinned model, 64 texts per configuration:
+
+| ONNX inference batch | 64 texts | chunks/s |
+|---|---|---|
+| 1 | 2.70 s | **23.68** |
+| 4 | 8.13 s | 7.87 |
+| 8 | 12.86 s | 4.98 |
+| 16 | 12.08 s | 5.30 |
+| 32 | 11.07 s | 5.78 |
+| 64 | 14.27 s | 4.49 |
+| 16, input sorted by length | 6.95 s | 9.21 |
+| 64, input sorted by length | 13.31 s | 4.81 |
+
+The token model predicts each row: batch 1 costs `sum(lengths) ≈ 9,728` tokens
+(2.6 s predicted, 2.70 s measured), batch 64 costs `64 × 846 = 54,144` (14.6 s
+predicted, 14.27 s measured), and sorted batches of 16 cost about
+`16 × (120 + 180 + 330 + 846) = 23,616` (6.4 s predicted, 6.95 s measured).
+Sorting narrows each group but cannot beat a batch of one, which pads nothing.
+
+Consequence: the previous `batch_size=64` — and FastEmbed's own default of 256 —
+made this phase roughly 1.5× to 4.5× more expensive than necessary, depending on
+how dispersed the batch lengths are. `EMBEDDING_INFERENCE_BATCH_SIZE` is now 1.
+
+Vector parity is exact, not approximate: batch 1 and batch 64 produced
+**bit-identical** vectors (max |delta| = 0.0) on two independent 64-text slices
+of the live corpus, so no retrieval result can change.
+
+Threads (ONNX intra-op and inter-op) measured at batch 1 on the same texts:
+runtime default 23.65, 1 → 9.31, 4 → 23.97, 8 → **31.66**, 16 → 20.03 chunks/s.
+The optimum is the physical core count (8 on this machine), which is
+machine-specific, so `--embedding-threads` exists and defaults to unset; 16 was
+*worse* than the default, which is why nothing is auto-detected or defaulted.
+
+End-to-end confirmation through `scripts/benchmark_write_pattern.py --variant
+embedding-batch` on a corpus with variable page lengths (50 units, 90 chunks,
+HDD, real gateway and model), both orders:
+
+| Phase | batch 64 → batch 1 | batch 1 → batch 64 |
+|---|---|---|
+| embedding | 19.04 → 11.24 s (−7.80, −41%) | 10.91 → 14.62 s (−3.71, −25%) |
+| phase sum | 76.30 → 70.83 s | 68.88 → 76.79 s |
+| wall clock | 119.32 → 109.15 s | 112.05 → 116.20 s |
+
+Batch 1 is faster in both orders. The gain is smaller than the microbenchmark's
+because this benchmark corpus has less length dispersion inside each 64-chunk
+service batch; the live corpus, whose median chunk is 112 tokens and whose
+longest is 846, sits at the other end of that range.
+
 ## 11. Options for cheap incremental adds — pros and cons
 
 ### 11.1 The stated priorities, in order
-
 1. **Resumability first.** A long first build is acceptable; losing progress is
    not. This is already satisfied and should not be weakened: progress is
    durable per extracted document, per 8-page PDF scan batch, per extraction

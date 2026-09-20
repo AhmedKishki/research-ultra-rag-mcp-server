@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import research_ultra_rag_mcp.dense as dense_module
 from research_ultra_rag_mcp.dense import (
     EMBEDDING_DIMENSION,
     DenseTokenAuditUnavailable,
@@ -25,6 +26,54 @@ def _chunks(count: int) -> list[dict[str, object]]:
         }
         for index in range(count)
     ]
+
+
+def test_embed_texts_uses_the_measured_inference_batch_size(tmp_path: Path) -> None:
+    recorded: list[int] = []
+
+    class StubEmbedder:
+        def passage_embed(self, texts: list[str], batch_size: int) -> list[np.ndarray]:
+            recorded.append(batch_size)
+            return [np.zeros(EMBEDDING_DIMENSION, dtype=np.float32) for _ in texts]
+
+    backend = LocalVectorDenseBackend(tmp_path / "models", offline=True)
+    backend._embedding_model = StubEmbedder()  # type: ignore[assignment]
+
+    vectors = backend.embed_texts(["alpha", "beta"])
+
+    # Sequences are padded to the longest member of their inference batch, so the
+    # batch size is a throughput decision rather than a memory setting.
+    assert recorded == [dense_module.EMBEDDING_INFERENCE_BATCH_SIZE]
+    assert vectors.shape == (2, EMBEDDING_DIMENSION)
+
+
+def test_embedding_threads_reach_the_model_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_loader(
+        cache_root: Path, *, offline: bool, threads: int | None = None
+    ) -> object:
+        seen["cache_root"] = cache_root
+        seen["offline"] = offline
+        seen["threads"] = threads
+        return object()
+
+    monkeypatch.setattr(dense_module, "_load_embedder", fake_loader)
+
+    configured = LocalVectorDenseBackend(
+        tmp_path / "models",
+        offline=True,
+        embedding_threads=8,
+    )
+    configured._embedder()
+    assert seen["threads"] == 8
+
+    default = LocalVectorDenseBackend(tmp_path / "models", offline=True)
+    default._embedder()
+    assert seen["threads"] is None
 
 
 def test_embedding_token_audit_reports_a_missing_model_cache(

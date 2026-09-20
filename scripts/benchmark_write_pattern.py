@@ -37,6 +37,7 @@ from typing import Any
 import pymupdf
 from fastmcp import Client
 
+import research_ultra_rag_mcp.dense as dense_module
 import research_ultra_rag_mcp.service as service_module
 from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.service import ResearchService
@@ -75,17 +76,28 @@ def write_pdf(path: Path, pages: list[str], *, title: str) -> None:
 
 
 def build_corpus(project: Path, *, sources: int, pages: int) -> None:
+    """Write a corpus whose page lengths vary, the way real chunks do.
+
+    Uniform short pages hide the embedding padding cost and make I/O the only
+    measured effect, so each page repeats its sentence a different number of
+    times. Page 0 is the shortest and the last page of each source is the
+    longest, which is also the shape that punishes large inference batches.
+    """
     root = project / "sources"
     root.mkdir(parents=True, exist_ok=True)
     for index in range(sources):
         word = WORDS[index % len(WORDS)]
+        page_text = []
+        for page in range(pages):
+            sentence = (
+                f"The {word} record {page} discusses labour, ecology, and value "
+                f"across supply chains and the amber marsh, where the price of a "
+                f"commodity hides the work that produced it. "
+            )
+            page_text.append(sentence * (4 + page * 5))
         write_pdf(
             root / f"record-{index:02d}-{word}.pdf",
-            [
-                f"The {word} record {page} discusses labour, ecology, and value "
-                f"across supply chains and the amber marsh."
-                for page in range(pages)
-            ],
+            page_text,
             title=f"Record {index}",
         )
 
@@ -136,11 +148,28 @@ class chunk_batch:
         service_module.CHUNK_BATCH_UNITS = self._original
 
 
+class embedding_batch:
+    """Force the ONNX inference batch size for the duration of a run."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+    def __enter__(self) -> None:
+        self._original = dense_module.EMBEDDING_INFERENCE_BATCH_SIZE
+        dense_module.EMBEDDING_INFERENCE_BATCH_SIZE = self.size
+
+    def __exit__(self, *exc_info: object) -> None:
+        dense_module.EMBEDDING_INFERENCE_BATCH_SIZE = self._original
+
+
 def patch_for(variant: str, side: str) -> AbstractContextManager[None]:
     if variant == "write-pattern":
         return durable_writes() if side == "before" else nullcontext()
     if variant == "chunk-batch":
         return chunk_batch(1 if side == "before" else 16)
+    if variant == "embedding-batch":
+        # 64 was the previous constant; 1 is what the current code uses.
+        return embedding_batch(64 if side == "before" else 1)
     raise SystemExit(f"unsupported variant: {variant}")
 
 
@@ -261,12 +290,13 @@ async def main() -> None:
     )
     parser.add_argument(
         "--variant",
-        choices=("write-pattern", "chunk-batch"),
+        choices=("write-pattern", "chunk-batch", "embedding-batch"),
         default="write-pattern",
         help=(
             "write-pattern compares the pre-Step-2a per-file durability against "
             "the grouped writes; chunk-batch compares one extraction unit per "
-            "caller call against CHUNK_BATCH_UNITS."
+            "caller call against CHUNK_BATCH_UNITS; embedding-batch compares 64 "
+            "sequences per ONNX inference against the current constant."
         ),
     )
     parser.add_argument("--sources", type=int, default=8)

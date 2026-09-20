@@ -20,6 +20,12 @@ EMBEDDING_DIMENSION = 384
 # The model's max_position_embeddings. FastEmbed truncates longer input silently,
 # so the ingestion audit exists to make that truncation visible and countable.
 EMBEDDING_MAXIMUM_TOKENS = 512
+# Sequences are padded to the longest member of their inference batch, so a
+# large batch spends most of its compute on padding: on the reference corpus
+# (mean 152 tokens, max 846) one sequence per inference measured 23.7
+# chunks/s against 6.2 at a batch of 64, and a batch of 1 returns exactly
+# the same floats as a batch of 64. See PLAN.md 10.6.
+EMBEDDING_INFERENCE_BATCH_SIZE = 1
 RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 RERANKER_MODEL_REVISION = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
 COLLECTION_NAME = "research_chunks"
@@ -105,8 +111,18 @@ class DenseBackend(Protocol):
     ) -> list[float]: ...
 
 
-def _load_embedder(cache_root: Path, *, offline: bool) -> TextEmbedding:
-    """Load the pinned CPU embedding model from the shared model cache."""
+def _load_embedder(
+    cache_root: Path,
+    *,
+    offline: bool,
+    threads: int | None = None,
+) -> TextEmbedding:
+    """Load the pinned CPU embedding model from the shared model cache.
+
+    `threads` sets the ONNX Runtime intra-op and inter-op thread count. The
+    default is left to the runtime; PLAN.md 10.6 records the measured effect
+    of setting it on one machine.
+    """
 
     cache_root.mkdir(parents=True, exist_ok=True)
     return TextEmbedding(
@@ -115,6 +131,7 @@ def _load_embedder(cache_root: Path, *, offline: bool) -> TextEmbedding:
         cuda=False,
         local_files_only=offline,
         revision=EMBEDDING_MODEL_REVISION,
+        threads=threads,
     )
 
 
@@ -154,9 +171,16 @@ def _load_audit_tokenizer(embedder: TextEmbedding) -> Tokenizer:
 class LocalQdrantDenseBackend:
     """FastEmbed CPU vectors stored in an embedded, project-local Qdrant DB."""
 
-    def __init__(self, model_cache_root: Path, *, offline: bool = False) -> None:
+    def __init__(
+        self,
+        model_cache_root: Path,
+        *,
+        offline: bool = False,
+        embedding_threads: int | None = None,
+    ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
+        self.embedding_threads = embedding_threads
         self._embedding_model: TextEmbedding | None = None
         self._reranker: TextCrossEncoder | None = None
         self._audit_tokenizer: Tokenizer | None = None
@@ -166,6 +190,7 @@ class LocalQdrantDenseBackend:
             self._embedding_model = _load_embedder(
                 self.model_cache_root,
                 offline=self.offline,
+                threads=self.embedding_threads,
             )
         return self._embedding_model
 
@@ -211,7 +236,11 @@ class LocalQdrantDenseBackend:
     ) -> np.ndarray[Any, np.dtype[np.float32]]:
         if not texts:
             return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
-        embedded = list(self._embedder().passage_embed(texts, batch_size=64))
+        embedded = list(
+            self._embedder().passage_embed(
+                texts, batch_size=EMBEDDING_INFERENCE_BATCH_SIZE
+            )
+        )
         if len(embedded) != len(texts):
             raise RuntimeError(
                 "FastEmbed returned a different number of vectors than passages"
@@ -501,9 +530,16 @@ class LocalVectorDenseBackend:
     across a bundle export and import.
     """
 
-    def __init__(self, model_cache_root: Path, *, offline: bool = False) -> None:
+    def __init__(
+        self,
+        model_cache_root: Path,
+        *,
+        offline: bool = False,
+        embedding_threads: int | None = None,
+    ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
+        self.embedding_threads = embedding_threads
         self._embedding_model: TextEmbedding | None = None
         self._reranker: TextCrossEncoder | None = None
         self._audit_tokenizer: Tokenizer | None = None
@@ -516,6 +552,7 @@ class LocalVectorDenseBackend:
             self._embedding_model = _load_embedder(
                 self.model_cache_root,
                 offline=self.offline,
+                threads=self.embedding_threads,
             )
         return self._embedding_model
 
@@ -557,7 +594,11 @@ class LocalVectorDenseBackend:
     ) -> np.ndarray[Any, np.dtype[np.float32]]:
         if not texts:
             return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
-        embedded = list(self._embedder().passage_embed(texts, batch_size=64))
+        embedded = list(
+            self._embedder().passage_embed(
+                texts, batch_size=EMBEDDING_INFERENCE_BATCH_SIZE
+            )
+        )
         vectors = np.asarray(embedded, dtype=np.float32)
         if vectors.ndim != 2 or vectors.shape != (len(texts), EMBEDDING_DIMENSION):
             raise RuntimeError(
