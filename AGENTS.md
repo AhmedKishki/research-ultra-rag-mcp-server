@@ -46,12 +46,12 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.14.1`
+- Version: `0.15.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
-- Shared UI commit: `a9af81ce95dc03a5c992e56c81573d621bf73d68`
+- Shared UI commit: `f001f90798f9d2db63d239d1c6b2516ab7b62e99`
 - Upstream UltraRAG: `0.3.0.2` at `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
 ## Non-negotiable research contract
@@ -129,6 +129,7 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `bundle_cli.py`: terminal export/import client.
 - `storage.py`: atomic JSON state and JSONL artifacts.
 - `launcher.py`: the generated per-project UI launcher and its project-root link.
+- `version.py`: the version this process started with, the installed version, the shared-UI version, and the `status.version` block and browser header label they feed.
 - `dense.py`: pinned FastEmbed models, both local dense backends (exact scan and embedded ANN) with document filtering, and optional cross-encoder reranking.
 - `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
@@ -140,6 +141,7 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `verify.py`: terminal MCP client for end-to-end project verification.
 - `scripts/benchmark_write_pattern.py`: reproduces the write, chunking, and embedding measurements in `MEASUREMENTS.md`.
 - `scripts/evaluate_retrieval.py`: runs the judged query set through the public `search` tool and reports BM25, dense, hybrid, and reranked quality; its JSON report is a generated, gitignored artifact.
+- `scripts/update.sh`: pulls the checkout, syncs the environment, optionally restarts a named project's UI, and reports the client-side server restart it cannot perform itself.
 - `evaluation/`: the reference judged query set and its protocol, including the known-item limits that keep it from claiming true recall.
 - `tests/`: unit and real stdio integration coverage.
 - `ROADMAP.md`: explicitly deferred work.

@@ -55,6 +55,25 @@ Useful settings, all optional:
 | `--runtime-root` or `RESEARCH_ULTRARAG_RUNTIME_ROOT` | Keep the working files (indexes, staging, logs) on a different disk. See "Where project data is stored". |
 | `--offline` | Fail instead of downloading anything. Use it once the runtime and models are cached. |
 
+## Update an existing installation
+
+An editable install reads this checkout when a process starts, so updating is a pull plus a sync:
+
+```bash
+git -C /path/to/research-ultra-rag-mcp-server pull --ff-only
+uv sync
+```
+
+`scripts/update.sh` does both, reports what is left, and can restart a project's browser UI:
+
+```bash
+scripts/update.sh --check                 # report only: commits behind, versions, pending dependencies
+scripts/update.sh                         # pull and sync
+scripts/update.sh /path/to/my-project     # … and restart that project's UI first
+```
+
+A **running** server keeps the code it started with. Its process belongs to your MCP client, so nothing here can reload it: restart the server in the client (MCP panel → restart or toggle it, or reload the window). `status.version` reports `server` (the version that process started with), `installed` (the version installed now), `ui` (the pinned browser-UI package), and `restart_required`, which reads `false` once the two agree. The browser UI shows the server and UI versions under the project name in its header.
+
 ## Create an isolated research project
 
 A project is just a directory. Put your originals in a `sources/` subdirectory:
@@ -270,7 +289,7 @@ uv run research-ultra-rag-ui \
   --project-root /absolute/path/to/my-research-project
 ```
 
-Open [http://127.0.0.1:5051](http://127.0.0.1:5051) if a browser does not open by itself. The UI binds to loopback only and calls the same nine public MCP tools against the same project state as an agent.
+Open [http://127.0.0.1:5051](http://127.0.0.1:5051) if a browser does not open by itself. The UI binds to loopback only and calls the same nine public MCP tools against the same project state as an agent. Its header shows the project name and, underneath it, the versions of this server and of the pinned browser-UI package, so it is visible which software the page is running.
 
 What you can do in it:
 
@@ -474,7 +493,7 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, the category and project inventories, the UI launcher state, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
+| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, the category and project inventories, the UI launcher state, the running and installed versions with a `restart_required` flag, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
 | `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. |
 | `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by the same `projects`, `projects_any`, `categories`, `categories_any`, and `keywords`. Registers discovered IDs in the project catalog. |
@@ -542,6 +561,7 @@ Things to know before you rely on a result:
 - Duplicate sources are a judgement call. The server never deletes an original; you review and exclude.
 - Large CPU ingestions and reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget. Reranking is on by default for `search`; pass `rerank=false` when you want the fastest answer.
 - Cleaned text is not a quote-verification surface — open the original.
+- A running server keeps the code it started with, because a stdio server's process belongs to your MCP client. `status.version.restart_required` reports that mismatch; restarting the server in the client clears it. The browser UI can be restarted from this side, and `scripts/update.sh <project>` does that for a named project.
 - Earlier successful generations are kept. Automatic pruning is not implemented, so old generations accumulate until you remove them yourself.
 
 If something looks wrong:

@@ -108,6 +108,7 @@ from .storage import (
     write_source_exclusions,
 )
 from .ultrarag import VanillaUltraRAG
+from .version import version_block
 
 SCHEMA_VERSION = 5
 CLEANING_POLICY_VERSION = 3
@@ -1916,6 +1917,7 @@ class ResearchService:
                 ),
                 "portable_root": str(self.config.portable_root),
                 "model_cache_root": str(self.config.model_cache_root),
+                "version": version_block(),
                 "ui_launcher": ui_launcher_state(
                     self.config.project_root,
                     self.config.portable_root,
@@ -2038,6 +2040,7 @@ class ResearchService:
             ),
             "portable_root": str(self.config.portable_root),
             "model_cache_root": str(self.config.model_cache_root),
+            "version": version_block(),
             "ui_launcher": ui_launcher_state(
                 self.config.project_root,
                 self.config.portable_root,

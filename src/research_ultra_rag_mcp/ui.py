@@ -32,6 +32,7 @@ from .config import (
 )
 from .sources import SourcePolicyError, scan_sources
 from .transport import create_research_transport
+from .version import version_label
 
 if TYPE_CHECKING:
     from starlette.applications import Starlette
@@ -41,6 +42,7 @@ MAX_ERROR_LENGTH = 1200
 
 RESEARCH_UI_PROFILE = UIProfile(
     application_name="Research UltraRAG",
+    version_label=version_label(),
     project_label="Project",
     project_fallback_name="Research project",
     navigation_label="Research views",

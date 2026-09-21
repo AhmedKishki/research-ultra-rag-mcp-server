@@ -21,9 +21,9 @@ from .config import (
 from .instructions import SERVER_INSTRUCTIONS
 from .service import ResearchError, ResearchService
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
+from .version import SERVER_VERSION
 
 SERVER_NAME = "research-ultra-rag-mcp"
-SERVER_VERSION = "0.11.0"
 T = TypeVar("T")
 
 
