@@ -212,6 +212,8 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert profile.json()["application_name"] == "Research UltraRAG"
     assert profile.json()["capabilities"]["bundle_export"] is True
     assert profile.json()["capabilities"]["force_recompute"] is True
+    assert profile.json()["capabilities"]["source_selection"] is True
+    assert profile.json()["capabilities"]["category_partitions"] is True
     assert profile.json()["result_text_label"].startswith("Cleaned semantic text")
     assert status.json()["generation_id"] == "generation-1"
     assert sources.json()["sources"][0]["title"] == "Evidence"
@@ -219,7 +221,7 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert ("status", {}) in fake.calls
     assert (
         "list_sources",
-        {"categories": ["theory", "history"], "keywords": None},
+        {"categories": ["theory", "history"], "categories_any": None, "keywords": None},
     ) in fake.calls
     assert ("get_passage", {"chunk_id": "chunk-1", "context_chunks": 2}) in fake.calls
 
@@ -234,6 +236,16 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
                 "top_k": 5,
                 "retrieval_method": "hybrid",
                 "rerank": False,
+            },
+        )
+        narrowed = client.post(
+            "/api/search",
+            json={
+                "query": "research question",
+                "top_k": 3,
+                "categories_any": ["Commodity fetishism"],
+                "source_ids": ["src_1"],
+                "exclude_source_ids": ["src_2"],
             },
         )
         metadata = client.post(
@@ -284,6 +296,17 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
             "rerank": False,
         },
     ) in fake.calls
+    assert (
+        "search",
+        {
+            "query": "research question",
+            "top_k": 3,
+            "categories_any": ["Commodity fetishism"],
+            "source_ids": ["src_1"],
+            "exclude_source_ids": ["src_2"],
+        },
+    ) in fake.calls
+    assert narrowed.json()["hits"][0]["citation"].endswith("p. 1")
     assert ("export_bundle", {}) in fake.calls
     assert (
         "ingest",

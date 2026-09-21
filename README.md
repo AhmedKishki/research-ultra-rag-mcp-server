@@ -224,7 +224,7 @@ A `source_id` is derived from a source's normalized relative path: it survives e
 }
 ```
 
-`status` reports the current inventory as `categories`, each with its `searchable_source_count`, so an agent can see the parts before searching them; reviewed exclusions are not counted there. The browser UI does not expose these controls yet.
+`status` reports the current inventory as `categories`, each with its `searchable_source_count`, so an agent can see the parts before searching them; reviewed exclusions are not counted there. The browser UI lists the same partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
 
 ### Checking freshness per query
 
@@ -266,7 +266,7 @@ What you can do in it:
 
 - inspect status, staleness, upgrade state, and build metrics;
 - browse the indexed source list and resolved bibliography;
-- run hybrid, BM25, or dense search with filters and optional reranking;
+- run hybrid, BM25, or dense search with filters and optional reranking, including limiting a search to or away from named sources and searching one or several category partitions at once;
 - read neighboring passages around a hit;
 - open a PDF in the browser, or download an EPUB original;
 - edit reviewed metadata and see it apply immediately;

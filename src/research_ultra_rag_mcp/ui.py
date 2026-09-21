@@ -71,6 +71,8 @@ RESEARCH_UI_PROFILE = UIProfile(
         bundle_export=True,
         bundle_import=True,
         force_recompute=True,
+        source_selection=True,
+        category_partitions=True,
     ),
 )
 

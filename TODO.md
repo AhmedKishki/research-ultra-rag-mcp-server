@@ -25,7 +25,6 @@ The open work on this server. Everything listed here is unimplemented. Current b
 
 ## Shared UI
 
-- **Expose source selection and category partitions in the UI.** The search tool now takes `source_ids`, `exclude_source_ids`, and `categories_any`, and `status` reports the `categories` inventory; the pinned workspace renders none of them, so a browser session cannot confine a search to or away from a source, or search several partitions at once. Changing it belongs in `ui-ultra-rag-mcp`, followed by a pin bump here.
 - **Align the UI's rerank control with the server default.** The pinned workspace's checkbox starts unticked and sends an explicit `rerank=false`, so UI searches stay unranked while agent searches rerank. Changing it belongs in `ui-ultra-rag-mcp`, followed by a pin bump here.
 - **Surface the retained-generation inventory in the UI.** `status` reports `generations` and `retained_generation_bytes`; the pinned status view renders none of them.
 - **Warn about a runtime-root mismatch in the standalone UI launcher,** which starts its own server and does not read an MCP client's configuration, so it can silently show a different generation than the agent. The server-hosted UI (`--ui-port`) is unaffected.
