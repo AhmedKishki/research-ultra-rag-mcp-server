@@ -260,6 +260,9 @@ def test_project_layer_selects_and_reports(project: Path) -> None:
         assert {hit["source_path"] for hit in mine["hits"]} == {"sources/cobalt.pdf"}
         assert mine["filters"]["projects_all"] == ["ai-and-fetishism"]
         assert mine["filters"]["projects_any"] == []
+        # The layer is returned with every hit and reference group, so a caller
+        # can see why a passage was selected without a second lookup.
+        assert [hit["project"] for hit in mine["hits"]] == [["ai-and-fetishism"]]
 
         union = await service.search(
             "labour evidence",

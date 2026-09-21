@@ -649,6 +649,7 @@ def _public_passage(
         "doi": public_document["doi"],
         "categories": public_document["categories"],
         "keywords": public_document["keywords"],
+        "project": public_document["project"],
         "locator": locator,
         "citation": normalize_inline_text(_citation(public_document, locator)),
         "text": normalize_reading_text(_chunk_text(chunk)),
@@ -4797,6 +4798,7 @@ class ResearchService:
                             "source_path": hit["source_path"],
                             "categories": hit["categories"],
                             "keywords": hit["keywords"],
+                            "project": hit["project"],
                             "passage_count": 0,
                             "passages": [],
                         }
