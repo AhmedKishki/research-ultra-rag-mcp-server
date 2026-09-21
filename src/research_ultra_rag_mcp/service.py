@@ -77,6 +77,7 @@ from .generation import (
     source_set_matches,
     value_fingerprint,
 )
+from .launcher import ui_launcher_state
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
     SourceFile,
@@ -351,17 +352,64 @@ def _normalized_filter(values: list[str] | None) -> set[str]:
     }
 
 
+def _requested_ids(values: list[str] | None) -> list[str]:
+    """Return caller-supplied IDs in order, without blanks or repeats."""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        item = str(value).strip()
+        if item and item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
+
+
 def _document_matches_metadata(
     document: dict[str, Any],
     *,
     categories: set[str],
     keywords: set[str],
+    categories_any: set[str] = frozenset(),
 ) -> bool:
     document_categories = _normalized_filter(document.get("categories"))
     document_keywords = _normalized_filter(document.get("keywords"))
-    return categories.issubset(document_categories) and keywords.issubset(
-        document_keywords
+    return (
+        categories.issubset(document_categories)
+        and keywords.issubset(document_keywords)
+        and (not categories_any or not categories_any.isdisjoint(document_categories))
     )
+
+
+def _category_inventory(
+    documents: dict[str, dict[str, Any]],
+    excluded_document_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Count searchable sources per reviewed category.
+
+    Categories are free reviewed-metadata strings, so this is the partition
+    inventory an agent uses to divide a corpus into parts. A source is counted
+    once per category it carries, and reviewed exclusions are not counted.
+    """
+
+    display: dict[str, str] = {}
+    counts: dict[str, int] = {}
+    for document_id, document in documents.items():
+        if document_id in excluded_document_ids:
+            continue
+        normalized = _normalized_filter(document.get("categories"))
+        if not normalized:
+            continue
+        for raw in document.get("categories") or []:
+            value = normalize_inline_text(str(raw))
+            if value and value.casefold() in normalized:
+                display.setdefault(value.casefold(), value)
+        for name in normalized:
+            counts[name] = counts.get(name, 0) + 1
+    return [
+        {"category": display.get(name, name), "searchable_source_count": counts[name]}
+        for name in sorted(counts)
+    ]
 
 
 def _public_document(document: dict[str, Any]) -> dict[str, Any]:
@@ -1062,6 +1110,42 @@ class ResearchService:
             for document in manifest.get("documents", [])
             if str(document.get("source_relative_path")) in exclusions
         }
+
+    def _document_ids_for_source_ids(
+        self,
+        manifest: dict[str, Any],
+        source_ids: list[str],
+    ) -> tuple[set[str], list[str]]:
+        """Resolve stable source IDs to document IDs in the given generation.
+
+        Returns the matched document IDs and the requested IDs that resolved to
+        nothing here. A source absent from the selected generation, or renamed or
+        moved since the generation was built, cannot resolve because a
+        `source_id` is derived from the current normalized relative path.
+        """
+
+        if not source_ids:
+            return set(), []
+        by_source_id: dict[str, set[str]] = {}
+        for document in manifest.get("documents", []):
+            relative = str(document.get("source_relative_path") or "")
+            document_id = str(document.get("document_id") or "")
+            if not relative or not document_id:
+                continue
+            try:
+                source_id = stable_source_id(self.config.project_id, relative)
+            except SourcePolicyError:
+                continue
+            by_source_id.setdefault(source_id, set()).add(document_id)
+        matched: set[str] = set()
+        unknown: list[str] = []
+        for requested in source_ids:
+            document_ids = by_source_id.get(requested)
+            if document_ids is None:
+                unknown.append(requested)
+            else:
+                matched.update(document_ids)
+        return matched, unknown
 
     def _exclusion_records(
         self,
@@ -1812,9 +1896,14 @@ class ResearchService:
                 ),
                 "portable_root": str(self.config.portable_root),
                 "model_cache_root": str(self.config.model_cache_root),
+                "ui_launcher": ui_launcher_state(
+                    self.config.project_root,
+                    self.config.portable_root,
+                ),
                 "discovered_source_count": len(scan.selected),
                 "selected_source_count": len(selected),
                 "excluded_source_count": len(exclusions),
+                "categories": [],
                 "excluded_sources": self._exclusion_records(scan, exclusions),
                 "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
                 "ignored_extensions": scan.ignored_extensions,
@@ -1927,6 +2016,10 @@ class ResearchService:
             ),
             "portable_root": str(self.config.portable_root),
             "model_cache_root": str(self.config.model_cache_root),
+            "ui_launcher": ui_launcher_state(
+                self.config.project_root,
+                self.config.portable_root,
+            ),
             "generation_id": manifest["generation_id"],
             "created_at": manifest["created_at"],
             "discovered_source_count": len(scan.selected),
@@ -1939,6 +2032,10 @@ class ResearchService:
             "excluded_source_count": len(exclusions),
             "excluded_sources": exclusion_records,
             "chunk_count": manifest["chunk_count"],
+            "categories": _category_inventory(
+                _effective_documents(manifest, metadata),
+                excluded_document_ids,
+            ),
             "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
             "ignored_extensions": scan.ignored_extensions,
             "default_retrieval_method": (
@@ -4059,6 +4156,7 @@ class ResearchService:
         documents_by_id: dict[str, dict[str, Any]],
         *,
         categories: set[str],
+        categories_any: set[str],
         keywords: set[str],
         document_ids: set[str],
         excluded_document_ids: set[str],
@@ -4070,6 +4168,7 @@ class ResearchService:
                 document,
                 categories=categories,
                 keywords=keywords,
+                categories_any=categories_any,
             )
             or (document_ids and chunk["document_id"] not in document_ids)
         )
@@ -4083,6 +4182,7 @@ class ResearchService:
         limit: int,
         *,
         categories: set[str],
+        categories_any: set[str],
         keywords: set[str],
         document_ids: set[str],
         excluded_document_ids: set[str],
@@ -4098,7 +4198,13 @@ class ResearchService:
                 },
                 {},
             )
-        filtered = bool(categories or keywords or document_ids or excluded_document_ids)
+        filtered = bool(
+            categories
+            or categories_any
+            or keywords
+            or document_ids
+            or excluded_document_ids
+        )
         requested = min(
             total_chunk_count,
             max(limit * 4, MINIMUM_CANDIDATES),
@@ -4147,6 +4253,7 @@ class ResearchService:
                             item,
                             documents_by_id,
                             categories=categories,
+                            categories_any=categories_any,
                             keywords=keywords,
                             document_ids=document_ids,
                             excluded_document_ids=excluded_document_ids,
@@ -4230,8 +4337,11 @@ class ResearchService:
         *,
         top_k: int = 8,
         categories: list[str] | None = None,
+        categories_any: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
+        source_ids: list[str] | None = None,
+        exclude_source_ids: list[str] | None = None,
         retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
         rerank: bool = False,
         result_view: str = "passages",
@@ -4287,15 +4397,37 @@ class ResearchService:
                     "Run ingest to build a hybrid generation."
                 )
 
-            normalized_document_ids = [
-                item.strip() for item in document_ids or [] if item.strip()
-            ]
+            normalized_document_ids = _requested_ids(document_ids)
+            requested_source_ids = _requested_ids(source_ids)
+            requested_exclude_source_ids = _requested_ids(exclude_source_ids)
             category_filter = _normalized_filter(categories)
+            category_any_filter = _normalized_filter(categories_any)
             keyword_filter = _normalized_filter(keywords)
-            document_filter = set(normalized_document_ids)
+            source_include_document_ids, unknown_source_ids = (
+                self._document_ids_for_source_ids(manifest, requested_source_ids)
+            )
+            source_exclude_document_ids, unknown_exclude_source_ids = (
+                self._document_ids_for_source_ids(
+                    manifest,
+                    requested_exclude_source_ids,
+                )
+            )
+            if requested_source_ids and not source_include_document_ids:
+                raise ResearchError(
+                    "source_ids matched no document in the current generation: "
+                    f"{', '.join(unknown_source_ids)}. Use list_sources for current "
+                    "IDs; a renamed or moved source receives a new source_id."
+                )
+            # Reviewed exclusions always win over a search-level exclusion, and a
+            # search-level include can never re-admit an excluded source.
+            excluded_document_ids = excluded_document_ids | source_exclude_document_ids
+            document_filter = set(normalized_document_ids) | source_include_document_ids
 
             dense_document_filter: set[str] | None = None
-            if category_filter or keyword_filter:
+            metadata_filter_active = bool(
+                category_filter or category_any_filter or keyword_filter
+            )
+            if metadata_filter_active:
                 dense_document_filter = {
                     document_id
                     for document_id, document in documents_by_id.items()
@@ -4303,6 +4435,7 @@ class ResearchService:
                         document,
                         categories=category_filter,
                         keywords=keyword_filter,
+                        categories_any=category_any_filter,
                     )
                 }
             if document_filter:
@@ -4319,6 +4452,7 @@ class ResearchService:
                     document,
                     categories=category_filter,
                     keywords=keyword_filter,
+                    categories_any=category_any_filter,
                 )
                 and (not document_filter or document_id in document_filter)
             }
@@ -4326,8 +4460,7 @@ class ResearchService:
                 lookup.chunk_count,
                 (
                     active_document_ids
-                    if category_filter
-                    or keyword_filter
+                    if metadata_filter_active
                     or document_filter
                     or excluded_document_ids
                     else None
@@ -4381,6 +4514,7 @@ class ResearchService:
                         documents_by_id,
                         candidate_depth,
                         categories=category_filter,
+                        categories_any=category_any_filter,
                         keywords=keyword_filter,
                         document_ids=document_filter,
                         excluded_document_ids=excluded_document_ids,
@@ -4398,6 +4532,7 @@ class ResearchService:
                     documents_by_id,
                     candidate_depth,
                     categories=category_filter,
+                    categories_any=category_any_filter,
                     keywords=keyword_filter,
                     document_ids=document_filter,
                     excluded_document_ids=excluded_document_ids,
@@ -4439,6 +4574,7 @@ class ResearchService:
                     chunk,
                     documents_by_id,
                     categories=category_filter,
+                    categories_any=category_any_filter,
                     keywords=keyword_filter,
                     document_ids=document_filter,
                     excluded_document_ids=excluded_document_ids,
@@ -4635,6 +4771,26 @@ class ResearchService:
                 "staleness_checked": include_staleness,
                 "generation_upgrade_required": bool(upgrade_reasons),
                 "excluded_source_count": len(exclusions),
+                "filters": {
+                    "categories_all": sorted(category_filter),
+                    "categories_any": sorted(category_any_filter),
+                    "keywords_all": sorted(keyword_filter),
+                    "document_ids": sorted(document_filter),
+                    "source_ids": requested_source_ids,
+                    "exclude_source_ids": requested_exclude_source_ids,
+                    "unknown_source_ids": unknown_source_ids,
+                    "unknown_exclude_source_ids": unknown_exclude_source_ids,
+                    "active_document_count": len(active_document_ids),
+                    "note": (
+                        "Filters narrow the corpus before ranking, so top_k counts "
+                        "matches inside the selection. Reviewed source exclusions "
+                        "always win: a source_ids entry for an excluded source stays "
+                        "excluded. Unresolved IDs are reported in "
+                        "unknown_source_ids and unknown_exclude_source_ids; an "
+                        "include list that resolves to nothing is an error rather "
+                        "than an unfiltered result."
+                    ),
+                },
                 "retrieval_method": retrieval_method,
                 "reranked": reranked_applied,
                 "rerank_requested": rerank,
@@ -4747,6 +4903,7 @@ class ResearchService:
         self,
         *,
         categories: list[str] | None = None,
+        categories_any: list[str] | None = None,
         keywords: list[str] | None = None,
     ) -> dict[str, Any]:
         async with self._operation():
@@ -4821,6 +4978,7 @@ class ResearchService:
             _generation_root, manifest = current
             documents_by_id = _effective_documents(manifest, metadata)
             category_filter = _normalized_filter(categories)
+            category_any_filter = _normalized_filter(categories_any)
             keyword_filter = _normalized_filter(keywords)
             sources = []
             for document in documents_by_id.values():
@@ -4833,6 +4991,10 @@ class ResearchService:
                     str(item).casefold() for item in document.get("keywords", [])
                 }
                 if category_filter and not category_filter.issubset(
+                    document_categories
+                ):
+                    continue
+                if category_any_filter and category_any_filter.isdisjoint(
                     document_categories
                 ):
                     continue

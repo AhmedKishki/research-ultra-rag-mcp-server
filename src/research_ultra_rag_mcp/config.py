@@ -12,6 +12,8 @@ from pathlib import Path
 
 from platformdirs import user_cache_path
 
+from .launcher import ensure_ui_launcher
+
 
 class ConfigurationError(ValueError):
     """Raised when the server cannot establish a safe project boundary."""
@@ -482,6 +484,16 @@ def resolve_config(
     (state / "failures").mkdir(exist_ok=True)
     (state / "ultrarag-runtime").mkdir(exist_ok=True)
     configured_model_cache.mkdir(parents=True, exist_ok=True)
+    # Initialising the project leaves a machine-local UI launcher under the
+    # project's own state root and, when absent, a single symlink to it in the
+    # project root. Both are created only when missing and never overwritten.
+    ensure_ui_launcher(
+        project_root=project,
+        portable_root=portable,
+        state_root=state,
+        project_name=project_name,
+        runtime_root=state if relocated else None,
+    )
 
     return ResearchConfig(
         project_root=project,

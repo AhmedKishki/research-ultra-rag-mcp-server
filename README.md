@@ -13,9 +13,10 @@ The server is built on [UltraRAG](https://github.com/OpenBMB/UltraRAG), whose co
 Plain-language summary of every capability, and why it is there:
 
 - **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
+- **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten, and `status.ui_launcher` reports the current state.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
 - **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, per-field provenance and warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage.
-- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. Metadata filters narrow results by category, keyword, or document. A freshness check can be skipped per query when a caller only needs evidence.
+- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by metadata: `categories` requires every listed category, `categories_any` requires at least one, and `keywords` and `document_ids` filter as before. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
@@ -205,6 +206,26 @@ Search can legitimately return fewer results than `top_k`, including none, when 
 
 `result_view="references"` is for when one prolific source would otherwise dominate. It walks the same relevance-gated candidates but admits at most `passages_per_reference` passages from each stable `source_id`, keeping `top_k` as the total number of passages. The response reports how many references it returned and how many were available. It does not merge editions by title, DOI, or filename. Two flags tell you why a result set may look short: `relevance_limited` means the candidate pool ran short, and `grouping_limited` means the per-reference cap stopped the view from filling its passage budget.
 
+### Selecting and excluding sources per query
+
+`source_ids` restricts a search to the sources you name and `exclude_source_ids` removes sources from the result, both by the stable `source_id` that `list_sources` reports. Omitting both searches the whole corpus, which is the default: include everything, exclude nothing. Filters are applied before ranking, so `top_k` is the budget inside the selection, and the response echoes what was applied under `filters`.
+
+A `source_id` is derived from a source's normalized relative path: it survives edits to the file's bytes and changes when the file is renamed or moved. An ID that resolves to nothing in the selected generation is reported in `filters.unknown_source_ids` (`unknown_exclude_source_ids` for exclusions), and an include list that resolves to nothing at all is an error rather than a silently unfiltered search. A reviewed exclusion always wins: naming an excluded source in `source_ids` cannot bring it back, so the response reports `filters.active_document_count` of 0 and no hits.
+
+### Dividing a corpus with categories
+
+`categories`, `categories_any`, and `keywords` come from reviewed source metadata, so an agent can define them itself: `set_source_metadata` accepts `categories` and `keywords` per source, applies immediately, and needs no re-ingestion. Because the strings are free, they work as corpus partitions — a research strand, a chapter group, a sub-project name — and one search can cover several parts at once:
+
+```json
+{
+  "query": "labour in the supply chain",
+  "categories_any": ["Cobalt corpus", "Waste corpus"],
+  "top_k": 8
+}
+```
+
+`status` reports the current inventory as `categories`, each with its `searchable_source_count`, so an agent can see the parts before searching them; reviewed exclusions are not counted there. The browser UI does not expose these controls yet.
+
 ### Checking freshness per query
 
 By default a search also reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked. At this size it is a small share of a query, so the flag removes a cost that scales rather than a latency you feel today.
@@ -267,7 +288,7 @@ RESEARCH_ULTRARAG_RUNTIME_ROOT=/ssd/research-runtime/my-project \
 
 Without it, the UI and your agent read different runtime roots and can show different generations for the same project — the agent on the fast device and the UI on the old in-project copy. The simpler option is to let the MCP server host the UI with `--ui-port`, described under [Connect an AI agent](#connect-an-ai-agent): it reuses the server's settings, so the two can never disagree.
 
-To make the separate process repeatable, keep those three settings in a small launcher script per project — `--project-root`, `--runtime-root`, and `--port` — and always start the UI from it, so nothing depends on remembering the flags. Do not export `RESEARCH_ULTRARAG_UI_PORT` into such a launcher: the servers it starts read that variable as the default for `--ui-port`, so each one hosts a UI of its own and starts the next.
+To make the separate process repeatable the server writes that launcher for you when it initialises the project: `<project>/open-ui.sh` is a symlink to `.research-rag/bin/open-ui.sh`, which starts the standalone UI with this project's `--project-root`, `--runtime-root`, and `--port`. `./open-ui.sh` starts it and prints the URL, `./open-ui.sh --open` also opens the browser, `./open-ui.sh --stop` stops it together with the private server it started, and `./open-ui.sh --port 5052` moves it to another port. An existing `open-ui.sh` is never overwritten, and `status.ui_launcher` reports whether the script and the link are present. The generated script never exports `RESEARCH_ULTRARAG_UI_PORT`, because the servers it starts read that variable as the default for `--ui-port`, so each one hosts a UI of its own and starts the next. Keep it out of version control: it is machine-local.
 
 Two differences between a UI session and an agent session are worth knowing before you compare results. The **CPU rerank** checkbox is off unless you tick it, so a UI search sends `rerank=false` explicitly while an agent search reranks by default. And the retained-generation inventory that `status` reports (`generations`, `retained_generation_bytes`) is not shown in the current UI views; use an agent or `research-ultra-rag-verify` to see what retained generations occupy.
 
@@ -307,7 +328,9 @@ On success it prints a JSON object with `"status": "passed"`, the before/after s
 ```text
 my-research-project/
 ├── sources/                              untouched PDF/EPUB originals
+├── open-ui.sh                            symlink to .research-rag/bin/open-ui.sh
 └── .research-rag/                        all research-RAG project state
+    ├── bin/open-ui.sh                    generated machine-local UI launcher
     ├── project.json                      stable ID, name, source setting
     ├── source-catalog.json               durable source ID-to-path registry
     ├── source-metadata.json              authoritative reviewed metadata overlay
@@ -336,6 +359,7 @@ my-research-project/
 How to read that tree:
 
 - `sources/` is the authority for exact quotation. Nothing in this server edits it.
+- The only research-RAG path outside `.research-rag/` is the single `open-ui.sh` symlink in the project root. The server creates it on first use, never overwrites an existing file or symlink, and `status.ui_launcher` reports it; delete the symlink to opt out.
 - Inside `.research-rag/`, the top-level JSON files and `bundles/` are **portable review state**: your decisions about the project. They are the part worth backing up.
 - `runtime/` is **derived state**. It can be rebuilt from `sources/` plus the portable state, so it is safe to delete if you are willing to rebuild.
 - Document text, embeddings, indexes, logs, and query state never cross project roots. Only immutable model binaries are shared.
@@ -394,10 +418,10 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
+| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, the category inventory, the UI launcher state, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
 | `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. |
-| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval, metadata filters, reranking (on by default, `rerank=false` to skip), and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
-| `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Registers discovered IDs in the project catalog. |
+| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata filters (`categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
+| `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by `categories`, `categories_any`, or `keywords`. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its neighbors and provenance. |
 | `set_source_metadata` | Saves a reviewed metadata correction for one source. Applies immediately to an indexed source. |
 | `set_source_inclusion` | Excludes or restores one source. Reversible; never deletes the file. |

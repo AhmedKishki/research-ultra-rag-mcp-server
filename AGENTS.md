@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.11.0`
+- Version: `0.12.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -62,7 +62,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - MCP tools must not accept arbitrary filesystem output paths.
 - Ingestion selects only regular PDF and EPUB files beneath the configured sources directory.
 - Reject source symlinks and path traversal.
-- Store every project-owned research-RAG artifact beneath `<project>/.research-rag` by default: portable identity/review state at its root and all disposable derived state beneath `.research-rag/runtime`. An explicit `--runtime-root` may relocate derived state only, and only to an absolute path claimed by a marker naming this project's `project_id`; review state must stay in the project, and two projects must never share one runtime root.
+- Store every project-owned research-RAG artifact beneath `<project>/.research-rag` by default: portable identity/review state at its root and all disposable derived state beneath `.research-rag/runtime`. An explicit `--runtime-root` may relocate derived state only, and only to an absolute path claimed by a marker naming this project's `project_id`; review state must stay in the project, and two projects must never share one runtime root. The single exception outside that directory is the machine-local `<project>/open-ui.sh` symlink to the generated launcher beneath `.research-rag/bin/`; nothing else belongs outside `.research-rag`.
 - Share only immutable model binaries through the configured user cache. Never place documents, metadata, chunks, vectors, indexes, bundles, logs, or query state in global storage.
 - Never edit or write the original source documents.
 - Keep source exclusions explicit, reversible, project-local, and immediately enforced by every retrieval surface. Do not add automatic duplicate guessing.
@@ -79,6 +79,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Keep browser write endpoints same-origin, JSON-only, and constrained to the nine public MCP operations.
 - Do not let UI code read or mutate generation artifacts directly. It must use the private stdio MCP client, except for safely serving an allowlisted original PDF or EPUB from the configured source root.
 - Keep the shared UI dependency pinned by commit. Keep MCP transport, research tool mapping, and source authorization in this repository's adapter; do not copy the shared static workspace back into this package.
+- Initialising a project creates a machine-local launcher and links it into the project root: the script lives at `.research-rag/bin/open-ui.sh` and `<project>/open-ui.sh` is a relative symlink to it. Create both only when absent, never overwrite a file or symlink the server did not create, never let a filesystem failure stop startup, and report the state through `status.ui_launcher`. The generated script must start the standalone UI with the project's own `--project-root`, `--runtime-root`, and `--port`, must not export `RESEARCH_ULTRARAG_UI_PORT`, and must stop the whole process group on `--stop` so the private server it started cannot leak.
 
 ## Architecture
 
@@ -127,6 +128,7 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `bundle.py`: deterministic export and hostile-archive-safe import staging.
 - `bundle_cli.py`: terminal export/import client.
 - `storage.py`: atomic JSON state and JSONL artifacts.
+- `launcher.py`: the generated per-project UI launcher and its project-root link.
 - `dense.py`: pinned FastEmbed models, both local dense backends (exact scan and embedded ANN) with document filtering, and optional cross-encoder reranking.
 - `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
@@ -171,10 +173,10 @@ Changed builds use a unique directory under `staging/`, then move a verified gen
 
 ## Public MCP tools
 
-- `status`: read-only source/current/staleness inspection, retained-generation inventory, and the URL/readiness of a UI this server hosts when it was started with `--ui-port`.
+- `status`: read-only source/current/staleness inspection, retained-generation inventory, the category partition inventory (`categories` with `searchable_source_count`), the generated UI launcher state (`ui_launcher`), and the URL/readiness of a UI this server hosts when it was started with `--ui-port`.
 - `ingest`: return the current generation for an exact no-op, advance a checkpointed build and return `in_progress`, or select a complete new generation with verified reuse; `force_recompute` bypasses reuse but may resume its own matching checkpoint.
-- `search`: hybrid-by-default retrieval with selectable BM25/dense modes, optional reranking, and passage-ranked or reference-grouped structured evidence.
-- `list_sources`: inspect indexed documents and metadata, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
+- `search`: hybrid-by-default retrieval with selectable BM25/dense modes, optional reranking, passage-ranked or reference-grouped structured evidence, source selection by stable `source_id` (`source_ids`, `exclude_source_ids`), and metadata filters (`categories` all-of, `categories_any` any-of, `keywords`, `document_ids`).
+- `list_sources`: inspect indexed documents and metadata, filter by `categories`, `categories_any`, or `keywords`, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
 - `get_passage`: retrieve neighboring chunks from the same document.
 - `set_source_metadata`: update authoritative reviewed metadata immediately for every retrieval surface when the source is in the selected generation; an unindexed source still requires ingestion. Require exactly one of `source_id` or `source_path`, preferring the ID for agent operations.
 - `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed source without modifying the source file; rebuild later to align the indexes. It uses the same exact-one-selector rule.
@@ -191,6 +193,8 @@ Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 - Fusion: weighted reciprocal-rank fusion with `k=60`, BM25 weight `1.25`, and dense weight `1.0`. Do not combine raw BM25 and cosine values; their scales are unrelated.
 - Candidate depth: at least 20, normally `top_k * 4`, bounded at 200 and by the current chunk count.
 - `top_k` is always a total returned-passage budget. The optional reference view scans the complete relevance-gated candidate ordering, admits at most two passages per `source_id` by default, and groups those passages without aggregating scores or rewarding documents for producing more chunks.
+- Search-level source selection resolves stable `source_id` values to document IDs in the selected generation before ranking, so `top_k` is a budget inside the selection. `source_ids` includes and `exclude_source_ids` removes; both default to empty, which means include everything and exclude nothing. An include list that resolves to no document in the selected generation is an error, never a silently unfiltered search; unresolved IDs are disclosed under `filters`; and a reviewed exclusion always wins over `source_ids`.
+- Reviewed metadata drives filtering and corpus partitions: `categories` requires every listed category, `categories_any` requires at least one, `keywords` requires every listed keyword, and `document_ids` includes. Filtering resolves the current reviewed overlay to document IDs at query time and must never bake metadata into an index. `status.categories` is the partition inventory (category plus searchable source count) of the selected generation, with reviewed exclusions removed.
 - Reference grouping is presentation-time MCP orchestration. It must not alter indexes or the default passage ordering. Keep its cap explicit, report both returned and candidate-pool reference counts, and preserve the unreranked candidate tail after a reranked prefix so useful references remain reachable.
 - Chunking: UltraRAG token chunker with the GPT-2 tiktoken encoding, default and maximum 384 tokens, overlap 64. The cap stays below the embedding model's 512-token input limit despite tokenizer differences; do not raise it without an explicit long-input strategy and tests.
 - Reranking: FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2`, CPU, lazily loaded, applied to at most 50 candidates. Artifact revision: `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. It is **on by default** because it is the largest measured quality gain (`MEASUREMENTS.md`): `rerank=false` is the explicit opt-out, and an unavailable model must degrade to the unranked candidate order with `rerank_fallback` in the response, never fail the search.

@@ -139,6 +139,40 @@ DocumentIdFilter: TypeAlias = Annotated[
         )
     ),
 ]
+SourceIdFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Stable source IDs to include; a result may match any supplied ID. "
+            "Obtain IDs from list_sources. A source ID survives a change to the "
+            "file's bytes and changes when the file is renamed or moved. Omit or "
+            "pass null to search every source."
+        )
+    ),
+]
+ExcludeSourceIdFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Stable source IDs to exclude; a result may not match any supplied ID. "
+            "Omit or pass null to exclude nothing. Reviewed source exclusions "
+            "always apply and cannot be undone here."
+        )
+    ),
+]
+CategoriesAnyFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Case-insensitive 'any of' category filters; a result must contain at "
+            "least one supplied category. Use it to search a set of corpus "
+            "partitions in one call, and combine it with `categories` to require "
+            "all of one set and any of another. Categories come from reviewed "
+            "source metadata and `status.categories` lists the current inventory. "
+            "Omit or pass null for no filter."
+        )
+    ),
+]
 RetrievalMethod: TypeAlias = Annotated[
     Literal["hybrid", "bm25", "dense"],
     Field(
@@ -452,17 +486,27 @@ def create_server(
         result_view: ResultView = "passages",
         passages_per_reference: PassagesPerReference = 2,
         categories: CategoryFilter = None,
+        categories_any: CategoriesAnyFilter = None,
         keywords: KeywordFilter = None,
         document_ids: DocumentIdFilter = None,
+        source_ids: SourceIdFilter = None,
+        exclude_source_ids: ExcludeSourceIdFilter = None,
         retrieval_method: RetrievalMethod = "hybrid",
         rerank: Rerank = True,
         include_staleness: IncludeStaleness = True,
     ) -> dict[str, Any]:
         """Search the current generation and return cleaned semantic evidence.
 
-        Optional filters require every requested category or keyword to be
-        present. Hybrid is the default; BM25 and dense retrieval can be inspected
-        separately. CPU reranking is on by default because it is the largest
+        Filters narrow the corpus before ranking, so top_k is a budget inside the
+        selection: `categories` requires every listed category, `categories_any`
+        requires at least one, `keywords` requires every listed keyword,
+        `document_ids` and `source_ids` include, and `exclude_source_ids` removes.
+        A source ID survives a change to a file's bytes and changes when the file
+        is renamed or moved. Reviewed source exclusions always win, unresolved IDs
+        are reported under `filters`, and an include list that resolves to nothing
+        is an error rather than an unfiltered result. Hybrid is the default; BM25
+        and dense retrieval can be inspected separately. CPU reranking is on by
+        default because it is the largest
         measured quality gain, and it is slower and lazily loads another local
         model; set rerank=false to skip it. When that model cannot be loaded the
         unranked candidate order is returned and rerank_fallback explains why.
@@ -483,8 +527,11 @@ def create_server(
                 result_view=result_view,
                 passages_per_reference=passages_per_reference,
                 categories=categories,
+                categories_any=categories_any,
                 keywords=keywords,
                 document_ids=document_ids,
+                source_ids=source_ids,
+                exclude_source_ids=exclude_source_ids,
                 retrieval_method=retrieval_method,
                 rerank=rerank,
                 include_staleness=include_staleness,
@@ -501,6 +548,7 @@ def create_server(
     )
     async def list_sources(
         categories: CategoryFilter = None,
+        categories_any: CategoriesAnyFilter = None,
         keywords: KeywordFilter = None,
     ) -> dict[str, Any]:
         """List stable source IDs, indexed metadata, and saved overrides.
@@ -513,6 +561,7 @@ def create_server(
         return await _tool_call(
             lambda: service().list_sources(
                 categories=categories,
+                categories_any=categories_any,
                 keywords=keywords,
             )
         )
