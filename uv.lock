@@ -2144,7 +2144,7 @@ wheels = [
 
 [[package]]
 name = "research-ultra-rag-mcp"
-version = "0.14.0"
+version = "0.14.1"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

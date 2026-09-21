@@ -378,6 +378,52 @@ On first use after upgrading, an existing `.ultrarag/research/` directory is mov
 
 `current.json` names the one generation search uses. Earlier successful generations stay on disk but are not searched, and automatic pruning is not implemented. `status` lists them (`generations`) with their creation time, chunk and document counts, file count, and size, marks the current one, and reports `retained_generation_count` and `retained_generation_bytes`, so you can see what they occupy. A directory whose manifest is missing or unreadable is reported with `manifest_error` rather than failing the call. Nothing is ever deleted by `status`; remove an old generation directory yourself, and only when you are sure no MCP or UI process is using it. On the reference project two retained generations occupy 208 MB in total.
 
+### Edit review state by hand
+
+The portable files under `.research-rag/` are plain JSON and stay authoritative at read time, so you can edit them in a text editor instead of going through a tool:
+
+| File | What it holds | Keyed by |
+|---|---|---|
+| `source-metadata.json` | the reviewed metadata overlay | normalized source-relative path |
+| `source-exclusions.json` | each exclusion decision and its reason | normalized source-relative path |
+| `project.json` | project name, stable id, and the sources directory | — |
+
+`source-catalog.json` is the durable source-id registry this server maintains; leave it alone.
+
+A metadata entry is the **complete** override for that source and takes the same seven fields as the tool:
+
+```json
+{
+  "schema_version": 1,
+  "sources": {
+    "Harvey, The Fetish of Technology - Causes and Consequences.pdf": {
+      "title": "The Fetish of Technology: Causes and Consequences",
+      "authors": ["David Harvey"],
+      "year": 2003,
+      "doi": "",
+      "categories": ["Commodity fetishism", "marxism", "media theory"],
+      "keywords": ["fetishism of technology", "technology", "ideology", "marxism"],
+      "project": ["ai-and-fetishism"]
+    }
+  }
+}
+```
+
+How a hand edit behaves:
+
+- It applies at the next read — listings, filters, search results, citations, and neighbouring passages — with no ingestion. `status.metadata_revision` changes, and `generation_metadata_snapshot_outdated` may become true, which only says the immutable generation predates this review.
+- Omitting a field stops overriding it, so the extracted or automatic value returns; an explicitly empty list or string clears it.
+- Deleting a source's whole entry removes every reviewed field for that source. An entry of `{}` does the same.
+
+Mistakes fail loudly rather than doing nothing quietly, so you can trust a hand edit:
+
+- an unknown field name is rejected with `Unsupported metadata fields: …`;
+- a wrong type, such as `"year": "2003"`, is rejected with that field's rule;
+- a source path that is absolute, contains `..` or a backslash, or is otherwise not normalized is rejected;
+- any `schema_version` other than 1 is rejected.
+
+The same edits are also available as guided paths: every one of the seven fields is editable in the browser UI's metadata dialog, and an agent can call `set_source_metadata`. All three routes write the same file, a bundle export carries it, and `list_sources` reports `metadata_provenance` per field so you can see which values are reviewed and which are still automatic.
+
 ### Put derived state on fast local storage
 
 If your project lives on a slow disk, you can point the working files at a fast one. The measured benefit is narrow, and worth stating precisely: the dense index is an exact scan of the portable vectors the generation already stores (0.03 s of index work on the reference corpus, against 3,040.73 s to build an embedded index for the same vectors), so what a rebuild still does on disk is staging writes and reading the sources — grouping durability writes per unit is worth 17–37 s of chunking on the reference HDD, and source reads cost whatever the device costs. Use it when the project's disk is genuinely the bottleneck, not as a routine default.
