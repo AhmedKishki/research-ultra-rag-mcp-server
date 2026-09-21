@@ -14,6 +14,7 @@ import pytest
 from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.launcher import (
     LINK_TARGET,
+    default_ui_command,
     ensure_ui_launcher,
     launcher_path,
     launcher_script,
@@ -133,6 +134,21 @@ def test_launcher_script_renders_project_specific_values() -> None:
     assert "PORT=5099" in body
     assert 'RUNTIME_ROOT=""' in body
     assert 'PROJECT_ROOT="/tmp/example-project"' in body
+    # The console script lives beside the running interpreter, not on a user's
+    # PATH, so the launcher must embed an absolute command.
+    assert f'UI_COMMAND="{default_ui_command()}"' in body
+    assert os.path.isabs(default_ui_command())
+
+
+def test_launcher_script_honors_an_explicit_ui_command() -> None:
+    body = launcher_script(
+        project_root=Path("/tmp/example-project"),
+        state_root=Path("/tmp/example-project/.research-rag/runtime"),
+        project_name="example-project",
+        ui_command="/opt/research/bin/research-ultra-rag-ui",
+    )
+
+    assert 'UI_COMMAND="/opt/research/bin/research-ultra-rag-ui"' in body
 
 
 @pytest.mark.skipif(
@@ -164,6 +180,7 @@ def test_launcher_starts_and_stops_the_whole_process_group(tmp_path: Path) -> No
         portable_root=portable,
         state_root=state,
         project_name="research-project",
+        ui_command=str(stub),
     )
     script = project / "open-ui.sh"
     environment = {
