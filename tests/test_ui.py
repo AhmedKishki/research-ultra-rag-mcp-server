@@ -214,6 +214,7 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert profile.json()["capabilities"]["force_recompute"] is True
     assert profile.json()["capabilities"]["source_selection"] is True
     assert profile.json()["capabilities"]["category_partitions"] is True
+    assert profile.json()["capabilities"]["project_metadata"] is True
     assert profile.json()["result_text_label"].startswith("Cleaned semantic text")
     assert status.json()["generation_id"] == "generation-1"
     assert sources.json()["sources"][0]["title"] == "Evidence"
@@ -221,7 +222,13 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert ("status", {}) in fake.calls
     assert (
         "list_sources",
-        {"categories": ["theory", "history"], "categories_any": None, "keywords": None},
+        {
+            "categories": ["theory", "history"],
+            "categories_any": None,
+            "projects": None,
+            "projects_any": None,
+            "keywords": None,
+        },
     ) in fake.calls
     assert ("get_passage", {"chunk_id": "chunk-1", "context_chunks": 2}) in fake.calls
 

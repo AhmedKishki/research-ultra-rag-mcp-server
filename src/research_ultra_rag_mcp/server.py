@@ -71,6 +71,18 @@ class SourceMetadataInput(TypedDict):
             Field(description="Reviewed specific keywords used to filter this source."),
         ]
     ]
+    project: NotRequired[
+        Annotated[
+            list[str],
+            Field(
+                description=(
+                    "Reviewed project tags recording which project this source was "
+                    "gathered for. Used to filter this source, and normally the "
+                    "project's own name."
+                )
+            ),
+        ]
+    ]
 
 
 ChunkSize: TypeAlias = Annotated[
@@ -170,6 +182,28 @@ CategoriesAnyFilter: TypeAlias = Annotated[
             "all of one set and any of another. Categories come from reviewed "
             "source metadata and `status.categories` lists the current inventory. "
             "Omit or pass null for no filter."
+        )
+    ),
+]
+ProjectFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Reviewed project tags to require; a result must carry every supplied "
+            "project. A project tag records which project a source was gathered "
+            "for, so it is normally the server's own project name and this layer "
+            "matters when a corpus is bundled, imported, or shared. "
+            "`status.projects` lists the current inventory. Omit or pass null for "
+            "no filter."
+        )
+    ),
+]
+ProjectsAnyFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Reviewed project tags to match with 'any of' semantics; a result must "
+            "carry at least one supplied project. Omit or pass null for no filter."
         )
     ),
 ]
@@ -299,7 +333,8 @@ ReviewedMetadata: TypeAlias = Annotated[
     Field(
         description=(
             "Complete reviewed metadata override for the source. Supported fields are "
-            "title, authors, year, doi, categories, and keywords; omitted fields remove "
+            "title, authors, year, doi, categories, keywords, and project; omitted "
+            "fields remove "
             "their previous overrides and an empty object restores all automatic "
             "values. Explicit empty values clear an automatically extracted field. "
             "For a source in the selected generation, the new values apply "
@@ -487,6 +522,8 @@ def create_server(
         passages_per_reference: PassagesPerReference = 2,
         categories: CategoryFilter = None,
         categories_any: CategoriesAnyFilter = None,
+        projects: ProjectFilter = None,
+        projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
         document_ids: DocumentIdFilter = None,
         source_ids: SourceIdFilter = None,
@@ -498,9 +535,11 @@ def create_server(
         """Search the current generation and return cleaned semantic evidence.
 
         Filters narrow the corpus before ranking, so top_k is a budget inside the
-        selection: `categories` requires every listed category, `categories_any`
-        requires at least one, `keywords` requires every listed keyword,
-        `document_ids` and `source_ids` include, and `exclude_source_ids` removes.
+        selection. Reviewed metadata has three layers: `projects` requires every
+        listed project tag and `projects_any` at least one, `categories` requires
+        every listed branch and `categories_any` at least one, and `keywords`
+        requires every listed term. `document_ids` and `source_ids` include, and
+        `exclude_source_ids` removes.
         A source ID survives a change to a file's bytes and changes when the file
         is renamed or moved. Reviewed source exclusions always win, unresolved IDs
         are reported under `filters`, and an include list that resolves to nothing
@@ -528,6 +567,8 @@ def create_server(
                 passages_per_reference=passages_per_reference,
                 categories=categories,
                 categories_any=categories_any,
+                projects=projects,
+                projects_any=projects_any,
                 keywords=keywords,
                 document_ids=document_ids,
                 source_ids=source_ids,
@@ -549,6 +590,8 @@ def create_server(
     async def list_sources(
         categories: CategoryFilter = None,
         categories_any: CategoriesAnyFilter = None,
+        projects: ProjectFilter = None,
+        projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
     ) -> dict[str, Any]:
         """List stable source IDs, indexed metadata, and saved overrides.
@@ -557,11 +600,15 @@ def create_server(
         source ID in the project catalog. ``known_sources`` keeps registered
         IDs addressable when originals are temporarily absent, while
         ``reviewed_metadata_sources`` makes every saved override inspectable.
+        ``categories``, ``categories_any``, ``projects``, ``projects_any``, and
+        ``keywords`` narrow the indexed list by reviewed metadata.
         """
         return await _tool_call(
             lambda: service().list_sources(
                 categories=categories,
                 categories_any=categories_any,
+                projects=projects,
+                projects_any=projects_any,
                 keywords=keywords,
             )
         )
@@ -605,8 +652,8 @@ def create_server(
     ) -> dict[str, Any]:
         """Set reviewed metadata for one identified PDF or EPUB source.
 
-        Supported fields are title, authors, year, doi, categories, and
-        keywords. For a source already in the selected generation, the update
+        Supported fields are title, authors, year, doi, categories, keywords, and
+        project. For a source already in the selected generation, the update
         immediately affects source listings, search filters and results,
         citations, and neighboring passages without rebuilding the immutable
         indexes. Ingestion is required only when the source is absent from the

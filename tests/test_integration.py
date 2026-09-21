@@ -82,6 +82,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "passages_per_reference",
                 "categories",
                 "categories_any",
+                "projects",
+                "projects_any",
                 "keywords",
                 "document_ids",
                 "source_ids",
@@ -90,7 +92,13 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "rerank",
                 "include_staleness",
             },
-            "list_sources": {"categories", "categories_any", "keywords"},
+            "list_sources": {
+                "categories",
+                "categories_any",
+                "projects",
+                "projects_any",
+                "keywords",
+            },
             "get_passage": {"chunk_id", "context_chunks"},
             "set_source_metadata": {"source_id", "source_path", "metadata"},
             "set_source_inclusion": {
@@ -120,6 +128,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "doi",
             "categories",
             "keywords",
+            "project",
         }
         assert all(
             field.get("description")

@@ -73,6 +73,7 @@ RESEARCH_UI_PROFILE = UIProfile(
         force_recompute=True,
         source_selection=True,
         category_partitions=True,
+        project_metadata=True,
     ),
 )
 

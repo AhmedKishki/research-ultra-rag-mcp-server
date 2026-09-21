@@ -230,3 +230,107 @@ def test_source_selection_combines_with_categories(project: Path) -> None:
         assert selected["filters"]["source_ids"] == [source_ids["waste.pdf"]]
 
     asyncio.run(exercise())
+
+
+def test_project_layer_selects_and_reports(project: Path) -> None:
+    async def exercise() -> None:
+        service, source_ids = await _build_project(project)
+        assert (await service.status())["projects"] == []
+
+        await service.set_source_metadata(
+            metadata={"project": ["ai-and-fetishism"]},
+            source_id=source_ids["cobalt.pdf"],
+        )
+        await service.set_source_metadata(
+            metadata={"project": ["other-project"]},
+            source_id=source_ids["waste.pdf"],
+        )
+
+        assert (await service.status())["projects"] == [
+            {"project": "ai-and-fetishism", "searchable_source_count": 1},
+            {"project": "other-project", "searchable_source_count": 1},
+        ]
+
+        mine = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            projects=["ai-and-fetishism"],
+        )
+        assert {hit["source_path"] for hit in mine["hits"]} == {"sources/cobalt.pdf"}
+        assert mine["filters"]["projects_all"] == ["ai-and-fetishism"]
+        assert mine["filters"]["projects_any"] == []
+
+        union = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            projects_any=["ai-and-fetishism", "other-project"],
+        )
+        assert {hit["source_path"] for hit in union["hits"]} == {
+            "sources/cobalt.pdf",
+            "sources/waste.pdf",
+        }
+
+        untagged = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            projects=["unassigned"],
+        )
+        assert untagged["hits"] == []
+
+        listed = await service.list_sources(projects=["other-project"])
+        assert [item["source_path"] for item in listed["sources"]] == [
+            "sources/waste.pdf"
+        ]
+
+    asyncio.run(exercise())
+
+
+def test_three_metadata_layers_combine(project: Path) -> None:
+    async def exercise() -> None:
+        service, source_ids = await _build_project(project)
+        await service.set_source_metadata(
+            metadata={
+                "project": ["ai-and-fetishism"],
+                "categories": ["marxism"],
+                "keywords": ["fetishism", "use value"],
+            },
+            source_id=source_ids["cobalt.pdf"],
+        )
+        await service.set_source_metadata(
+            metadata={
+                "project": ["ai-and-fetishism"],
+                "categories": ["political ecology"],
+                "keywords": ["waste"],
+            },
+            source_id=source_ids["waste.pdf"],
+        )
+
+        matched = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            projects=["ai-and-fetishism"],
+            categories=["marxism"],
+            keywords=["fetishism"],
+        )
+        assert {hit["source_path"] for hit in matched["hits"]} == {"sources/cobalt.pdf"}
+        filters = matched["filters"]
+        assert filters["projects_all"] == ["ai-and-fetishism"]
+        assert filters["categories_all"] == ["marxism"]
+        assert filters["keywords_all"] == ["fetishism"]
+
+        # A branch filter from the other layer still resolves independently.
+        other = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            projects=["ai-and-fetishism"],
+            categories_any=["marxism", "political ecology"],
+            keywords=["waste"],
+        )
+        assert {hit["source_path"] for hit in other["hits"]} == {"sources/waste.pdf"}
+
+    asyncio.run(exercise())

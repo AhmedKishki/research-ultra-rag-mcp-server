@@ -860,6 +860,7 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
             "doi": "10.1000/corrected",
             "categories": ["new\ncategory"],
             "keywords": ["new\tkeyword"],
+            "project": ["new\nproject"],
         },
     )
     assert corrected["metadata"] == {
@@ -869,6 +870,7 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
         "doi": "10.1000/corrected",
         "categories": ["new category"],
         "keywords": ["new keyword"],
+        "project": ["new project"],
     }
     assert corrected["changed"] is True
     assert corrected["effective_immediately"] is True
@@ -881,6 +883,7 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
         "doi": "10.1000/corrected",
         "categories": ["new category"],
         "keywords": ["new keyword"],
+        "project": ["new project"],
         "metadata_provenance": {
             field: "reviewed_override"
             for field in (
@@ -890,6 +893,7 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
                 "doi",
                 "categories",
                 "keywords",
+                "project",
             )
         },
         "metadata_warnings": [],

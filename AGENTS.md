@@ -46,12 +46,12 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.13.0`
+- Version: `0.14.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `05ae4b155d38a294260a36017f6429ce73b1641b`
-- Shared UI commit: `89239a85964de6b59c2f07bd396c75c2738522fc`
+- Shared UI commit: `a9af81ce95dc03a5c992e56c81573d621bf73d68`
 - Upstream UltraRAG: `0.3.0.2` at `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
 ## Non-negotiable research contract
@@ -173,10 +173,10 @@ Changed builds use a unique directory under `staging/`, then move a verified gen
 
 ## Public MCP tools
 
-- `status`: read-only source/current/staleness inspection, retained-generation inventory, the category partition inventory (`categories` with `searchable_source_count`), the generated UI launcher state (`ui_launcher`), and the URL/readiness of a UI this server hosts when it was started with `--ui-port`.
+- `status`: read-only source/current/staleness inspection, retained-generation inventory, the category and project inventories (`categories` and `projects`, each with `searchable_source_count`), the generated UI launcher state (`ui_launcher`), and the URL/readiness of a UI this server hosts when it was started with `--ui-port`.
 - `ingest`: return the current generation for an exact no-op, advance a checkpointed build and return `in_progress`, or select a complete new generation with verified reuse; `force_recompute` bypasses reuse but may resume its own matching checkpoint.
-- `search`: hybrid-by-default retrieval with selectable BM25/dense modes, optional reranking, passage-ranked or reference-grouped structured evidence, source selection by stable `source_id` (`source_ids`, `exclude_source_ids`), and metadata filters (`categories` all-of, `categories_any` any-of, `keywords`, `document_ids`).
-- `list_sources`: inspect indexed documents and metadata, filter by `categories`, `categories_any`, or `keywords`, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
+- `search`: hybrid-by-default retrieval with selectable BM25/dense modes, optional reranking, passage-ranked or reference-grouped structured evidence, source selection by stable `source_id` (`source_ids`, `exclude_source_ids`), and the three reviewed-metadata layers (`projects` and `projects_any`, `categories` and `categories_any`, `keywords`, `document_ids`).
+- `list_sources`: inspect indexed documents and metadata, filter by `projects`, `projects_any`, `categories`, `categories_any`, or `keywords`, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
 - `get_passage`: retrieve neighboring chunks from the same document.
 - `set_source_metadata`: update authoritative reviewed metadata immediately for every retrieval surface when the source is in the selected generation; an unindexed source still requires ingestion. Require exactly one of `source_id` or `source_path`, preferring the ID for agent operations.
 - `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed source without modifying the source file; rebuild later to align the indexes. It uses the same exact-one-selector rule.
@@ -194,7 +194,7 @@ Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 - Candidate depth: at least 20, normally `top_k * 4`, bounded at 200 and by the current chunk count.
 - `top_k` is always a total returned-passage budget. The optional reference view scans the complete relevance-gated candidate ordering, admits at most two passages per `source_id` by default, and groups those passages without aggregating scores or rewarding documents for producing more chunks.
 - Search-level source selection resolves stable `source_id` values to document IDs in the selected generation before ranking, so `top_k` is a budget inside the selection. `source_ids` includes and `exclude_source_ids` removes; both default to empty, which means include everything and exclude nothing. An include list that resolves to no document in the selected generation is an error, never a silently unfiltered search; unresolved IDs are disclosed under `filters`; and a reviewed exclusion always wins over `source_ids`.
-- Reviewed metadata drives filtering and corpus partitions: `categories` requires every listed category, `categories_any` requires at least one, `keywords` requires every listed keyword, and `document_ids` includes. Filtering resolves the current reviewed overlay to document IDs at query time and must never bake metadata into an index. `status.categories` is the partition inventory (category plus searchable source count) of the selected generation, with reviewed exclusions removed.
+- Reviewed metadata carries three independent filter layers, all authoritative at read time: `project` records which project a source was gathered for, `categories` the branch or branches it belongs to, and `keywords` the terms that identify it or that it leans on. Each layer is all-of at the plural name and any-of at its `_any` variant (`projects`/`projects_any`, `categories`/`categories_any`); `keywords` and `document_ids` include. Filtering resolves the current reviewed overlay to document IDs at query time and must never bake metadata into an index. `status.categories` and `status.projects` are the inventories (value plus searchable source count) of the selected generation, with reviewed exclusions removed. Because one server serves one project, the project layer is normally a passthrough inside a server and earns its place when a corpus is bundled, imported, or shared.
 - Reference grouping is presentation-time MCP orchestration. It must not alter indexes or the default passage ordering. Keep its cap explicit, report both returned and candidate-pool reference counts, and preserve the unreranked candidate tail after a reranked prefix so useful references remain reachable.
 - Chunking: UltraRAG token chunker with the GPT-2 tiktoken encoding, default and maximum 384 tokens, overlap 64. The cap stays below the embedding model's 512-token input limit despite tokenizer differences; do not raise it without an explicit long-input strategy and tests.
 - Reranking: FastEmbed `Xenova/ms-marco-MiniLM-L-6-v2`, CPU, lazily loaded, applied to at most 50 candidates. Artifact revision: `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. It is **on by default** because it is the largest measured quality gain (`MEASUREMENTS.md`): `rerank=false` is the explicit opt-out, and an unavailable model must degrade to the unranked candidate order with `rerank_fallback` in the response, never fail the search.

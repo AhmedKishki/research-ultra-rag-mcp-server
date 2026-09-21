@@ -16,7 +16,7 @@ Plain-language summary of every capability, and why it is there:
 - **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten, and `status.ui_launcher` reports the current state.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
 - **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, per-field provenance and warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage.
-- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by metadata: `categories` requires every listed category, `categories_any` requires at least one, and `keywords` and `document_ids` filter as before. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
+- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by three layers of reviewed metadata: the project a source was gathered for (`projects`, `projects_any`), the branch it belongs to (`categories`, `categories_any`), and the terms that identify it (`keywords`), plus `document_ids`. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
@@ -212,19 +212,29 @@ Search can legitimately return fewer results than `top_k`, including none, when 
 
 A `source_id` is derived from a source's normalized relative path: it survives edits to the file's bytes and changes when the file is renamed or moved. An ID that resolves to nothing in the selected generation is reported in `filters.unknown_source_ids` (`unknown_exclude_source_ids` for exclusions), and an include list that resolves to nothing at all is an error rather than a silently unfiltered search. A reviewed exclusion always wins: naming an excluded source in `source_ids` cannot bring it back, so the response reports `filters.active_document_count` of 0 and no hits.
 
-### Dividing a corpus with categories
+### Dividing a corpus with categories and projects
 
-`categories`, `categories_any`, and `keywords` come from reviewed source metadata, so an agent can define them itself: `set_source_metadata` accepts `categories` and `keywords` per source, applies immediately, and needs no re-ingestion. Because the strings are free, they work as corpus partitions — a research strand, a chapter group, a sub-project name — and one search can cover several parts at once:
+Reviewed source metadata carries three filter layers, and each is independent:
+
+| Layer | What it records | Example |
+|---|---|---|
+| `project` | which project a source was gathered for | `ai-and-fetishism` |
+| `categories` | the branch or branches the source belongs to | `marxism`, `critical realism`, `political ecology` |
+| `keywords` | the terms that identify the source, or that it leans on | `fetishism`, `use value` |
+
+`categories`, `categories_any`, `projects`, `projects_any`, and `keywords` all come from reviewed source metadata, so an agent can define them itself: `set_source_metadata` accepts them per source, applies immediately, and needs no re-ingestion. The strings are free, so they work as corpus partitions — a theoretical branch, a research strand, a sub-project — and one search can cover several parts at once:
 
 ```json
 {
   "query": "labour in the supply chain",
-  "categories_any": ["Cobalt corpus", "Waste corpus"],
+  "projects": ["ai-and-fetishism"],
+  "categories_any": ["marxism", "political ecology"],
+  "keywords": ["fetishism"],
   "top_k": 8
 }
 ```
 
-`status` reports the current inventory as `categories`, each with its `searchable_source_count`, so an agent can see the parts before searching them; reviewed exclusions are not counted there. The browser UI lists the same partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
+Each filter is all-of at the plural name (`categories`, `projects`, `keywords` require every listed value) and any-of at the `_any` variant (`categories_any`, `projects_any`). A one-project server normally tags every source with its own project name, so the project layer is a passthrough there; it becomes useful when a corpus is exported as a bundle, imported into another project, or shared. `status` reports both inventories — `categories` and `projects`, each with its `searchable_source_count` — so an agent can see the parts before searching them, and reviewed exclusions are not counted there. The browser UI lists the same partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
 
 ### Checking freshness per query
 
@@ -418,10 +428,10 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, the category inventory, the UI launcher state, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
+| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, the category and project inventories, the UI launcher state, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
 | `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. |
-| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata filters (`categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
-| `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by `categories`, `categories_any`, or `keywords`. Registers discovered IDs in the project catalog. |
+| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
+| `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by the same `projects`, `projects_any`, `categories`, `categories_any`, and `keywords`. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its neighbors and provenance. |
 | `set_source_metadata` | Saves a reviewed metadata correction for one source. Applies immediately to an indexed source. |
 | `set_source_inclusion` | Excludes or restores one source. Reversible; never deletes the file. |

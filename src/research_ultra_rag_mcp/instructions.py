@@ -35,8 +35,11 @@ For research questions:
    selected prior generation remains searchable while this work is staged.
 3. Call search with the user's substantive query. Use the default hybrid method
    for ordinary research. Use bm25 alone for exact terminology or names;
-   use dense alone to inspect semantic matches. Use categories, keywords, or
-   document_ids only when the user asks to narrow the collection. The default
+   use dense alone to inspect semantic matches. Use projects, categories,
+   keywords, document_ids, or source_ids only when the user asks to narrow the
+   collection: a project tag records which project a source was gathered for,
+   categories are the branches it belongs to, and keywords are the terms that
+   identify it. The default
    passage view preserves the global passage ranking. Use result_view=references
    when breadth across sources matters; it keeps top_k as a total passage budget
    and caps how many passages one reference may occupy.
@@ -77,8 +80,8 @@ navigation but do not make cleaned text safe for exact quotation.
 Automatic bibliography is best-effort. Review provenance and warnings; if a
 title, author, year, or DOI is uncertain or wrong, inspect the
 original and use set_source_metadata for the reviewed value instead of relying
-on a document-specific extraction rule. Use it for reviewed categories and
-keywords as well. Prefer the stable source_id returned by list_sources or search;
+on a document-specific extraction rule. Use it for reviewed categories,
+keywords, and project tags as well. Prefer the stable source_id returned by list_sources or search;
 source_path remains available for compatibility and takes the reported
 source_relative_path. Provide exactly one selector. For a source in the selected
 generation, the tool applies the complete reviewed override immediately to

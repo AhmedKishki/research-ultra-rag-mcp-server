@@ -2144,7 +2144,7 @@ wheels = [
 
 [[package]]
 name = "research-ultra-rag-mcp"
-version = "0.13.0"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -2181,7 +2181,7 @@ requires-dist = [
     { name = "pymupdf", specifier = ">=1.26,<2" },
     { name = "qdrant-client", specifier = "==1.19.1" },
     { name = "tokenizers", specifier = ">=0.20,<1" },
-    { name = "ui-ultra-rag-mcp", git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=89239a85964de6b59c2f07bd396c75c2738522fc" },
+    { name = "ui-ultra-rag-mcp", git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=a9af81ce95dc03a5c992e56c81573d621bf73d68" },
     { name = "vanilla-ultra-rag-mcp", git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=05ae4b155d38a294260a36017f6429ce73b1641b" },
 ]
 
@@ -2521,8 +2521,8 @@ wheels = [
 
 [[package]]
 name = "ui-ultra-rag-mcp"
-version = "0.4.0"
-source = { git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=89239a85964de6b59c2f07bd396c75c2738522fc#89239a85964de6b59c2f07bd396c75c2738522fc" }
+version = "0.5.0"
+source = { git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=a9af81ce95dc03a5c992e56c81573d621bf73d68#a9af81ce95dc03a5c992e56c81573d621bf73d68" }
 dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },

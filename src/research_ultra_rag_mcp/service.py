@@ -371,25 +371,43 @@ def _document_matches_metadata(
     categories: set[str],
     keywords: set[str],
     categories_any: set[str] = frozenset(),
+    projects: set[str] = frozenset(),
+    projects_any: set[str] = frozenset(),
 ) -> bool:
+    """Match one document against the three reviewed-metadata filter layers.
+
+    `project` records which project a source was gathered for, `categories` the
+    branches it belongs to, and `keywords` the terms that identify it. A source
+    normally carries one project, so that layer is a passthrough inside a
+    one-project server and becomes meaningful when a corpus is bundled, imported,
+    or shared.
+    """
+
     document_categories = _normalized_filter(document.get("categories"))
     document_keywords = _normalized_filter(document.get("keywords"))
+    document_projects = _normalized_filter(document.get("project"))
     return (
         categories.issubset(document_categories)
         and keywords.issubset(document_keywords)
         and (not categories_any or not categories_any.isdisjoint(document_categories))
+        and projects.issubset(document_projects)
+        and (not projects_any or not projects_any.isdisjoint(document_projects))
     )
 
 
-def _category_inventory(
+def _metadata_inventory(
     documents: dict[str, dict[str, Any]],
     excluded_document_ids: set[str],
+    *,
+    field: str,
+    label: str,
 ) -> list[dict[str, Any]]:
-    """Count searchable sources per reviewed category.
+    """Count searchable sources per reviewed value of one list-valued field.
 
-    Categories are free reviewed-metadata strings, so this is the partition
-    inventory an agent uses to divide a corpus into parts. A source is counted
-    once per category it carries, and reviewed exclusions are not counted.
+    Reviewed values are free strings, so this is the inventory an agent uses to
+    see a corpus partition (categories) or its project tags before searching. A
+    source is counted once per value it carries, and reviewed exclusions are not
+    counted.
     """
 
     display: dict[str, str] = {}
@@ -397,17 +415,17 @@ def _category_inventory(
     for document_id, document in documents.items():
         if document_id in excluded_document_ids:
             continue
-        normalized = _normalized_filter(document.get("categories"))
+        normalized = _normalized_filter(document.get(field))
         if not normalized:
             continue
-        for raw in document.get("categories") or []:
+        for raw in document.get(field) or []:
             value = normalize_inline_text(str(raw))
             if value and value.casefold() in normalized:
                 display.setdefault(value.casefold(), value)
         for name in normalized:
             counts[name] = counts.get(name, 0) + 1
     return [
-        {"category": display.get(name, name), "searchable_source_count": counts[name]}
+        {label: display.get(name, name), "searchable_source_count": counts[name]}
         for name in sorted(counts)
     ]
 
@@ -422,7 +440,7 @@ def _public_document(document: dict[str, Any]) -> dict[str, Any]:
     result.pop("metadata_override_revision", None)
     for field in ("title", "doi"):
         result[field] = normalize_inline_text(str(result.get(field) or ""))
-    for field in ("authors", "categories", "keywords"):
+    for field in ("authors", "categories", "keywords", "project"):
         result[field] = [
             normalized
             for value in result.get(field) or []
@@ -454,7 +472,7 @@ def _canonical_metadata_override(value: dict[str, Any]) -> dict[str, Any]:
     for field in ("title", "doi"):
         if field in normalized:
             result[field] = normalize_inline_text(str(normalized[field]))
-    for field in ("authors", "categories", "keywords"):
+    for field in ("authors", "categories", "keywords", "project"):
         if field not in normalized:
             continue
         items: list[str] = []
@@ -544,9 +562,10 @@ def _effective_document_metadata(
             provenance[field] = "filename" if field == "title" else "missing"
             removed_reviewed_value = True
 
-    # Categories and keywords have no automatic extraction source, so the
-    # current reviewed lists can be represented exactly even on old generations.
-    for field in ("categories", "keywords"):
+    # Categories, keywords, and the project tag have no automatic extraction
+    # source, so the current reviewed lists can be represented exactly even on
+    # old generations.
+    for field in ("categories", "keywords", "project"):
         result[field] = list(normalized_override.get(field, []))
         provenance[field] = (
             "reviewed_override" if field in normalized_override else "missing"
@@ -1904,6 +1923,7 @@ class ResearchService:
                 "selected_source_count": len(selected),
                 "excluded_source_count": len(exclusions),
                 "categories": [],
+                "projects": [],
                 "excluded_sources": self._exclusion_records(scan, exclusions),
                 "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
                 "ignored_extensions": scan.ignored_extensions,
@@ -2001,6 +2021,7 @@ class ResearchService:
                 "Current generation is BM25-only; run ingest to build its "
                 "project-local dense index."
             )
+        effective_documents = _effective_documents(manifest, metadata)
         return {
             "ready": True,
             "stale": stale,
@@ -2032,9 +2053,17 @@ class ResearchService:
             "excluded_source_count": len(exclusions),
             "excluded_sources": exclusion_records,
             "chunk_count": manifest["chunk_count"],
-            "categories": _category_inventory(
-                _effective_documents(manifest, metadata),
+            "categories": _metadata_inventory(
+                effective_documents,
                 excluded_document_ids,
+                field="categories",
+                label="category",
+            ),
+            "projects": _metadata_inventory(
+                effective_documents,
+                excluded_document_ids,
+                field="project",
+                label="project",
             ),
             "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
             "ignored_extensions": scan.ignored_extensions,
@@ -2199,6 +2228,7 @@ class ResearchService:
                             "doi",
                             "categories",
                             "keywords",
+                            "project",
                             "metadata_provenance",
                             "metadata_warnings",
                         )
@@ -4158,6 +4188,8 @@ class ResearchService:
         categories: set[str],
         categories_any: set[str],
         keywords: set[str],
+        projects: set[str],
+        projects_any: set[str],
         document_ids: set[str],
         excluded_document_ids: set[str],
     ) -> bool:
@@ -4169,6 +4201,8 @@ class ResearchService:
                 categories=categories,
                 keywords=keywords,
                 categories_any=categories_any,
+                projects=projects,
+                projects_any=projects_any,
             )
             or (document_ids and chunk["document_id"] not in document_ids)
         )
@@ -4183,6 +4217,8 @@ class ResearchService:
         *,
         categories: set[str],
         categories_any: set[str],
+        projects: set[str],
+        projects_any: set[str],
         keywords: set[str],
         document_ids: set[str],
         excluded_document_ids: set[str],
@@ -4202,6 +4238,8 @@ class ResearchService:
             categories
             or categories_any
             or keywords
+            or projects
+            or projects_any
             or document_ids
             or excluded_document_ids
         )
@@ -4255,6 +4293,8 @@ class ResearchService:
                             categories=categories,
                             categories_any=categories_any,
                             keywords=keywords,
+                            projects=projects,
+                            projects_any=projects_any,
                             document_ids=document_ids,
                             excluded_document_ids=excluded_document_ids,
                         )
@@ -4338,6 +4378,8 @@ class ResearchService:
         top_k: int = 8,
         categories: list[str] | None = None,
         categories_any: list[str] | None = None,
+        projects: list[str] | None = None,
+        projects_any: list[str] | None = None,
         keywords: list[str] | None = None,
         document_ids: list[str] | None = None,
         source_ids: list[str] | None = None,
@@ -4402,6 +4444,8 @@ class ResearchService:
             requested_exclude_source_ids = _requested_ids(exclude_source_ids)
             category_filter = _normalized_filter(categories)
             category_any_filter = _normalized_filter(categories_any)
+            project_filter = _normalized_filter(projects)
+            project_any_filter = _normalized_filter(projects_any)
             keyword_filter = _normalized_filter(keywords)
             source_include_document_ids, unknown_source_ids = (
                 self._document_ids_for_source_ids(manifest, requested_source_ids)
@@ -4425,7 +4469,11 @@ class ResearchService:
 
             dense_document_filter: set[str] | None = None
             metadata_filter_active = bool(
-                category_filter or category_any_filter or keyword_filter
+                category_filter
+                or category_any_filter
+                or project_filter
+                or project_any_filter
+                or keyword_filter
             )
             if metadata_filter_active:
                 dense_document_filter = {
@@ -4436,6 +4484,8 @@ class ResearchService:
                         categories=category_filter,
                         keywords=keyword_filter,
                         categories_any=category_any_filter,
+                        projects=project_filter,
+                        projects_any=project_any_filter,
                     )
                 }
             if document_filter:
@@ -4453,6 +4503,8 @@ class ResearchService:
                     categories=category_filter,
                     keywords=keyword_filter,
                     categories_any=category_any_filter,
+                    projects=project_filter,
+                    projects_any=project_any_filter,
                 )
                 and (not document_filter or document_id in document_filter)
             }
@@ -4516,6 +4568,8 @@ class ResearchService:
                         categories=category_filter,
                         categories_any=category_any_filter,
                         keywords=keyword_filter,
+                        projects=project_filter,
+                        projects_any=project_any_filter,
                         document_ids=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
@@ -4534,6 +4588,8 @@ class ResearchService:
                     categories=category_filter,
                     categories_any=category_any_filter,
                     keywords=keyword_filter,
+                    projects=project_filter,
+                    projects_any=project_any_filter,
                     document_ids=document_filter,
                     excluded_document_ids=excluded_document_ids,
                     withheld=withheld,
@@ -4576,6 +4632,8 @@ class ResearchService:
                     categories=category_filter,
                     categories_any=category_any_filter,
                     keywords=keyword_filter,
+                    projects=project_filter,
+                    projects_any=project_any_filter,
                     document_ids=document_filter,
                     excluded_document_ids=excluded_document_ids,
                 ):
@@ -4774,6 +4832,8 @@ class ResearchService:
                 "filters": {
                     "categories_all": sorted(category_filter),
                     "categories_any": sorted(category_any_filter),
+                    "projects_all": sorted(project_filter),
+                    "projects_any": sorted(project_any_filter),
                     "keywords_all": sorted(keyword_filter),
                     "document_ids": sorted(document_filter),
                     "source_ids": requested_source_ids,
@@ -4904,6 +4964,8 @@ class ResearchService:
         *,
         categories: list[str] | None = None,
         categories_any: list[str] | None = None,
+        projects: list[str] | None = None,
+        projects_any: list[str] | None = None,
         keywords: list[str] | None = None,
     ) -> dict[str, Any]:
         async with self._operation():
@@ -4979,6 +5041,8 @@ class ResearchService:
             documents_by_id = _effective_documents(manifest, metadata)
             category_filter = _normalized_filter(categories)
             category_any_filter = _normalized_filter(categories_any)
+            project_filter = _normalized_filter(projects)
+            project_any_filter = _normalized_filter(projects_any)
             keyword_filter = _normalized_filter(keywords)
             sources = []
             for document in documents_by_id.values():
@@ -4986,6 +5050,9 @@ class ResearchService:
                     continue
                 document_categories = {
                     str(item).casefold() for item in document.get("categories", [])
+                }
+                document_projects = {
+                    str(item).casefold() for item in document.get("project", [])
                 }
                 document_keywords = {
                     str(item).casefold() for item in document.get("keywords", [])
@@ -4996,6 +5063,12 @@ class ResearchService:
                     continue
                 if category_any_filter and category_any_filter.isdisjoint(
                     document_categories
+                ):
+                    continue
+                if project_filter and not project_filter.issubset(document_projects):
+                    continue
+                if project_any_filter and project_any_filter.isdisjoint(
+                    document_projects
                 ):
                     continue
                 if keyword_filter and not keyword_filter.issubset(document_keywords):

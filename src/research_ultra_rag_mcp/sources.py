@@ -12,7 +12,7 @@ from .config import ResearchConfig
 
 ALLOWED_SOURCE_EXTENSIONS = frozenset({".epub", ".pdf"})
 METADATA_FIELDS = frozenset(
-    {"title", "authors", "year", "doi", "categories", "keywords"}
+    {"title", "authors", "year", "doi", "categories", "keywords", "project"}
 )
 
 
@@ -141,7 +141,7 @@ def normalize_metadata(value: dict[str, Any]) -> dict[str, Any]:
                 raise SourcePolicyError(f"Metadata field {field!r} must be a string")
             normalized[field] = item.strip()
 
-    for field in ("authors", "categories", "keywords"):
+    for field in ("authors", "categories", "keywords", "project"):
         if field in value:
             normalized[field] = _string_list(value[field], field)
 
