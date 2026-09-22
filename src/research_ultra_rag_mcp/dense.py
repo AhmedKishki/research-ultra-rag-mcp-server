@@ -551,7 +551,7 @@ class LocalVectorDenseBackend:
 
     An index lives at `<generation>/indexes/<name>` and references the portable
     vector file relative to the generation root, so the descriptor stays valid
-    across a bundle export and import.
+    when the generation directory is copied elsewhere.
     """
 
     def __init__(

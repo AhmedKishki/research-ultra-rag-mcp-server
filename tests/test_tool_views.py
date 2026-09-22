@@ -31,6 +31,7 @@ DIAGNOSTIC_KEYS = {
     "dense_fidelity",
     "dense_truncated",
     "distinct_reference_count",
+    "doi",
     "document_id",
     "embedding_model",
     "embedding_model_revision",
@@ -45,9 +46,12 @@ DIAGNOSTIC_KEYS = {
     "ignored_extensions",
     "last_build_metrics",
     "match_kind",
+    "metadata_pending_source_paths",
     "metadata_provenance",
+    "metadata_warnings",
     "passages_per_reference",
     "quality_flags",
+    "rank",
     "rejected_candidates",
     "relevance_limited",
     "relevance_policy",
@@ -60,6 +64,7 @@ DIAGNOSTIC_KEYS = {
     "source_path",
     "text_fidelity",
     "withheld_candidates",
+    "year",
 }
 
 
@@ -69,21 +74,17 @@ def test_lean_passage_shape() -> None:
     assert set(lean) == {"query", "generation_id", "stale", "reranked", "hits"}
     assert lean["hits"] == [
         {
-            "rank": 1,
             "chunk_id": "chk_one",
             "source_id": "src_one",
             "source_relative_path": "evidence.pdf",
             "title": "Citable Evidence",
             "authors": ["A. Researcher"],
-            "year": 2025,
-            "doi": "10.1/example",
             "locator": {"page": 3, "page_label": "3", "type": "pdf_page"},
             "citation": "A. Researcher, Citable Evidence (2025), p. 3",
             "text": "cleaned semantic text",
             "direct_quote_safe": False,
         },
         {
-            "rank": 2,
             "chunk_id": "chk_two",
             "source_id": "src_two",
             "source_relative_path": "anonymous.pdf",
@@ -93,7 +94,6 @@ def test_lean_passage_shape() -> None:
             "text": "second passage",
             "direct_quote_safe": False,
             "text_notes": ["non_latin_dominant"],
-            "metadata_warnings": ["title_from_filename"],
         },
     ]
 
@@ -174,16 +174,21 @@ def test_reference_view_groups_lean_passages() -> None:
         "reference_groups",
     }
     assert set(lean["reference_groups"][0]) == {
-        "rank",
         "source_id",
         "source_relative_path",
         "title",
         "authors",
-        "year",
-        "doi",
         "passages",
     }
-    assert lean["reference_groups"][0]["passages"][0]["chunk_id"] == "chk_one"
+    grouped = lean["reference_groups"][0]["passages"][0]
+    assert set(grouped) == {
+        "chunk_id",
+        "locator",
+        "citation",
+        "text",
+        "direct_quote_safe",
+    }
+    assert grouped["chunk_id"] == "chk_one"
 
 
 def test_passage_context_is_lean_and_keeps_no_rank() -> None:
@@ -241,6 +246,7 @@ def test_status_lean_keeps_state_and_retention_only() -> None:
     assert "upgrade_reasons" not in lean
     assert "metadata_overlay_active" not in lean
     assert "metadata_pending_source_paths" not in lean
+    assert "metadata_pending_source_count" not in lean
     assert "ingestion_progress" not in lean
     assert "generation_root" not in lean
     assert "version" not in lean
@@ -317,7 +323,6 @@ def test_list_sources_lean_keeps_handles_and_overrides() -> None:
             "source_relative_path": "evidence.pdf",
             "title": "Citable Evidence",
             "authors": ["A. Researcher"],
-            "year": 2025,
         }
     ]
     assert lean["discovered_sources"] == [
@@ -341,7 +346,6 @@ def test_list_sources_lean_keeps_handles_and_overrides() -> None:
             "source_id": "src_one",
             "source_relative_path": "evidence.pdf",
             "metadata": {"title": "Citable Evidence"},
-            "indexed_in_current_generation": True,
         }
     ]
     assert "known_sources" not in lean
@@ -397,33 +401,13 @@ def test_ingest_in_progress_keeps_resume_state() -> None:
     assert "checkpointed_at" not in lean
 
 
-def test_review_state_and_bundle_responses_are_lean() -> None:
-    metadata = present_tool_response(
-        "set_source_metadata",
-        {
-            "source_id": "src_one",
-            "source_relative_path": "evidence.pdf",
-            "source_path": "sources/evidence.pdf",
-            "metadata": {"title": "Citable Evidence"},
-            "effective_metadata": {"title": "Citable Evidence", "doi": ""},
-            "changed": True,
-            "effective_immediately": True,
-            "requires_ingest": False,
-            "generation_metadata_snapshot_outdated": True,
-            "message": "Metadata saved and applied immediately.",
-        },
-        detail=LEAN_TOOL_DETAIL,
-    )
-    assert set(metadata) == {
-        "source_id",
-        "source_relative_path",
-        "metadata",
-        "changed",
-        "effective_immediately",
-        "requires_ingest",
-        "message",
-    }
+def test_retired_tools_have_no_projection() -> None:
+    for operation in ("set_source_metadata", "export_bundle", "import_bundle"):
+        with pytest.raises(ResearchError):
+            present_tool_response(operation, {}, detail=LEAN_TOOL_DETAIL)
 
+
+def test_inclusion_response_is_lean() -> None:
     inclusion = present_tool_response(
         "set_source_inclusion",
         {
@@ -440,50 +424,20 @@ def test_review_state_and_bundle_responses_are_lean() -> None:
         },
         detail=LEAN_TOOL_DETAIL,
     )
+    assert set(inclusion) == {
+        "status",
+        "source_id",
+        "source_relative_path",
+        "included",
+        "reason",
+        "effective_immediately",
+        "generation_rebuild_recommended",
+        "message",
+    }
     assert inclusion["included"] is False
     assert inclusion["reason"] == "Reviewed duplicate."
     assert "source_file_changed" not in inclusion
     assert "source_path" not in inclusion
-
-    exported = present_tool_response(
-        "export_bundle",
-        {
-            "status": "exported",
-            "bundle_name": "example.research-rag.zip",
-            "bundle_path": "/project/.research-rag/bundles/example.zip",
-            "sha256_path": "/project/.research-rag/bundles/example.zip.sha256",
-            "sha256": "a" * 64,
-            "size_bytes": 1024,
-            "generation_id": "20260101T000000Z-abcdef",
-            "source_count": 2,
-            "contains_original_sources": True,
-            "redistribution_notice": "You are responsible for redistribution rights.",
-        },
-        detail=LEAN_TOOL_DETAIL,
-    )
-    assert "sha256_path" not in exported
-    assert "contains_original_sources" not in exported
-    assert exported["bundle_name"] == "example.research-rag.zip"
-
-    imported = present_tool_response(
-        "import_bundle",
-        {
-            "status": "imported",
-            "generation_id": "20260101T000000Z-abcdef",
-            "activated": True,
-            "generation_root": "/state/generations/20260101T000000Z-abcdef",
-            "source_count": 2,
-            "contains_original_sources": True,
-            "portable_state_replaced": True,
-            "portable_state_authoritative": True,
-            "portable_metadata_effective_immediately": True,
-            "message": "Bundle imported and selected.",
-        },
-        detail=LEAN_TOOL_DETAIL,
-    )
-    assert "generation_root" not in imported
-    assert "portable_state_replaced" not in imported
-    assert imported["activated"] is True
 
 
 def test_every_public_tool_has_a_lean_projection() -> None:
@@ -855,18 +809,6 @@ def _every_tool_payload() -> dict[str, dict[str, object]]:
             "context": [_hit()],
             "notice": "Context is cleaned semantic text and is not quote-safe.",
         },
-        "set_source_metadata": {
-            "source_id": "src_one",
-            "source_relative_path": "evidence.pdf",
-            "source_path": "sources/evidence.pdf",
-            "metadata": {"title": "Citable Evidence"},
-            "effective_metadata": {"title": "Citable Evidence"},
-            "changed": True,
-            "effective_immediately": True,
-            "requires_ingest": False,
-            "generation_metadata_snapshot_outdated": True,
-            "message": "Metadata saved and applied immediately.",
-        },
         "set_source_inclusion": {
             "status": "changed",
             "source_id": "src_two",
@@ -878,29 +820,5 @@ def _every_tool_payload() -> dict[str, dict[str, object]]:
             "effective_immediately": True,
             "generation_rebuild_recommended": True,
             "message": "Source exclusion saved and enforced for current retrieval.",
-        },
-        "export_bundle": {
-            "status": "exported",
-            "bundle_name": "example.research-rag.zip",
-            "bundle_path": "/project/.research-rag/bundles/example.research-rag.zip",
-            "sha256_path": "/project/.research-rag/bundles/example.zip.sha256",
-            "sha256": "e" * 64,
-            "size_bytes": 1024,
-            "generation_id": "20260101T000000Z-abcdef",
-            "source_count": 2,
-            "contains_original_sources": True,
-            "redistribution_notice": "You are responsible for redistribution rights.",
-        },
-        "import_bundle": {
-            "status": "imported",
-            "generation_id": "20260101T000000Z-abcdef",
-            "activated": True,
-            "generation_root": "/state/generations/20260101T000000Z-abcdef",
-            "source_count": 2,
-            "contains_original_sources": True,
-            "portable_state_replaced": True,
-            "portable_state_authoritative": True,
-            "portable_metadata_effective_immediately": True,
-            "message": "Bundle imported and selected.",
         },
     }

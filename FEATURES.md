@@ -25,7 +25,7 @@ This server deliberately uses only three upstream capabilities, and owns everyth
 | Prompt assembly and answer generation | No | The connected agent generates. The server returns evidence, not prose. See section 1.2. |
 | Routing, memory, benchmark, evaluation components | No | Not part of this server's contract. Retrieval-quality evaluation is planned as its own work (see section 4 and section 1.2). |
 | Web-search retrieval | No | Out of scope: this server answers from a project's own documents only. See section 1.2. |
-| Upstream web interface | No | This server ships its own local UI for its own nine tools. See section 1.3. |
+| Upstream web interface | No | This server ships its own local UI for its own six tools. See section 1.3. |
 
 Three consequences are worth stating plainly.
 
@@ -87,7 +87,7 @@ These upstream components have no custom replacement, because adopting them woul
 
 ### 1.3 The upstream web interface
 
-The upstream interface is bound to upstream pipeline and session state, and it exposes tools this server deliberately does not. The bundled local UI is a pinned, dependency-free browser workspace that talks to the same nine public MCP tools through the private stdio client, is bound to loopback, and may serve only an allowlisted original PDF or EPUB. Reusing the upstream interface would mean either exposing the upstream surface through this server or maintaining a second, divergent view of the same project.
+The upstream interface is bound to upstream pipeline and session state, and it exposes tools this server deliberately does not. The bundled local UI is a pinned, dependency-free browser workspace that talks to the same six public MCP tools through the private stdio client, is bound to loopback, and may serve only an allowlisted original PDF or EPUB. Reusing the upstream interface would mean either exposing the upstream surface through this server or maintaining a second, divergent view of the same project.
 
 ## 2. Features added on top of UltraRAG
 
@@ -98,8 +98,8 @@ The upstream interface is bound to upstream pipeline and session state, and it e
 | PDF and EPUB ingestion | Walks the source directory recursively and accepts regular `.pdf` and `.epub` files only. | Other formats are ignored on purpose, so a stray `notes.md` never enters the knowledge base. |
 | Layout-aware extraction | Reads PDFs page by page and EPUBs by spine section, keeping structure and discarding repeated page furniture. | Reading order and paragraphs survive; running headers do not become fake content. |
 | Original-file locators | Every unit and chunk points back to a PDF page (with the printed page label when available) or an EPUB section. | You can open the source and check the passage. Locators are navigation aids, not quote offsets. |
-| Bibliographic metadata with provenance | Resolves title, authors, year, and DOI per document, recording where each value came from and any warnings. | Automatic metadata is provisional: an answer carries the warnings that flag a value needing review, and the full-detail payload carries the per-field provenance. |
-| Reviewed metadata overlay | Corrections saved outside the generation apply immediately to listings, filters, citations, search results, and neighbouring passages, and the file is hand-editable plain JSON. | Fixing a wrong author does not require re-ingesting, does not rewrite immutable data, and needs no agent. |
+| Bibliographic metadata with provenance | Resolves title, authors, year, and DOI per document, recording where each value came from and any warnings. | Automatic metadata is provisional: an answer carries the citation that uses it, and the full-detail payload carries the per-field provenance and the warnings that flag a value needing review. |
+| Reviewed metadata overlay | Corrections saved outside the generation apply at the next read to listings, filters, citations, search results, and neighbouring passages. The file is hand-edited plain JSON, and the tool surface deliberately has no metadata writer. | Fixing a wrong author does not require re-ingesting, does not rewrite immutable data, and needs no agent. |
 | Corrupt-text rejection with disclosure | Rejects a page or section only when its text shows strong evidence of a broken character map, then reports reason codes, counts, and example chunk IDs. | Bad text leaves the index, and you are told what was removed rather than silently losing material. |
 | Script mixing as an advisory note | A quotation in Greek, Cyrillic, or any other script stays retrievable and is returned with `text_notes`. | English-language scholarship quotes other languages; withholding those passages was a real defect that this fixes. |
 | Targeted normalisation folding | Formula-font letters (`𝑀` becomes `M`) and the presentation ligatures `ﬁ`, `ﬂ`, and `ﬀ` fold to plain spellings. Accents, superscripts, subscripts, and symbols are left alone. | A typed query matches printed text, without destroying notation that carries meaning. |
@@ -135,18 +135,18 @@ The upstream interface is bound to upstream pipeline and session state, and it e
 | Feature | What it does | Why it matters |
 |---|---|---|
 | One project per server process | A `--project-root` defines the boundary; all state lives under `<project>/.research-rag`. | Two projects cannot read each other's documents or indexes. |
-| Portable versus derived state | Reviewed decisions (`project.json`, metadata, exclusions, catalog, bundles) are portable. Generations, staging, logs, and locks are derived and rebuildable. | You can back up what a human decided, and regenerate the rest. |
+| Portable versus derived state | Reviewed decisions (`project.json`, metadata, exclusions, catalog) are portable. Generations, staging, logs, and locks are derived and rebuildable. | You can back up what a human decided, and regenerate the rest. |
 | Reviewed inclusions and exclusions | A source can be excluded as a duplicate and later restored. The original file is never deleted or modified. | Review stays reversible, and the server never destroys evidence. |
 | Immutable generations | Each build produces a new generation. The active pointer moves only after both indexes validate. | A failed or interrupted build leaves the previous generation searchable. |
 | Relocatable derived state | `--runtime-root` puts indexes, staging, and logs on a chosen disk, claimed by a marker naming its owning project. | A project on a slow disk can keep its working files on a fast one, without an OS-level bind mount. |
-| Portable bundles | `export_bundle` and `import_bundle` move a project — originals, review state, cleaned artifacts, embeddings — with path, checksum, project-ID, and embedding-compatibility validation. Indexes are rebuilt on import. | A project can be moved, shared, or archived without hand-copying internals. |
+| Copy-based project portability | A project is self-contained: copying `sources/` plus `.research-rag/` moves it, and `runtime/` rebuilds on the next ingestion. A relocated runtime root is claimed by a marker naming its owning project, so a copy cannot silently share it. | A project can be moved, shared, or archived with ordinary file tools and no export format to version. |
 
 ### Interfaces and operational transparency
 
 | Feature | What it does | Why it matters |
 |---|---|---|
-| Nine focused MCP tools | `status`, `ingest`, `search`, `list_sources`, `get_passage`, `set_source_metadata`, `set_source_inclusion`, `export_bundle`, `import_bundle`. | A small, reviewable surface for an agent, instead of upstream's ~78 tools. |
-| Local evidence UI | A loopback-only browser workspace over the same nine tools and the same project state, including per-query source include/exclude, category-partition filters, and a partition list with searchable counts. | You can inspect and correct the knowledge base without an agent in the loop, and narrow a search to the works or strands you are working on. |
+| Six focused MCP tools | `status`, `ingest`, `search`, `list_sources`, `get_passage`, `set_source_inclusion`. | A small, reviewable surface for an agent, instead of upstream's ~78 tools, and every tool is a retrieval operation rather than a state editor. |
+| Local evidence UI | A loopback-only browser workspace over the same six tools and the same project state, including per-query source include/exclude, category-partition filters, and a partition list with searchable counts. | You can inspect the knowledge base and narrow a search to the works or strands you are working on, without an agent in the loop. |
 | UI hosted by the MCP server (added here) | An opt-in `--ui-port` serves that same UI from the MCP server process, reusing its resolved project, runtime root, model cache, and offline settings. `status` reports `ui_url`, `ui_ready`, and `ui_error`; a taken port is reported instead of failing, and the UI stops with the server. | The UI and your agent always read the same project state, including when derived state lives on another disk, and there is no second process to clean up. |
 | Generated per-project UI launcher (added here) | Initialising a project writes `.research-rag/bin/open-ui.sh` and links it into the project root as `open-ui.sh`. It starts the standalone UI with this project's own root, runtime root, and port, and `--stop` ends the whole process group so the private server it started cannot leak. An existing file or symlink is never overwritten, and `status.ui_launcher` reports the state. | Starting the browser UI for a project is one command with no flags to remember, and the agent's project state and the browser's cannot silently diverge. |
 | Version reporting (added here) | `status.version` gives the version the running server started with, the version installed in the environment now, the pinned browser-UI version, and a `restart_required` flag; the browser UI shows the server and UI versions in its header. | Whether the process answering you is the code you just installed is otherwise invisible, which is exactly how an update appears not to have applied. |
@@ -188,10 +188,10 @@ Read this as two profiles rather than a scoreboard. It reflects that project's R
 | Embeddings | FastEmbed CPU model pinned by revision, downloaded once, no service needed | An external embedding API (OpenAI, Ollama, Granite, or Nomic) over HTTP, Ollama by default |
 | Retrieval | BM25, dense, and hybrid, with metadata filters, optional reranking, reference-grouped results, and relevance gates that can abstain | Dense nearest-chunk retrieval, top `k` default 15 |
 | Dense store | The generation's portable vectors scanned exactly, or an embedded index above a size threshold | Local SQLite vector store (LangChain `LibSQLVectorStore`) |
-| Metadata, citations, locators | Resolved title, authors, year, DOI with provenance and warnings, plus original-file locators and a reviewed-metadata overlay | Not part of the documented feature set |
+| Metadata, citations, locators | Resolved title, authors, year, DOI with per-field provenance and warnings in the full-detail payload, plus original-file locators and a reviewed-metadata overlay | Not part of the documented feature set |
 | Index lifecycle | Immutable generations, validated before activation, resumable builds, reusable per-document and per-chunk work | Sequential indexing with progress reporting, plus per-document and whole-index removal |
 | Cancellation and restart behaviour | Checkpointed: a build resumes where it stopped | Progress is reported; resumability is not documented |
-| Interface | Nine tools, a local evidence UI, and a terminal verifier; no MCP resources | Five tools and four MCP resources (`rag://documents`, `rag://document/{path}`, `rag://query-document/{chunks}/{query}`, `rag://embedding/status`) |
+| Interface | Six tools, a local evidence UI, and a terminal verifier; no MCP resources | Five tools and four MCP resources (`rag://documents`, `rag://document/{path}`, `rag://query-document/{chunks}/{query}`, `rag://embedding/status`) |
 | Human review | Reviewed metadata corrections and reversible exclusions in the UI | Not part of the documented feature set |
 | Retrieval evaluation | Measured: 32 known-item judged queries on one reference corpus, reported per mode and per query class, with pooled recall still pending | Not part of the documented feature set |
 | Licence | Apache-2.0 for this repository's own code, which is recorded in `NOTICE` | MIT |

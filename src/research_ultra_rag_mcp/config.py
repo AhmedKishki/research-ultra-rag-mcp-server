@@ -93,10 +93,6 @@ class ResearchConfig:
         return self.portable_root / "project.json"
 
     @property
-    def bundles_root(self) -> Path:
-        return self.portable_root / "bundles"
-
-    @property
     def current_path(self) -> Path:
         return self.state_root / "current.json"
 

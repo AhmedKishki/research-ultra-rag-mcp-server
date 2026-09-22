@@ -26,10 +26,6 @@ evaluation/*-report.json
 /projects/
 /.research-rag/
 
-# Portable project bundles contain complete original works.
-*.research-rag.zip
-*.research-rag.zip.sha256
-
 # Personal notes, writing, and skill folders.
 /obsidian-vault/
 /zettlr/

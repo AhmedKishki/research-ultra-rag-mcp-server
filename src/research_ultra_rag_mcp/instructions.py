@@ -28,8 +28,8 @@ For research questions:
    new ingestion. Normal ingest verifies source hashes and safely reuses
    compatible documents, chunks, and vectors while reconstructing complete new
    indexes. Use force_recompute=true only when the user explicitly asks to
-   regenerate or reuse must be bypassed. Report generation_changed, reuse/build
-   counts, and phase timings from the result. Ingestion uses a soft per-call
+   regenerate or reuse must be bypassed. Report generation_changed and the
+   reuse/build counts from the result. Ingestion uses a soft per-call
    budget. If it returns status=in_progress, call ingest again with exactly the
    same chunk settings and force mode until it returns ready or unchanged. The
    selected prior generation remains searchable while this work is staged.
@@ -63,35 +63,21 @@ For research questions:
    clear reason. This immediately excludes the source from retrieval without
    deleting or modifying its PDF/EPUB. Re-ingest later to rebuild the stored
    indexes without it. Use included=true to reverse the decision.
-8. export_bundle is allowed only for a fresh, current generation and includes
-   complete original works as well as derived text. Warn that the user is
-   responsible for redistribution rights. import_bundle only accepts a filename
-   already beneath this project's .research-rag/bundles directory and rejects a
-   different stable project ID. It replaces reviewed metadata and exclusions
-   with the bundled copies, so disclose that effect before importing. With
-   activate=false the generation pointer stays unchanged, but compatible
-   imported metadata and exclusions immediately govern matching sources on the
-   selected generation's retrieval surfaces. Both also govern future ingestion.
 
 PDF hits include physical page numbers and available page labels. EPUBs have
 spine-section plus XHTML anchor or structural-block locators because reflowable
 EPUB files do not have stable page numbers. These internal locators improve
 navigation but do not make cleaned text safe for exact quotation.
-Automatic bibliography is best-effort. Review provenance and warnings; if a
-title, author, year, or DOI is uncertain or wrong, inspect the
-original and use set_source_metadata for the reviewed value instead of relying
-on a document-specific extraction rule. Use it for reviewed categories,
-keywords, and project tags as well. Prefer the stable source_id returned by list_sources or search;
-source_path remains available for compatibility and takes the reported
-source_relative_path. Provide exactly one selector. For a source in the selected
-generation, the tool applies the complete reviewed override immediately to
-source listings, metadata filters, search results and citations, and neighboring
-passages without rebuilding the immutable indexes. Check effective_immediately
-and requires_ingest in its response; ingestion is required only when the source
-is absent from the selected generation. Omitted fields remove their previous
-reviewed overrides. If an old generation cannot recover automatic bibliography
-hidden by a removed override, it returns a safe fallback with a warning until a
-later ingestion recovers the automatic value from the original.
+Automatic bibliography is best-effort. It carries no metadata warnings in an
+answer, so check the citation and the title against the original when a
+reference matters, and tell the user when a title, author, year, or DOI looks
+wrong. Reviewed values live in the project's .research-rag/source-metadata.json,
+where the user can correct one by hand; they are authoritative at read time, so
+a correction applies to listings, filters, citations, and neighboring passages
+without re-ingestion, while a source absent from the selected generation takes
+effect after the next ingestion. Never edit that file yourself.
+Identify a source by its stable source_id or by its filename
+(list_sources.source_relative_path); provide exactly one selector.
 
 Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
 BM25 lexical retrieval; FastEmbed creates the semantic vectors, which dense

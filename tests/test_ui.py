@@ -119,15 +119,6 @@ class FakeResearchClient:
                     }
                 ],
             },
-            "set_source_metadata": {
-                "source_path": arguments.get("source_path"),
-                "metadata": arguments.get("metadata"),
-                "changed": True,
-                "effective_immediately": True,
-                "requires_ingest": False,
-                "generation_metadata_snapshot_outdated": True,
-                "message": "Metadata saved and applied immediately.",
-            },
             "set_source_inclusion": {
                 "source_relative_path": arguments.get("source_path"),
                 "included": arguments.get("included"),
@@ -137,15 +128,6 @@ class FakeResearchClient:
                 "status": "ready",
                 "generation_id": "generation-2",
                 "chunk_count": 2,
-            },
-            "export_bundle": {
-                "bundle_name": "research-generation.research-rag.zip",
-                "sha256": "abc123",
-            },
-            "import_bundle": {
-                "generation_id": "generation-imported",
-                "activated": arguments.get("activate", True),
-                "message": "Bundle imported and selected.",
             },
         }
         return SimpleNamespace(data=responses[name])
@@ -210,7 +192,9 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
 
     assert health.json()["project_root"] == str(project)
     assert profile.json()["application_name"] == "Research UltraRAG"
-    assert profile.json()["capabilities"]["bundle_export"] is True
+    assert profile.json()["capabilities"]["metadata"] is False
+    assert profile.json()["capabilities"]["bundle_export"] is False
+    assert profile.json()["capabilities"]["bundle_import"] is False
     assert profile.json()["capabilities"]["force_recompute"] is True
     assert profile.json()["capabilities"]["source_selection"] is True
     assert profile.json()["capabilities"]["category_partitions"] is True
@@ -233,7 +217,7 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert ("get_passage", {"chunk_id": "chunk-1", "context_chunks": 2}) in fake.calls
 
 
-def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
+def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
     client, fake = _client(project)
     with client:
         search = client.post(
@@ -255,13 +239,6 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
                 "exclude_source_ids": ["src_2"],
             },
         )
-        metadata = client.post(
-            "/api/source-metadata",
-            json={
-                "source_path": "evidence.pdf",
-                "metadata": {"categories": ["theory"]},
-            },
-        )
         inclusion = client.post(
             "/api/source-inclusion",
             json={
@@ -278,8 +255,15 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
                 "force_recompute": True,
             },
         )
-        exported = client.post("/api/bundles/export", json={})
-        imported = client.post(
+        retired_metadata = client.post(
+            "/api/source-metadata",
+            json={
+                "source_path": "evidence.pdf",
+                "metadata": {"categories": ["theory"]},
+            },
+        )
+        retired_export = client.post("/api/bundles/export", json={})
+        retired_import = client.post(
             "/api/bundles/import",
             json={
                 "bundle_name": "research-generation.research-rag.zip",
@@ -288,12 +272,12 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
         )
 
     assert search.json()["hits"][0]["citation"].endswith("p. 1")
-    assert metadata.json()["effective_immediately"] is True
-    assert metadata.json()["requires_ingest"] is False
     assert inclusion.json()["included"] is False
     assert ingestion.json()["generation_id"] == "generation-2"
-    assert exported.json()["bundle_name"].endswith(".research-rag.zip")
-    assert imported.json()["generation_id"] == "generation-imported"
+    # The retired operations are not reachable through the UI either.
+    assert retired_metadata.status_code == 404
+    assert retired_export.status_code == 404
+    assert retired_import.status_code == 404
     assert (
         "search",
         {
@@ -314,20 +298,12 @@ def test_ui_forwards_search_and_project_mutations(project: Path) -> None:
         },
     ) in fake.calls
     assert narrowed.json()["hits"][0]["citation"].endswith("p. 1")
-    assert ("export_bundle", {}) in fake.calls
     assert (
         "ingest",
         {
             "chunk_size": 384,
             "chunk_overlap": 64,
             "force_recompute": True,
-        },
-    ) in fake.calls
-    assert (
-        "import_bundle",
-        {
-            "bundle_name": "research-generation.research-rag.zip",
-            "activate": True,
         },
     ) in fake.calls
 

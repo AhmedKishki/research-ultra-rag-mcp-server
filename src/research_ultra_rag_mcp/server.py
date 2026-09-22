@@ -6,11 +6,11 @@ import argparse
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal, NotRequired, TypeAlias, TypedDict, TypeVar
+from typing import Annotated, Any, Literal, TypeAlias, TypeVar
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
-from pydantic import ConfigDict, Field
+from pydantic import Field
 
 from .config import (
     LEAN_TOOL_DETAIL,
@@ -28,64 +28,6 @@ from .version import SERVER_VERSION
 
 SERVER_NAME = "research-ultra-rag-mcp"
 T = TypeVar("T")
-
-
-class SourceMetadataInput(TypedDict):
-    """Reviewed bibliographic metadata accepted by set_source_metadata."""
-
-    __pydantic_config__ = ConfigDict(extra="forbid")
-
-    title: NotRequired[
-        Annotated[str, Field(description="Reviewed title of the source document.")]
-    ]
-    authors: NotRequired[
-        Annotated[
-            list[str],
-            Field(description="Reviewed author names in preferred citation order."),
-        ]
-    ]
-    year: NotRequired[
-        Annotated[
-            int | None,
-            Field(
-                description="Publication year from 1 through 9999, or null if unknown.",
-                ge=1,
-                le=9999,
-            ),
-        ]
-    ]
-    doi: NotRequired[
-        Annotated[
-            str,
-            Field(
-                description="Reviewed DOI, normally without a https://doi.org/ prefix."
-            ),
-        ]
-    ]
-    categories: NotRequired[
-        Annotated[
-            list[str],
-            Field(description="Reviewed broad categories used to filter this source."),
-        ]
-    ]
-    keywords: NotRequired[
-        Annotated[
-            list[str],
-            Field(description="Reviewed specific keywords used to filter this source."),
-        ]
-    ]
-    project: NotRequired[
-        Annotated[
-            list[str],
-            Field(
-                description=(
-                    "Reviewed project tags recording which project this source was "
-                    "gathered for. Used to filter this source, and normally the "
-                    "project's own name."
-                )
-            ),
-        ]
-    ]
 
 
 ChunkSize: TypeAlias = Annotated[
@@ -197,7 +139,7 @@ ProjectFilter: TypeAlias = Annotated[
             "Reviewed project tags to require; a result must carry every supplied "
             "project. A project tag records which project a source was gathered "
             "for, so it is normally the server's own project name and this layer "
-            "matters when a corpus is bundled, imported, or shared. "
+            "matters when a corpus is shared between projects. "
             "`status.projects` lists the current inventory. Omit or pass null for "
             "no filter."
         )
@@ -314,7 +256,7 @@ SourcePath: TypeAlias = Annotated[
         min_length=1,
     ),
 ]
-MetadataSourceId: TypeAlias = Annotated[
+SourceIdSelector: TypeAlias = Annotated[
     str | None,
     Field(
         description=(
@@ -324,26 +266,12 @@ MetadataSourceId: TypeAlias = Annotated[
         min_length=1,
     ),
 ]
-MetadataSourcePath: TypeAlias = Annotated[
+SourcePathSelector: TypeAlias = Annotated[
     SourcePath | None,
     Field(
         description=(
-            "Compatibility selector using list_sources.source_relative_path. "
-            "Provide exactly one of source_id or source_path."
-        )
-    ),
-]
-ReviewedMetadata: TypeAlias = Annotated[
-    SourceMetadataInput,
-    Field(
-        description=(
-            "Complete reviewed metadata override for the source. Supported fields are "
-            "title, authors, year, doi, categories, keywords, and project; omitted "
-            "fields remove "
-            "their previous overrides and an empty object restores all automatic "
-            "values. Explicit empty values clear an automatically extracted field. "
-            "For a source in the selected generation, the new values apply "
-            "immediately without ingestion."
+            "Filename selector: the source's source_relative_path as reported by "
+            "list_sources or search. Provide exactly one of source_id or source_path."
         )
     ),
 ]
@@ -363,25 +291,6 @@ ExclusionReason: TypeAlias = Annotated[
             "Human-readable reason for the decision, such as identifying another "
             "file as the preferred copy. Required when included is false; omit or "
             "pass null when restoring a source."
-        )
-    ),
-]
-BundleName: TypeAlias = Annotated[
-    str,
-    Field(
-        description=(
-            "Filename of a .research-rag.zip archive already placed directly in "
-            "the project's .research-rag/bundles directory. Paths are rejected."
-        ),
-        min_length=1,
-    ),
-]
-ActivateImport: TypeAlias = Annotated[
-    bool,
-    Field(
-        description=(
-            "Whether to select the imported generation after all validation and "
-            "local index reconstruction succeeds."
         )
     ),
 ]
@@ -681,49 +590,10 @@ def create_server(
             "openWorldHint": False,
         }
     )
-    async def set_source_metadata(
-        metadata: ReviewedMetadata,
-        source_id: MetadataSourceId = None,
-        source_path: MetadataSourcePath = None,
-    ) -> dict[str, Any]:
-        """Set reviewed metadata for one identified PDF or EPUB source.
-
-        Supported fields are title, authors, year, doi, categories, keywords, and
-        project. For a source already in the selected generation, the update
-        immediately affects source listings, search filters and results,
-        citations, and neighboring passages without rebuilding the immutable
-        indexes. Ingestion is required only when the source is absent from the
-        selected generation. Identify the source with exactly one of source_id
-        or source_path; the path form remains available for compatibility and
-        uses list_sources.source_relative_path. Omitted metadata fields remove
-        their previous overrides, an empty object restores all automatic
-        values, and explicit empty values clear an automatically extracted
-        field.
-        """
-
-        return _present(
-            "set_source_metadata",
-            await _tool_call(
-                lambda: service().set_source_metadata(
-                    metadata=metadata,
-                    source_id=source_id,
-                    source_path=source_path,
-                )
-            ),
-        )
-
-    @app.tool(
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        }
-    )
     async def set_source_inclusion(
         included: InclusionFlag,
-        source_id: MetadataSourceId = None,
-        source_path: MetadataSourcePath = None,
+        source_id: SourceIdSelector = None,
+        source_path: SourcePathSelector = None,
         reason: ExclusionReason = None,
     ) -> dict[str, Any]:
         """Include or exclude a PDF/EPUB from the project knowledge base.
@@ -745,53 +615,6 @@ def create_server(
                     included=included,
                     reason=reason,
                 )
-            ),
-        )
-
-    @app.tool(
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        }
-    )
-    async def export_bundle() -> dict[str, Any]:
-        """Export the fresh current generation and all original sources.
-
-        The validated archive is written beneath .research-rag/bundles and is
-        accompanied by a SHA-256 sidecar. Export is refused when the generation
-        is stale or requires an upgrade. The user is responsible for the right
-        to redistribute every included PDF and EPUB.
-        """
-
-        return _present("export_bundle", await _tool_call(service().export_bundle))
-
-    @app.tool(
-        annotations={
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        }
-    )
-    async def import_bundle(
-        bundle_name: BundleName,
-        activate: ActivateImport = True,
-    ) -> dict[str, Any]:
-        """Validate a project bundle and reconstruct local BM25/Qdrant indexes.
-
-        Existing source files are accepted only when their SHA-256 matches the
-        bundled original; conflicting files are never overwritten. Bundled
-        reviewed metadata and exclusions replace the project's portable copies.
-        The current generation pointer changes last and only when activate is
-        true.
-        """
-
-        return _present(
-            "import_bundle",
-            await _tool_call(
-                lambda: service().import_bundle(bundle_name, activate=activate)
             ),
         )
 

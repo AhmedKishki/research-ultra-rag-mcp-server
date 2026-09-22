@@ -61,18 +61,8 @@ RESEARCH_UI_PROFILE = UIProfile(
     ),
     result_text_label="Cleaned semantic text — not for direct quotation",
     copy_text_label="Copy semantic text",
-    bundle_import_intro=(
-        "Place the archive in this project's .research-rag/bundles directory, "
-        "then enter its filename. Existing source files are never overwritten; "
-        "bundled reviewed metadata and exclusions replace the local copies."
-    ),
-    bundle_export_warning=(
-        "Export this generation? The bundle contains complete original PDF/EPUB "
-        "works and derived text. You are responsible for redistribution rights."
-    ),
     capabilities=UICapabilities(
-        bundle_export=True,
-        bundle_import=True,
+        metadata=False,
         force_recompute=True,
         source_selection=True,
         category_partitions=True,

@@ -1,10 +1,32 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pymupdf
 import pytest
 from ebooklib import epub
+
+from research_ultra_rag_mcp.config import ResearchConfig
+from research_ultra_rag_mcp.storage import (
+    load_metadata_overrides,
+    write_metadata_overrides,
+)
+
+
+def write_reviewed_metadata(
+    config: ResearchConfig,
+    relative_path: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Write one reviewed-metadata override the way a person edits the file."""
+
+    overrides = load_metadata_overrides(config.metadata_path)
+    if metadata:
+        overrides[relative_path] = metadata
+    else:
+        overrides.pop(relative_path, None)
+    write_metadata_overrides(config.metadata_path, overrides)
 
 
 def write_pdf(path: Path, pages: list[str], *, title: str = "Test PDF") -> None:

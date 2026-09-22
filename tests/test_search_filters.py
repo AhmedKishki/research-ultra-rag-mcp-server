@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import write_pdf
+from conftest import write_pdf, write_reviewed_metadata
 from test_service import FakeDenseBackend, FakeUltraRAG
 
 from research_ultra_rag_mcp.config import resolve_config
@@ -147,16 +147,18 @@ def test_reviewed_exclusion_wins_over_a_search_include(project: Path) -> None:
 
 def test_categories_partition_the_corpus_for_search_and_listing(project: Path) -> None:
     async def exercise() -> None:
-        service, source_ids = await _build_project(project)
+        service, _source_ids = await _build_project(project)
         assert (await service.status())["categories"] == []
 
-        await service.set_source_metadata(
-            metadata={"categories": ["Cobalt corpus"]},
-            source_id=source_ids["cobalt.pdf"],
+        write_reviewed_metadata(
+            service.config,
+            "cobalt.pdf",
+            {"categories": ["Cobalt corpus"]},
         )
-        await service.set_source_metadata(
-            metadata={"categories": ["Waste corpus"]},
-            source_id=source_ids["waste.pdf"],
+        write_reviewed_metadata(
+            service.config,
+            "waste.pdf",
+            {"categories": ["Waste corpus"]},
         )
 
         assert (await service.status())["categories"] == [
@@ -208,13 +210,15 @@ def test_categories_partition_the_corpus_for_search_and_listing(project: Path) -
 def test_source_selection_combines_with_categories(project: Path) -> None:
     async def exercise() -> None:
         service, source_ids = await _build_project(project)
-        await service.set_source_metadata(
-            metadata={"categories": ["Shared corpus"]},
-            source_id=source_ids["cobalt.pdf"],
+        write_reviewed_metadata(
+            service.config,
+            "cobalt.pdf",
+            {"categories": ["Shared corpus"]},
         )
-        await service.set_source_metadata(
-            metadata={"categories": ["Shared corpus"]},
-            source_id=source_ids["waste.pdf"],
+        write_reviewed_metadata(
+            service.config,
+            "waste.pdf",
+            {"categories": ["Shared corpus"]},
         )
 
         selected = await service.search(
@@ -234,16 +238,18 @@ def test_source_selection_combines_with_categories(project: Path) -> None:
 
 def test_project_layer_selects_and_reports(project: Path) -> None:
     async def exercise() -> None:
-        service, source_ids = await _build_project(project)
+        service, _source_ids = await _build_project(project)
         assert (await service.status())["projects"] == []
 
-        await service.set_source_metadata(
-            metadata={"project": ["ai-and-fetishism"]},
-            source_id=source_ids["cobalt.pdf"],
+        write_reviewed_metadata(
+            service.config,
+            "cobalt.pdf",
+            {"project": ["ai-and-fetishism"]},
         )
-        await service.set_source_metadata(
-            metadata={"project": ["other-project"]},
-            source_id=source_ids["waste.pdf"],
+        write_reviewed_metadata(
+            service.config,
+            "waste.pdf",
+            {"project": ["other-project"]},
         )
 
         assert (await service.status())["projects"] == [
@@ -293,22 +299,24 @@ def test_project_layer_selects_and_reports(project: Path) -> None:
 
 def test_three_metadata_layers_combine(project: Path) -> None:
     async def exercise() -> None:
-        service, source_ids = await _build_project(project)
-        await service.set_source_metadata(
-            metadata={
+        service, _source_ids = await _build_project(project)
+        write_reviewed_metadata(
+            service.config,
+            "cobalt.pdf",
+            {
                 "project": ["ai-and-fetishism"],
                 "categories": ["marxism"],
                 "keywords": ["fetishism", "use value"],
             },
-            source_id=source_ids["cobalt.pdf"],
         )
-        await service.set_source_metadata(
-            metadata={
+        write_reviewed_metadata(
+            service.config,
+            "waste.pdf",
+            {
                 "project": ["ai-and-fetishism"],
                 "categories": ["political ecology"],
                 "keywords": ["waste"],
             },
-            source_id=source_ids["waste.pdf"],
         )
 
         matched = await service.search(

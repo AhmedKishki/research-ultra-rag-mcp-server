@@ -45,8 +45,8 @@ Any question that needs a user choice must be presented as a numbered list of co
 ## Current compatibility baseline
 
 - Package: `research-ultra-rag-mcp`
-- Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, `research-ultra-rag-verify`, and `research-ultra-rag-bundle`
-- Version: `0.16.0`
+- Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
+- Version: `0.17.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -63,7 +63,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Ingestion selects only regular PDF and EPUB files beneath the configured sources directory.
 - Reject source symlinks and path traversal.
 - Store every project-owned research-RAG artifact beneath `<project>/.research-rag` by default: portable identity/review state at its root and all disposable derived state beneath `.research-rag/runtime`. An explicit `--runtime-root` may relocate derived state only, and only to an absolute path claimed by a marker naming this project's `project_id`; review state must stay in the project, and two projects must never share one runtime root. The single exception outside that directory is the machine-local `<project>/open-ui.sh` symlink to the generated launcher beneath `.research-rag/bin/`; nothing else belongs outside `.research-rag`.
-- Share only immutable model binaries through the configured user cache. Never place documents, metadata, chunks, vectors, indexes, bundles, logs, or query state in global storage.
+- Share only immutable model binaries through the configured user cache. Never place documents, metadata, chunks, vectors, indexes, logs, or query state in global storage.
 - Never edit or write the original source documents.
 - Keep source exclusions explicit, reversible, project-local, and immediately enforced by every retrieval surface. Do not add automatic duplicate guessing.
 - Do not switch `current.json` until a generation is completely indexed.
@@ -74,7 +74,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Record the dense backend in each generation manifest and dispatch retrieval from that record. Never rebuild an existing generation with a different backend, and never assume a fixed dense index directory name.
 - Search results must mark every returned passage with `direct_quote_safe=false` and present `text` as cleaned semantic text; direct quotations must come from the original.
 - Every MCP tool answers with the lean projection in `tool_views.py`. `--tool-detail full` is the developer debugging mode and returns the service payload unchanged. Never widen the lean projection for a diagnostic need and never add a tool surface that bypasses it.
-- Diagnostic surfaces request the complete payload with `create_research_transport(..., tool_detail=FULL_TOOL_DETAIL)`: the UI adapter, the terminal verifier, the bundle client, and the evaluation harness. A new consumer that reads internals must do the same.
+- Diagnostic surfaces request the complete payload with `create_research_transport(..., tool_detail=FULL_TOOL_DETAIL)`: the UI adapter, the terminal verifier, and the evaluation harness. A new consumer that reads internals must do the same.
 - Keep the lean answer and the service payload describing the same facts: a field a lean projection omits must still exist, and mean the same thing, in what `--tool-detail full` returns.
 - Keep MCP stdout reserved for protocol messages.
 - Keep the UI bound to loopback addresses. Do not add remote exposure or authentication assumptions without an explicit security design.
@@ -96,7 +96,6 @@ research-ultra-rag-mcp
 ├── PDF page extraction
 ├── EPUB section extraction
 ├── metadata and provenance
-├── portable project bundles
 ├── immutable generations
 ├── FastEmbed CPU embeddings
 ├── project-local dense index (exact scan by default)
@@ -128,8 +127,6 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `sources.py`: allowlist, source discovery, hashing, and metadata validation.
 - `extraction.py`: layout-aware PDF/EPUB extraction and bibliographic identity.
 - `artifact_lookup.py`: generation-local SQLite offsets for selective canonical chunk/unit reads and exact-text vector reuse without copied corpus text.
-- `bundle.py`: deterministic export and hostile-archive-safe import staging.
-- `bundle_cli.py`: terminal export/import client.
 - `storage.py`: atomic JSON state and JSONL artifacts.
 - `launcher.py`: the generated per-project UI launcher and its project-root link.
 - `version.py`: the version this process started with, the installed version, the shared-UI version, and the `status.version` block and browser header label they feed.
@@ -159,7 +156,6 @@ Portable, project-owned state lives at:
 <project>/.research-rag/source-catalog.json
 <project>/.research-rag/source-metadata.json
 <project>/.research-rag/source-exclusions.json
-<project>/.research-rag/bundles/
 ```
 
 `project.json` is authoritative for the stable project ID, name, and project-relative source directory. CLI entrypoints reuse its source setting when `--source-directory` is omitted; an explicit differing value must fail.
@@ -186,10 +182,9 @@ Each tool answers with the projection from `tool_views.py`; the bullets below na
 - `search`: hybrid-by-default retrieval with selectable BM25/dense modes, optional reranking, passage-ranked or reference-grouped structured evidence, source selection by stable `source_id` (`source_ids`, `exclude_source_ids`), and the three reviewed-metadata layers (`projects` and `projects_any`, `categories` and `categories_any`, `keywords`, `document_ids`).
 - `list_sources`: inspect indexed documents and metadata, filter by `projects`, `projects_any`, `categories`, `categories_any`, or `keywords`, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
 - `get_passage`: retrieve neighboring chunks from the same document.
-- `set_source_metadata`: update authoritative reviewed metadata immediately for every retrieval surface when the source is in the selected generation; an unindexed source still requires ingestion. Require exactly one of `source_id` or `source_path`, preferring the ID for agent operations.
 - `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed source without modifying the source file; rebuild later to align the indexes. It uses the same exact-one-selector rule.
-- `export_bundle`: export a fresh generation and all original sources beneath the project's portable bundle directory.
-- `import_bundle`: validate a project-owned bundle, reconstruct BM25 and the recorded dense backend from chunks/vectors, and install non-conflicting originals plus portable state. Switch current last when activation is requested; otherwise keep the pointer while imported metadata/exclusions immediately govern matching retrieval.
+
+Reviewed metadata has no tool. `set_source_metadata`, `export_bundle`, and `import_bundle` were retired: the server exposes retrieval operations, and metadata review happens by editing the project's `.research-rag/source-metadata.json` itself.
 
 Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract. Update tests and documentation when changing them.
 
@@ -219,7 +214,7 @@ Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 - Do not retain raw coordinate extraction. The untouched PDF/EPUB is the quote authority. Preserve legend-marker meaning in cleaned-unit annotations.
 - Schema-1 generations are BM25-only. Keep them usable when a caller explicitly requests `bm25`; require a new ingestion before dense or hybrid search.
 - Exclusions are path-based, stored outside generations, and applied to BM25, dense, source-list, and passage results immediately. Ingestion snapshots the exclusion revision and omits excluded documents from both indexes. Inclusion can only restore current retrieval immediately if the current generation still contains that source.
-- Bundle import must reject traversal, symlinks/non-regular members, duplicate entries, checksum/schema/model failures, project-ID mismatch, unsafe manifest paths, and differing bytes at an existing source path. Never export live indexes, locks, logs, runtime files, or model caches. Import intentionally replaces reviewed metadata/exclusions with the validated bundled copies and must disclose that behavior.
+- Project portability is copying, not a format: `sources/` plus `.research-rag/` is the whole project, and `runtime/` rebuilds. A relocated runtime root stays claimed by its owning project marker, so never point a second project at one.
 
 ## Metadata and extraction contract
 

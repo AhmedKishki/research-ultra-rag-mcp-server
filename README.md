@@ -16,12 +16,11 @@ Plain-language summary of every capability, and why it is there:
 - **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
 - **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
-- **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, extraction warnings, and a locator that points back into the original file (PDF page, or EPUB section), so you can always find the page behind a passage.
+- **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, and a locator that points back into the original file (PDF page, or EPUB section), so you can always find the page behind a passage.
 - **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by three layers of reviewed metadata: the project a source was gathered for (`projects`, `projects_any`), the branch it belongs to (`categories`, `categories_any`), and the terms that identify it (`keywords`), plus `document_ids`. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
-- **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
+- **Reviewed metadata that applies immediately.** Fix a wrong author or year in the project's review-state file and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
-- **Portable project bundles.** Export a project (PDFs, review state, and the cleaned artifacts) as one archive and import it on another machine.
 - **Resumable ingestion.** Every call has a soft time budget. If it runs out, the server returns a checkpointed `in_progress` result and you simply call it again. Client timeouts, cancellations, and restarts lose at most one small batch of work.
 - **Text-health policy with disclosure.** Corrupt text (broken character maps) and chunks with no readable letters or digits are excluded, and `status` reports the corpus-level counts. A quotation in another language or script is *not* excluded — it is returned with an advisory `text_notes` entry instead.
 - **An embedding-fidelity audit.** Each chunk records how many embedding tokens it contains and whether its vector covers only the beginning of its text, so silent truncation is counted in the ingestion and status output.
@@ -131,13 +130,13 @@ A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.exampl
 
 ### What a tool answer contains
 
-A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `rank`, `chunk_id`, `source_id`, `source_relative_path`, `title`, `authors`, `year`, `doi`, `locator`, `citation`, `text`, `direct_quote_safe: false`, and `text_notes` or `metadata_warnings` when there are any. The reference view returns `reference_groups` in place of `hits`.
+A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `chunk_id`, `source_id`, `source_relative_path` (the filename), `title`, `authors`, `citation`, `locator`, `text`, `direct_quote_safe: false`, and `text_notes` when there is any; the year and DOI are part of the citation. The reference view returns `reference_groups` instead, where each group names its source once and lists the passages selected from it.
 
-`status` returns readiness, `stale`, the source and generation counts, `chunk_count`, `categories`, `projects`, `available_retrieval_methods`, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `ingestion_progress`, `retained_generation_count`, `retained_generation_bytes`, and every retained generation. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. The remaining tools return the identity of what they changed and what it applies to.
+`status` returns readiness, `stale`, the source and generation counts, `chunk_count`, `categories`, `projects`, `available_retrieval_methods`, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `metadata_pending_source_count`, `ingestion_progress`, `retained_generation_count`, `retained_generation_bytes`, and every retained generation. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. `set_source_inclusion` returns the decision, its reason, `effective_immediately`, and whether the next ingestion should rebuild without the source.
 
 A field that is empty, null, or false is omitted, so an absent field means there is nothing to report. `stale` (where `null` means the freshness check was skipped) and `reranked` are always present.
 
-`--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) returns the complete payload instead: ranking and reranking scores, candidate and gate counts, withheld candidates with their reason codes, per-field metadata provenance, embedding audits, filesystem paths, model identifiers, revision fingerprints, and phase timings. It is a developer debugging mode: the browser UI, `research-ultra-rag-verify`, `research-ultra-rag-bundle`, and the evaluation harness select it for their own server, and no part of this project requires it.
+`--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) returns the complete payload instead: ranking and reranking scores, candidate and gate counts, withheld candidates with their reason codes, per-field metadata provenance, embedding audits, filesystem paths, model identifiers, revision fingerprints, and phase timings. It is a developer debugging mode: the browser UI, `research-ultra-rag-verify`, and the evaluation harness select it for their own server, and no part of this project requires it.
 
 ### Let the server host the browser UI (optional)
 
@@ -170,7 +169,7 @@ Then open `http://127.0.0.1:5051`. What this does and does not do:
 Two practical notes:
 
 - Running the executable by hand looks like nothing happens. That is correct — it is a stdio server waiting for an MCP client to send protocol messages.
-- Keep the write tools out of automatic approval at first. Ingestion, metadata decisions, exclusions, exports, and imports either persist state or create large files, so they are worth confirming once.
+- Keep `set_source_inclusion` out of automatic approval at first. It persists a reviewed decision, so it is worth confirming once.
 
 ## First use
 
@@ -198,7 +197,7 @@ What to expect from a first build:
 
 Two identifiers matter, and they mean different things:
 
-- A `source_id` is derived from the project ID and the source-relative path. It survives changes to the file's contents, but renaming or moving the file creates a new `source_id`. Use it for `set_source_metadata` and `set_source_inclusion`.
+- A `source_id` is derived from the project ID and the source-relative path. It survives changes to the file's contents, but renaming or moving the file creates a new `source_id`. Use it, or the filename, with `set_source_inclusion`.
 - A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change. It is an internal identity for the `document_ids` search filter rather than the durable handle, and it is not reported in answers.
 
 Calling `list_sources` also registers discovered IDs in the portable project catalog. That is what keeps a registered ID addressable when an original is renamed, moved, or temporarily absent — the full-detail payload lists those records as `known_sources` — without guessing that metadata from an old path belongs to a new one. `reviewed_metadata_sources` lists every saved override by the same stable ID, so you can inspect, replace, or remove each persisted decision even if the original file is not present right now.
@@ -215,7 +214,7 @@ Prompts that work well:
 - "Compare how these sources explain …; distinguish agreement from conflict."
 - "Get the neighboring passages around chunk `chk_…` before interpreting it."
 - "Open the original at the returned path and page before quoting it."
-- "List sources with missing metadata or extraction warnings. Treat automatic metadata as provisional; show me its provenance, then use the source ID with `set_source_metadata` after I review the original. Apply the correction now without re-ingesting."
+- "List sources with missing metadata or extraction warnings. Treat automatic metadata as provisional; tell me which entry in `.research-rag/source-metadata.json` looks wrong, and confirm the correction shows up without re-ingesting."
 - "List the source IDs, then exclude the duplicate source ID as a reviewed duplicate of the preferred source ID; do not delete either file."
 - "Restore that source ID, then re-ingest if it is absent from the current generation."
 
@@ -252,7 +251,7 @@ Reviewed source metadata carries three filter layers, and each is independent:
 | `categories` | the branch or branches the source belongs to | `marxism`, `critical realism`, `political ecology` |
 | `keywords` | the terms that identify the source, or that it leans on | `fetishism`, `use value` |
 
-`categories`, `categories_any`, `projects`, `projects_any`, and `keywords` all come from reviewed source metadata, so an agent can define them itself: `set_source_metadata` accepts them per source, applies immediately, and needs no re-ingestion. The strings are free, so they work as corpus partitions — a theoretical branch, a research strand, a sub-project — and one search can cover several parts at once:
+`categories`, `categories_any`, `projects`, `projects_any`, and `keywords` all come from reviewed source metadata, so you can define them yourself in the project's `source-metadata.json`; an edit applies immediately and needs no re-ingestion. The strings are free, so they work as corpus partitions — a theoretical branch, a research strand, a sub-project — and one search can cover several parts at once:
 
 ```json
 {
@@ -264,7 +263,7 @@ Reviewed source metadata carries three filter layers, and each is independent:
 }
 ```
 
-Each filter is all-of at the plural name (`categories`, `projects`, `keywords` require every listed value) and any-of at the `_any` variant (`categories_any`, `projects_any`). A one-project server normally tags every source with its own project name, so the project layer is a passthrough there; it becomes useful when a corpus is exported as a bundle, imported into another project, or shared. `status` reports both inventories — `categories` and `projects`, each with its `searchable_source_count` — so an agent can see the parts before searching them, and reviewed exclusions are not counted there. The browser UI lists the same partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
+Each filter is all-of at the plural name (`categories`, `projects`, `keywords` require every listed value) and any-of at the `_any` variant (`categories_any`, `projects_any`). A one-project server normally tags every source with its own project name, so the project layer is a passthrough there; it becomes useful when a corpus is copied into another project or shared. `status` reports both inventories — `categories` and `projects`, each with its `searchable_source_count` — so an agent can see the parts before searching them, and reviewed exclusions are not counted there. The browser UI lists the same partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
 
 ### Checking freshness per query
 
@@ -279,7 +278,7 @@ Adding, removing, or changing source content — or changing which sources are i
 - **Re-ingest changes** verifies every source hash and reuses compatible documents, chunks, and vectors, then rebuilds both indexes. This is the normal path and it is much cheaper than starting over.
 - **Regenerate** uses `--force-recompute` and deliberately ignores all reuse.
 
-Reviewed metadata is different from staleness. For a source already in the selected generation, `set_source_metadata` updates listings, filters, results, citations, and neighboring passages immediately (`effective_immediately`). It does not rewrite the immutable generation and does not change chunk IDs. A metadata-only difference is reported through the metadata overlay and snapshot fields (`metadata_overlay_active`) rather than as stale retrieval state. If you set metadata for a source that is missing from the selected generation, the decision is saved and takes effect after the next ingestion.
+Reviewed metadata is different from staleness. For a source already in the selected generation, an edit to `source-metadata.json` updates listings, filters, results, citations, and neighboring passages at the next read. It does not rewrite the immutable generation and does not change chunk IDs. A metadata-only difference is reported through the metadata overlay field (`metadata_overlay_active`) rather than as stale retrieval state. Metadata for a source that is missing from the selected generation is saved in the file and takes effect after the next ingestion.
 
 ### What gets excluded, and what does not
 
@@ -300,7 +299,7 @@ uv run research-ultra-rag-ui \
   --project-root /absolute/path/to/my-research-project
 ```
 
-Open [http://127.0.0.1:5051](http://127.0.0.1:5051) if a browser does not open by itself. The UI binds to loopback only and calls the same nine public MCP tools against the same project state as an agent. Its header shows the project name and, underneath it, the versions of this server and of the pinned browser-UI package, so it is visible which software the page is running.
+Open [http://127.0.0.1:5051](http://127.0.0.1:5051) if a browser does not open by itself. The UI binds to loopback only and calls the same six public MCP tools against the same project state as an agent. Its header shows the project name and, underneath it, the versions of this server and of the pinned browser-UI package, so it is visible which software the page is running.
 
 What you can do in it:
 
@@ -309,13 +308,10 @@ What you can do in it:
 - run hybrid, BM25, or dense search with filters and optional reranking, including limiting a search to or away from named sources and searching one or several category partitions at once;
 - read neighboring passages around a hit;
 - open a PDF in the browser, or download an EPUB original;
-- edit reviewed metadata and see it apply immediately;
 - exclude or restore a source without deleting anything;
 - **Create generation** for the first normal build;
-- **Re-ingest changes** for verified reuse after the project changes;
-- **Regenerate** to force extraction, chunking, and embedding again;
-- export a bundle; and
-- import a bundle already placed in `.research-rag/bundles/`.
+- **Re-ingest changes** for verified reuse after the project changes; and
+- **Regenerate** to force extraction, chunking, and embedding again.
 
 One UI process serves one project; to keep two open at once, start a second process with another project root and port, for example `--port 5052`. During ingestion the UI shows the operation as busy. A project lock serialises agent and UI operations, so a second request waits instead of reading a half-built index. The UI follows checkpointed `in_progress` responses automatically until the generation is ready or nothing changed.
 
@@ -375,7 +371,6 @@ my-research-project/
     ├── source-catalog.json               durable source ID-to-path registry
     ├── source-metadata.json              authoritative reviewed metadata overlay
     ├── source-exclusions.json            reviewed decisions, when present
-    ├── bundles/                          exported/import-ready archives
     └── runtime/                          disposable derived state
         ├── current.json                  selected generation pointer
         ├── project.lock
@@ -400,7 +395,7 @@ How to read that tree:
 
 - `sources/` is the authority for exact quotation. Nothing in this server edits it.
 - The only research-RAG path outside `.research-rag/` is the single `open-ui.sh` symlink in the project root. The server creates it on first use, never overwrites an existing file or symlink, and `status.ui_launcher` reports it; delete the symlink to opt out.
-- Inside `.research-rag/`, the top-level JSON files and `bundles/` are **portable review state**: your decisions about the project. They are the part worth backing up.
+- Inside `.research-rag/`, the top-level JSON files are **portable review state**: your decisions about the project. They are the part worth backing up.
 - `runtime/` is **derived state**. It can be rebuilt from `sources/` plus the portable state, so it is safe to delete if you are willing to rebuild.
 - Document text, embeddings, indexes, logs, and query state never cross project roots. Only immutable model binaries are shared.
 
@@ -452,7 +447,7 @@ Mistakes fail loudly rather than doing nothing quietly, so you can trust a hand 
 - a source path that is absolute, contains `..` or a backslash, or is otherwise not normalized is rejected;
 - any `schema_version` other than 1 is rejected.
 
-The same edits are also available as guided paths: every one of the seven fields is editable in the browser UI's metadata dialog, and an agent can call `set_source_metadata`. All three routes write the same file, a bundle export carries it, and `list_sources` reports `metadata_provenance` per field so you can see which values are reviewed and which are still automatic.
+Editing that file is the only route for metadata: the tool surface has no metadata writer, and the browser UI has no metadata dialog. `--tool-detail full` reports `metadata_provenance` per field in `list_sources`, so you can see which values are reviewed and which are still automatic.
 
 ### Put derived state on fast local storage
 
@@ -475,32 +470,21 @@ Rules that keep this safe:
 
 A bind mount still works if you prefer the path to stay literally inside the project: stop every research MCP, UI, and verifier process, copy `runtime/` to the fast device, then `mount --bind` it at `<project>/.research-rag/runtime` and add that to `/etc/fstab`. The trade-off is that the server cannot detect a bind mount and cannot warn you when a moved project loses it. The two approaches are mutually exclusive; `--runtime-root` is the portable one.
 
-## Export, import, and move a project
+## Move or back up a project
 
-An agent can call `export_bundle` and `import_bundle`, and the UI has matching buttons. From a terminal:
+A project is self-contained: copy the project directory — `sources/` plus `.research-rag/` — and the copy is a complete project on another disk or machine. `runtime/` is disposable and can be left behind; it is rebuilt from `sources/` and the portable review state on the next ingestion.
 
-```bash
-uv run research-ultra-rag-bundle export \
-  --project-root /absolute/path/to/my-research-project
-```
+What to keep:
 
-```bash
-uv run research-ultra-rag-bundle import \
-  --project-root /absolute/path/to/my-research-project \
-  bundle-name.research-rag.zip
-```
+- `sources/` — the originals, and the only authority for exact quotation;
+- `.research-rag/project.json`, `source-metadata.json`, `source-exclusions.json`, `source-catalog.json` — the project identity and your reviewed decisions;
+- `.research-rag/runtime/` — optional; it holds the generations, so copying it keeps the project searchable without a rebuild.
 
-Export writes into `.research-rag/bundles/`. The terminal command accepts an archive from anywhere, copies it safely into that directory, and then invokes the same import an agent or the UI would use.
-
-A bundle contains every original PDF/EPUB (including excluded ones), the project descriptor, your reviewed metadata and exclusions, the generation manifest, cleaned semantic units and chunks, and the float32 embeddings in stable chunk order. It deliberately excludes live BM25 and dense index directories, locks, logs, temporary and runtime files, and model caches — those are rebuilt.
-
-Import validates archive paths and entry types, checksums, project ID, schemas, embedding compatibility, and every original. It refuses to overwrite an existing path with different bytes. It rebuilds both indexes without re-extracting or re-embedding, and it moves `current.json` last, only when you asked it to activate the imported generation.
-
-**You are responsible for having the right to redistribute** every PDF and EPUB you put in a bundle.
+Continue in one place at a time. Two servers pointed at the same project root, or at a copy that shares a relocated runtime root, are refused by the project lock rather than silently interleaved.
 
 ## Complete MCP tool reference
 
-Nine tools are exposed. All are project-scoped and none of them deletes a source file.
+Six tools are exposed. All are project-scoped and none of them deletes a source file.
 
 | Tool | What it does |
 |---|---|
@@ -509,10 +493,7 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 | `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by the same `projects`, `projects_any`, `categories`, `categories_any`, and `keywords`. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its neighbors and provenance. |
-| `set_source_metadata` | Saves a reviewed metadata correction for one source. Applies immediately to an indexed source. |
 | `set_source_inclusion` | Excludes or restores one source. Reversible; never deletes the file. |
-| `export_bundle` | Writes a portable project archive. |
-| `import_bundle` | Validates and reconstructs a project from an archive placed in `.research-rag/bundles/`. |
 
 Every one of them answers as described under [What a tool answer contains](#what-a-tool-answer-contains).
 

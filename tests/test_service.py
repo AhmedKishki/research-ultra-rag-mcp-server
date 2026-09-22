@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import write_epub, write_pdf
+from conftest import write_epub, write_pdf, write_reviewed_metadata
 
 import research_ultra_rag_mcp.service as service_module
 from research_ultra_rag_mcp.config import (
@@ -614,7 +614,8 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     dense = FakeDenseBackend()
     service = ResearchService(config, fake, dense=dense)  # type: ignore[arg-type]
 
-    metadata_result = await service.set_source_metadata(
+    write_reviewed_metadata(
+        config,
         "article.pdf",
         {
             "authors": ["Researcher One"],
@@ -623,7 +624,6 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
             "keywords": ["labour", "AI"],
         },
     )
-    assert metadata_result["requires_ingest"] is True
 
     result = await service.ingest(chunk_size=100, chunk_overlap=10)
     assert result["document_count"] == 1
@@ -822,7 +822,8 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
         dense=dense,
     )
 
-    before_ingest = await service.set_source_metadata(
+    write_reviewed_metadata(
+        config,
         "article.pdf",
         {
             "title": "Incorrect Reviewed Title",
@@ -833,9 +834,6 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
             "keywords": ["old keyword"],
         },
     )
-    assert before_ingest["effective_immediately"] is False
-    assert before_ingest["requires_ingest"] is True
-    assert before_ingest["effective_metadata"] is None
     pending_status = await service.status()
     assert pending_status["metadata_overlay_active"] is False
     assert pending_status["generation_metadata_snapshot_outdated"] is False
@@ -851,7 +849,8 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
         if path.is_file()
     }
 
-    corrected = await service.set_source_metadata(
+    write_reviewed_metadata(
+        config,
         "article.pdf",
         {
             "title": "Corrected\nReviewed Title",
@@ -863,41 +862,6 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
             "project": ["new\nproject"],
         },
     )
-    assert corrected["metadata"] == {
-        "title": "Corrected Reviewed Title",
-        "authors": ["Correct Author"],
-        "year": 2026,
-        "doi": "10.1000/corrected",
-        "categories": ["new category"],
-        "keywords": ["new keyword"],
-        "project": ["new project"],
-    }
-    assert corrected["changed"] is True
-    assert corrected["effective_immediately"] is True
-    assert corrected["requires_ingest"] is False
-    assert corrected["generation_metadata_snapshot_outdated"] is True
-    assert corrected["effective_metadata"] == {
-        "title": "Corrected Reviewed Title",
-        "authors": ["Correct Author"],
-        "year": 2026,
-        "doi": "10.1000/corrected",
-        "categories": ["new category"],
-        "keywords": ["new keyword"],
-        "project": ["new project"],
-        "metadata_provenance": {
-            field: "reviewed_override"
-            for field in (
-                "title",
-                "authors",
-                "year",
-                "doi",
-                "categories",
-                "keywords",
-                "project",
-            )
-        },
-        "metadata_warnings": [],
-    }
     assert config.current_path.read_bytes() == current_before
     assert chunks_path.read_bytes() == chunks_before
     assert {
@@ -965,7 +929,8 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
 
     # Explicit empty values authoritatively clear wrong automatic fields. An
     # empty object removes the complete override and restores automatic values.
-    cleared = await service.set_source_metadata(
+    write_reviewed_metadata(
+        config,
         "article.pdf",
         {
             "title": "",
@@ -976,16 +941,6 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
             "keywords": [],
         },
     )
-    assert cleared["metadata"] == {
-        "title": "",
-        "authors": [],
-        "year": None,
-        "doi": "",
-        "categories": [],
-        "keywords": [],
-    }
-    assert cleared["effective_metadata"]["title"] == ""
-    assert cleared["effective_metadata"]["authors"] == []
     explicitly_cleared = (await service.list_sources())["sources"][0]
     assert explicitly_cleared["title"] == ""
     assert explicitly_cleared["authors"] == []
@@ -993,11 +948,7 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
     assert explicitly_cleared["doi"] == ""
     assert (await service.status())["metadata_overlay_active"] is True
 
-    removed = await service.set_source_metadata("article.pdf", {})
-    assert removed["effective_immediately"] is True
-    assert removed["requires_ingest"] is False
-    assert removed["effective_metadata"]["title"] == "Automatic Source Title"
-    assert removed["effective_metadata"]["authors"] == ["Test Author"]
+    write_reviewed_metadata(config, "article.pdf", {})
     fallback = (await service.list_sources())["sources"][0]
     assert fallback["title"] == "Automatic Source Title"
     assert fallback["authors"] == ["Test Author"]
@@ -1026,7 +977,7 @@ def test_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
     asyncio.run(_assert_reviewed_metadata_is_a_runtime_overlay(project))
 
 
-async def _assert_source_ids_drive_agent_metadata_edits(project: Path) -> None:
+async def _assert_source_ids_address_reviewed_sources(project: Path) -> None:
     source_path = project / "sources" / "article.pdf"
     write_pdf(source_path, ["Stable cobalt evidence for source identity."])
     config = resolve_config(project, vanilla_executable=sys.executable)
@@ -1050,20 +1001,13 @@ async def _assert_source_ids_drive_agent_metadata_edits(project: Path) -> None:
             "has_reviewed_metadata": False,
         }
     ]
-    before_ingest = await service.set_source_metadata(
-        metadata={"title": "Reviewed by ID"},
-        source_id=source_id,
-    )
-    assert before_ingest["source_id"] == source_id
-    assert before_ingest["source_relative_path"] == "article.pdf"
-    assert before_ingest["source_path"] == "sources/article.pdf"
-    assert before_ingest["requires_ingest"] is True
+    write_reviewed_metadata(config, "article.pdf", {"title": "Reviewed by ID"})
 
     with pytest.raises(ResearchError, match="exactly one"):
-        await service.set_source_metadata(metadata={"title": "Invalid"})
+        await service.set_source_inclusion(included=True)
     with pytest.raises(ResearchError, match="exactly one"):
-        await service.set_source_metadata(
-            metadata={"title": "Invalid"},
+        await service.set_source_inclusion(
+            included=True,
             source_id=source_id,
             source_path="article.pdf",
         )
@@ -1075,12 +1019,11 @@ async def _assert_source_ids_drive_agent_metadata_edits(project: Path) -> None:
     assert listed["discovered_sources"][0]["source_id"] == source_id
 
     source_path.unlink()
-    corrected = await service.set_source_metadata(
-        metadata={"title": "Corrected after source removal"},
-        source_id=source_id,
+    write_reviewed_metadata(
+        config,
+        "article.pdf",
+        {"title": "Corrected after source removal"},
     )
-    assert corrected["effective_immediately"] is True
-    assert corrected["requires_ingest"] is False
     listed_after_removal = await service.list_sources()
     assert listed_after_removal["discovered_sources"] == []
     assert listed_after_removal["sources"][0]["source_id"] == source_id
@@ -1089,11 +1032,11 @@ async def _assert_source_ids_drive_agent_metadata_edits(project: Path) -> None:
     )
 
 
-def test_source_ids_drive_agent_metadata_edits(project: Path) -> None:
-    asyncio.run(_assert_source_ids_drive_agent_metadata_edits(project))
+def test_source_ids_address_reviewed_sources(project: Path) -> None:
+    asyncio.run(_assert_source_ids_address_reviewed_sources(project))
 
 
-async def _assert_metadata_only_source_remains_addressable_by_id(
+async def _assert_reviewed_metadata_survives_source_removal(
     project: Path,
 ) -> None:
     source = project / "sources" / "temporary.pdf"
@@ -1105,9 +1048,10 @@ async def _assert_metadata_only_source_remains_addressable_by_id(
         dense=FakeDenseBackend(),
     )
     source_id = (await service.list_sources())["discovered_sources"][0]["source_id"]
-    await service.set_source_metadata(
-        source_id=source_id,
-        metadata={"title": "Initial reviewed title"},
+    write_reviewed_metadata(
+        config,
+        "temporary.pdf",
+        {"title": "Initial reviewed title"},
     )
     source.unlink()
 
@@ -1122,31 +1066,43 @@ async def _assert_metadata_only_source_remains_addressable_by_id(
             "indexed_in_current_generation": False,
         }
     ]
-    corrected = await service.set_source_metadata(
-        source_id=source_id,
-        metadata={"title": "Corrected after deletion"},
+    write_reviewed_metadata(
+        config,
+        "temporary.pdf",
+        {"title": "Corrected after deletion"},
     )
-    assert corrected["changed"] is True
-    assert corrected["requires_ingest"] is True
-    assert corrected["effective_metadata"] is None
-    removed = await service.set_source_metadata(source_id=source_id, metadata={})
-    assert removed["changed"] is True
+    corrected = await service.list_sources()
+    assert corrected["reviewed_metadata_sources"][0]["metadata"] == {
+        "title": "Corrected after deletion"
+    }
+    write_reviewed_metadata(config, "temporary.pdf", {})
+    cleared = await service.list_sources()
+    assert cleared["reviewed_metadata_sources"] == []
     assert json.loads(config.metadata_path.read_text(encoding="utf-8"))["sources"] == {}
     restarted = ResearchService(  # type: ignore[arg-type]
         config,
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    edited_again = await restarted.set_source_metadata(
-        source_id=source_id,
-        metadata={"title": "Addressable after clearing"},
+    write_reviewed_metadata(
+        restarted.config,
+        "temporary.pdf",
+        {"title": "Addressable after clearing"},
     )
-    assert edited_again["source_id"] == source_id
-    assert edited_again["requires_ingest"] is True
+    addressable = await restarted.list_sources()
+    assert addressable["reviewed_metadata_sources"] == [
+        {
+            "source_id": source_id,
+            "source_relative_path": "temporary.pdf",
+            "source_path": "sources/temporary.pdf",
+            "metadata": {"title": "Addressable after clearing"},
+            "indexed_in_current_generation": False,
+        }
+    ]
 
 
-def test_metadata_only_source_remains_addressable_by_id(project: Path) -> None:
-    asyncio.run(_assert_metadata_only_source_remains_addressable_by_id(project))
+def test_reviewed_metadata_survives_source_removal(project: Path) -> None:
+    asyncio.run(_assert_reviewed_metadata_survives_source_removal(project))
 
 
 async def _assert_catalog_retains_unindexed_deleted_and_renamed_sources(
@@ -1182,12 +1138,21 @@ async def _assert_catalog_retains_unindexed_deleted_and_renamed_sources(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    saved = await restarted.set_source_metadata(
-        source_id=original_id,
-        metadata={"title": "Reviewed after deletion"},
+    write_reviewed_metadata(
+        restarted.config,
+        "temporary.pdf",
+        {"title": "Reviewed after deletion"},
     )
-    assert saved["source_relative_path"] == "temporary.pdf"
-    assert saved["requires_ingest"] is True
+    addressable = await restarted.list_sources()
+    assert addressable["reviewed_metadata_sources"] == [
+        {
+            "source_id": original_id,
+            "source_relative_path": "temporary.pdf",
+            "source_path": "sources/temporary.pdf",
+            "metadata": {"title": "Reviewed after deletion"},
+            "indexed_in_current_generation": False,
+        }
+    ]
 
 
 def test_catalog_retains_unindexed_deleted_and_renamed_sources(
@@ -1663,13 +1628,12 @@ async def _assert_deleted_excluded_source_is_restorable_by_id(project: Path) -> 
 
     excluded = await service.list_sources()
     assert excluded["excluded_sources"][0]["source_id"] == source_id
-    edited = await service.set_source_metadata(
-        source_id=source_id,
-        metadata={"title": "Reviewed while excluded and missing"},
+    write_reviewed_metadata(
+        service.config,
+        "temporary.pdf",
+        {"title": "Reviewed while excluded and missing"},
     )
-    assert edited["requires_ingest"] is True
-    cleared = await service.set_source_metadata(source_id=source_id, metadata={})
-    assert cleared["changed"] is True
+    write_reviewed_metadata(service.config, "temporary.pdf", {})
     restored = await service.set_source_inclusion(
         source_id=source_id,
         included=True,
@@ -2090,7 +2054,7 @@ async def _assert_selective_reuse_tracks_every_input_change(project: Path) -> No
     assert changed_bytes["reused_document_count"] == 1
     assert changed_bytes["rebuilt_document_count"] == 1
 
-    await service.set_source_metadata("first.pdf", {"categories": ["theory"]})
+    write_reviewed_metadata(config, "first.pdf", {"categories": ["theory"]})
     metadata_changed = await service.ingest(chunk_size=50, chunk_overlap=10)
     assert metadata_changed["status"] == "unchanged"
     assert metadata_changed["generation_id"] == changed_bytes["generation_id"]
@@ -2138,7 +2102,8 @@ async def _assert_ordinary_ingest_migrates_legacy_metadata_storage(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    await service.set_source_metadata(
+    write_reviewed_metadata(
+        config,
         "article.pdf",
         {"title": "Reviewed Title", "authors": ["Reviewed Author"]},
     )
@@ -2179,7 +2144,7 @@ async def _assert_ordinary_ingest_migrates_legacy_metadata_storage(
     # it now reveals the recovered automatic metadata without another build.
     listed = (await service.list_sources())["sources"][0]
     assert listed["title"] == "Reviewed Title"
-    await service.set_source_metadata("article.pdf", {})
+    write_reviewed_metadata(config, "article.pdf", {})
     automatic = (await service.list_sources())["sources"][0]
     assert automatic["title"] == "Automatic Title"
     assert (
@@ -2214,20 +2179,14 @@ async def _assert_pending_metadata_status_is_not_reported_as_active(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    unchanged = await service.set_source_metadata("first.pdf", {})
-    assert unchanged["generation_metadata_snapshot_outdated"] is False
+    write_reviewed_metadata(config, "first.pdf", {})
     initial_status = await service.status()
     assert initial_status["generation_metadata_snapshot_outdated"] is False
     assert initial_status["metadata_overlay_active"] is False
 
     second_source = project / "sources" / "second.pdf"
     write_pdf(second_source, ["Unindexed amber evidence."], title="Second")
-    pending = await service.set_source_metadata(
-        "second.pdf",
-        {"title": "Pending Reviewed Title"},
-    )
-    assert pending["effective_immediately"] is False
-    assert pending["requires_ingest"] is True
+    write_reviewed_metadata(config, "second.pdf", {"title": "Pending Reviewed Title"})
 
     status = await service.status()
     assert status["stale"] is True
@@ -2846,12 +2805,11 @@ async def _assert_metadata_edit_preserves_ingestion_checkpoint(
         work_budget_seconds=0,
     )
     assert pending["status"] == "in_progress"
-    metadata = await service.set_source_metadata(
+    write_reviewed_metadata(
+        config,
         "article.pdf",
         {"title": "Reviewed During Build", "categories": ["theory"]},
     )
-    assert metadata["effective_immediately"] is False
-    assert metadata["requires_ingest"] is True
 
     for _ in range(30):
         result = await service.ingest(
@@ -3638,10 +3596,7 @@ async def _assert_filtered_bm25_deepens_without_loading_the_corpus(
         ultrarag,
         dense=FakeDenseBackend(),
     )
-    await service.set_source_metadata(
-        "b-target.pdf",
-        {"categories": ["selected"]},
-    )
+    write_reviewed_metadata(config, "b-target.pdf", {"categories": ["selected"]})
     await service.ingest(chunk_size=100, chunk_overlap=10)
 
     ultrarag.search_depths.clear()

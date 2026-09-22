@@ -14,7 +14,7 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "## Use the UI",
         "## Use the terminal verifier",
         "## Where project data is stored",
-        "## Export, import, and move a project",
+        "## Move or back up a project",
         "## Complete MCP tool reference",
         "## How it works under the hood",
         "## Limitations and troubleshooting",
@@ -39,12 +39,9 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "canonical `contents`",
         "lean lookup payloads",
         "corrupt-text",
-        "research-ultra-rag-bundle export",
-        "research-ultra-rag-bundle import",
         ".research-rag/project.json",
         "~/.cache/research-ultra-rag-mcp/models",
         '"direct_quote_safe": false',
-        "responsible for having the right to redistribute",
         "THUNLP",
         "NEUIR",
         "OpenBMB",
@@ -60,10 +57,7 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "search",
         "list_sources",
         "get_passage",
-        "set_source_metadata",
         "set_source_inclusion",
-        "export_bundle",
-        "import_bundle",
     ):
         assert f"`{tool}`" in readme
 

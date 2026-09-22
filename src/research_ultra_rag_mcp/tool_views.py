@@ -24,7 +24,6 @@ __all__ = [
     "lean_reference_group",
     "lean_search",
     "lean_source_inclusion",
-    "lean_source_metadata",
     "lean_status",
     "present_tool_response",
 ]
@@ -54,36 +53,44 @@ def _add(target: dict[str, Any], key: str, value: Any) -> None:
 
 
 def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one passage: identity, bibliography, locator, citation, and text.
+    """Return one passage: filename, title, authors, citation, locator, and text.
 
-    Unresolved authors, year, and DOI are omitted.
+    The year and DOI live in the citation rather than beside it.
     """
 
     result: dict[str, Any] = {}
-    _add(result, "rank", passage.get("rank"))
-    for key in ("chunk_id", "source_id", "source_relative_path", "title"):
-        _add(result, key, passage.get(key))
-    for key in ("authors", "year", "doi"):
+    for key in ("chunk_id", "source_id", "source_relative_path", "title", "authors"):
         _add(result, key, passage.get(key))
     result["locator"] = dict(passage.get("locator") or {})
     result["citation"] = passage.get("citation")
     result["text"] = passage.get("text")
     result["direct_quote_safe"] = bool(passage.get("direct_quote_safe"))
     _add(result, "text_notes", passage.get("text_notes"))
-    _add(result, "metadata_warnings", passage.get("metadata_warnings"))
     return result
 
 
 def lean_reference_group(group: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one reference group: its source and the passages selected from it."""
+    """Return one reference group: the source, and its passages without it."""
 
     result: dict[str, Any] = {}
-    _add(result, "rank", group.get("rank"))
-    for key in ("source_id", "source_relative_path", "title"):
+    for key in ("source_id", "source_relative_path", "title", "authors"):
         _add(result, key, group.get(key))
-    for key in ("authors", "year", "doi"):
-        _add(result, key, group.get(key))
-    result["passages"] = [lean_passage(item) for item in group.get("passages") or []]
+    result["passages"] = [
+        lean_group_passage(item) for item in group.get("passages") or []
+    ]
+    return result
+
+
+def lean_group_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
+    """Return one grouped passage; the group already names its source."""
+
+    result: dict[str, Any] = {}
+    _add(result, "chunk_id", passage.get("chunk_id"))
+    result["locator"] = dict(passage.get("locator") or {})
+    result["citation"] = passage.get("citation")
+    result["text"] = passage.get("text")
+    result["direct_quote_safe"] = bool(passage.get("direct_quote_safe"))
+    _add(result, "text_notes", passage.get("text_notes"))
     return result
 
 
@@ -179,11 +186,9 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
     _add(result, "upgrade_reasons", payload.get("upgrade_reasons"))
     _add(result, "metadata_overlay_active", payload.get("metadata_overlay_active"))
-    _add(
-        result,
-        "metadata_pending_source_paths",
-        payload.get("metadata_pending_source_paths"),
-    )
+    pending_paths = payload.get("metadata_pending_source_paths")
+    if pending_paths:
+        result["metadata_pending_source_count"] = len(pending_paths)
     _add(result, "ingestion_progress", payload.get("ingestion_progress"))
     if payload.get("stale"):
         _add(result, "changes", payload.get("changes"))
@@ -232,12 +237,10 @@ def lean_ingest(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_source_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one searchable source's handle and bibliography."""
+    """Return one searchable source's handle, title, and authors."""
 
     result: dict[str, Any] = {}
-    for key in ("source_id", "source_relative_path", "title"):
-        _add(result, key, record.get(key))
-    for key in ("authors", "year"):
+    for key in ("source_id", "source_relative_path", "title", "authors"):
         _add(result, key, record.get(key))
     return result
 
@@ -287,33 +290,9 @@ def lean_list_sources(payload: Mapping[str, Any]) -> dict[str, Any]:
         for record in payload.get("excluded_sources") or []
     ]
     result["reviewed_metadata_sources"] = [
-        _copy(
-            record,
-            (
-                "source_id",
-                "source_relative_path",
-                "metadata",
-                "indexed_in_current_generation",
-            ),
-        )
+        _copy(record, ("source_id", "source_relative_path", "metadata"))
         for record in payload.get("reviewed_metadata_sources") or []
     ]
-    return result
-
-
-def lean_source_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the saved reviewed metadata, whether it changed, and its effect.
-
-    The saved override is always present, including an empty one: an empty
-    `metadata` with `changed: true` is how a cleared override reads.
-    """
-
-    result = _copy(payload, ("source_id", "source_relative_path"))
-    result["metadata"] = dict(payload.get("metadata") or {})
-    for key in ("changed", "effective_immediately", "requires_ingest"):
-        if key in payload:
-            result[key] = payload[key]
-    result["message"] = payload.get("message")
     return result
 
 
@@ -333,51 +312,13 @@ def lean_source_inclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def lean_bundle_export(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return where the exported archive is and what it contains."""
-
-    return _copy(
-        payload,
-        (
-            "status",
-            "bundle_name",
-            "bundle_path",
-            "sha256",
-            "size_bytes",
-            "generation_id",
-            "source_count",
-            "redistribution_notice",
-        ),
-    )
-
-
-def lean_bundle_import(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return what an import installed and whether it selected the generation."""
-
-    result = _copy(
-        payload,
-        (
-            "status",
-            "generation_id",
-            "activated",
-            "source_count",
-            "portable_metadata_effective_immediately",
-        ),
-    )
-    result["message"] = payload.get("message")
-    return result
-
-
 _PROJECTORS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     "status": lean_status,
     "ingest": lean_ingest,
     "search": lean_search,
     "list_sources": lean_list_sources,
     "get_passage": lean_passage_context,
-    "set_source_metadata": lean_source_metadata,
     "set_source_inclusion": lean_source_inclusion,
-    "export_bundle": lean_bundle_export,
-    "import_bundle": lean_bundle_import,
 }
 
 

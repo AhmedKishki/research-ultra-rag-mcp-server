@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-ultra-rag-mcp"
-version = "0.16.0"
+version = "0.17.0"
 description = "A project-scoped research knowledge-base MCP server built on vanilla UltraRAG"
 readme = "README.md"
 license = "Apache-2.0"
@@ -30,7 +30,6 @@ dependencies = [
 research-ultra-rag-mcp = "research_ultra_rag_mcp.server:main"
 research-ultra-rag-ui = "research_ultra_rag_mcp.ui:main"
 research-ultra-rag-verify = "research_ultra_rag_mcp.verify:main"
-research-ultra-rag-bundle = "research_ultra_rag_mcp.bundle_cli:main"
 
 [project.urls]
 Repository = "https://github.com/AhmedKishki/research-ultra-rag-mcp-server"

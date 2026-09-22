@@ -26,6 +26,9 @@ The open work on this server. Everything listed here is unimplemented. Current b
 ## Tool surface
 
 - **Decide the fate of the `document_ids` search filter.** It is public, and the full-detail payload reports the IDs it takes, but a lean answer does not, so an agent has no way to obtain one. Either resolve document IDs from `source_id` values at the tool boundary, or treat the filter as full-detail-only and keep it out of the agent workflow.
+- **Decide whether `set_source_inclusion` should keep accepting `source_id`.** The filename (`source_path`) is what a person sees and what a hand-edited review file is keyed by, while `source_id` is what the UI cards and the catalog use. The server accepts both today.
+- **Re-measure the `search` row of the tool-answer table** after the next reference build; `MEASUREMENTS.md` currently carries the pre-trim figure and explains why.
+- **Decide how `list_sources` should expose the keyword vocabulary.** `reviewed_metadata_sources` echoes every saved override and is now the largest lean answer, but it is the only place an agent can discover which keywords exist. Either report keyword counts in `status` beside categories and projects, or reduce the review list to handles and leave vocabulary discovery to the filters.
 
 ## Shared UI
 
