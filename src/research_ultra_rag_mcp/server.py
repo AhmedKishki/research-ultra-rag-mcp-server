@@ -13,6 +13,8 @@ from fastmcp.exceptions import ToolError
 from pydantic import ConfigDict, Field
 
 from .config import (
+    LEAN_TOOL_DETAIL,
+    TOOL_DETAIL_MODES,
     ConfigurationError,
     ResearchConfig,
     configured_source_directory,
@@ -20,6 +22,7 @@ from .config import (
 )
 from .instructions import SERVER_INSTRUCTIONS
 from .service import ResearchError, ResearchService
+from .tool_views import present_tool_response
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 from .version import SERVER_VERSION
 
@@ -146,8 +149,11 @@ DocumentIdFilter: TypeAlias = Annotated[
     list[str] | None,
     Field(
         description=(
-            "Document IDs to include; a result may match any supplied ID. Obtain IDs "
-            "from list_sources or search. Omit or pass null for no document filter."
+            "Document IDs to include; a result may match any supplied ID. A "
+            "document ID identifies one content/path version inside a "
+            "generation, and the default lean answers do not report it, so "
+            "prefer source_id; read document IDs from a server started with "
+            "--tool-detail full. Omit or pass null for no document filter."
         )
     ),
 ]
@@ -255,8 +261,8 @@ IncludeStaleness: TypeAlias = Annotated[
         description=(
             "Whether to check whether the selected generation is stale. "
             "Checking walks the source directory, so its cost grows with the "
-            "collection. When false, the response reports stale=null and "
-            "staleness_checked=false instead of a verdict."
+            "collection. When false, the response reports stale=null instead "
+            "of a verdict."
         )
     ),
 ]
@@ -438,6 +444,23 @@ def create_server(
             raise ToolError("Research server is not initialized")
         return instance
 
+    def _present(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a tool response in this server's configured detail mode.
+
+        The default is the lean agent-facing payload in `tool_views`; a server
+        started with `--tool-detail full` passes the complete service payload
+        through for debugging.
+        """
+
+        try:
+            return present_tool_response(
+                operation,
+                payload,
+                detail=config.tool_detail,
+            )
+        except ResearchError as exc:
+            raise ToolError(str(exc)) from exc
+
     @app.tool(
         annotations={
             "readOnlyHint": True,
@@ -450,8 +473,9 @@ def create_server(
         """Report project identity, staleness, required generation upgrades, and retained generations.
 
         generations lists every generation still on disk with its creation time,
-        chunk and document counts, file count, and size, marks the one that is
-        current, and reports the retained count and total bytes. A generation
+        chunk and document counts, and size, marks the one that is
+        current, and reports the retained count and total bytes; the full-detail
+        payload adds each generation's file count and schema. A generation
         whose manifest is unreadable is reported with manifest_error instead of
         failing the call. Pruning is not offered; this only shows what a prune
         would consider.
@@ -461,7 +485,7 @@ def create_server(
         and ui_error explains a port that was already in use. Without that
         option all three are null, false, and null, and no UI is running.
         """
-        payload = await _tool_call(service().status)
+        payload = _present("status", await _tool_call(service().status))
         embedded = ui_holder.get("ui")
         if embedded is None:
             return {**payload, "ui_url": None, "ui_ready": False, "ui_error": None}
@@ -498,13 +522,16 @@ def create_server(
         verification.
         """
 
-        return await _tool_call(
-            lambda: service().ingest(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                force_recompute=force_recompute,
-                work_budget_seconds=work_budget_seconds,
-            )
+        return _present(
+            "ingest",
+            await _tool_call(
+                lambda: service().ingest(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    force_recompute=force_recompute,
+                    work_budget_seconds=work_budget_seconds,
+                )
+            ),
         )
 
     @app.tool(
@@ -541,42 +568,48 @@ def create_server(
         requires every listed term. `document_ids` and `source_ids` include, and
         `exclude_source_ids` removes.
         A source ID survives a change to a file's bytes and changes when the file
-        is renamed or moved. Reviewed source exclusions always win, unresolved IDs
-        are reported under `filters`, and an include list that resolves to nothing
-        is an error rather than an unfiltered result. Hybrid is the default; BM25
-        and dense retrieval can be inspected separately. CPU reranking is on by
-        default because it is the largest
-        measured quality gain, and it is slower and lazily loads another local
-        model; set rerank=false to skip it. When that model cannot be loaded the
-        unranked candidate order is returned and rerank_fallback explains why.
-        The default passage view preserves the flat ranking. The
-        reference view groups selected passages by source and caps passages from
-        each reference while top_k remains the total passage budget. Results may
-        be fewer than top_k when relevance gates reject weak candidates. Set
+        is renamed or moved. Reviewed source exclusions always win, an unresolved
+        caller-supplied ID is reported as `unresolved_source_ids` or
+        `unresolved_exclude_source_ids`, and an include list that resolves to
+        nothing is an error rather than an unfiltered result. Hybrid is the
+        default; BM25 and dense retrieval can be inspected separately. CPU
+        reranking is on by default because it is the largest measured quality
+        gain, and it is slower and lazily loads another local model; set
+        rerank=false to skip it. `reranked` says whether it really ran; when the
+        model cannot be loaded the unranked candidate order is returned and
+        `rerank_fallback` explains why.
+        The default passage view returns the flat ranking in `hits`. The
+        reference view returns `reference_groups` instead, which caps passages
+        from each reference while top_k remains the total passage budget.
+        Results may be fewer than top_k when relevance gates reject weak
+        candidates. Set
         include_staleness=false to skip the source-directory walk that produces
         the stale verdict; stale is then null. Returned
-        text is not safe for direct quotation; use the original source path and
-        locator.
+        text is not safe for direct quotation; open the original at the returned
+        source path and locator.
         """
 
-        return await _tool_call(
-            lambda: service().search(
-                query,
-                top_k=top_k,
-                result_view=result_view,
-                passages_per_reference=passages_per_reference,
-                categories=categories,
-                categories_any=categories_any,
-                projects=projects,
-                projects_any=projects_any,
-                keywords=keywords,
-                document_ids=document_ids,
-                source_ids=source_ids,
-                exclude_source_ids=exclude_source_ids,
-                retrieval_method=retrieval_method,
-                rerank=rerank,
-                include_staleness=include_staleness,
-            )
+        return _present(
+            "search",
+            await _tool_call(
+                lambda: service().search(
+                    query,
+                    top_k=top_k,
+                    result_view=result_view,
+                    passages_per_reference=passages_per_reference,
+                    categories=categories,
+                    categories_any=categories_any,
+                    projects=projects,
+                    projects_any=projects_any,
+                    keywords=keywords,
+                    document_ids=document_ids,
+                    source_ids=source_ids,
+                    exclude_source_ids=exclude_source_ids,
+                    retrieval_method=retrieval_method,
+                    rerank=rerank,
+                    include_staleness=include_staleness,
+                )
+            ),
         )
 
     @app.tool(
@@ -594,23 +627,29 @@ def create_server(
         projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
     ) -> dict[str, Any]:
-        """List stable source IDs, indexed metadata, and saved overrides.
+        """List stable source IDs, inclusion state, and saved metadata overrides.
 
         This works before ingestion and durably registers each discovered
-        source ID in the project catalog. ``known_sources`` keeps registered
-        IDs addressable when originals are temporarily absent, while
-        ``reviewed_metadata_sources`` makes every saved override inspectable.
+        source ID in the project catalog: `discovered_sources` carries every live
+        PDF/EPUB with its inclusion and index state, `sources` carries the
+        bibliography of what is searchable now, `excluded_sources` carries each
+        exclusion with its reason, and `reviewed_metadata_sources` makes every
+        saved override inspectable.
         ``categories``, ``categories_any``, ``projects``, ``projects_any``, and
         ``keywords`` narrow the indexed list by reviewed metadata.
         """
-        return await _tool_call(
-            lambda: service().list_sources(
-                categories=categories,
-                categories_any=categories_any,
-                projects=projects,
-                projects_any=projects_any,
-                keywords=keywords,
-            )
+
+        return _present(
+            "list_sources",
+            await _tool_call(
+                lambda: service().list_sources(
+                    categories=categories,
+                    categories_any=categories_any,
+                    projects=projects,
+                    projects_any=projects_any,
+                    keywords=keywords,
+                )
+            ),
         )
 
     @app.tool(
@@ -630,11 +669,14 @@ def create_server(
         Context preserves source and page/section provenance but is not safe for
         direct quotation. Open the original PDF or EPUB for exact wording.
         """
-        return await _tool_call(
-            lambda: service().get_passage(
-                chunk_id,
-                context_chunks=context_chunks,
-            )
+        return _present(
+            "get_passage",
+            await _tool_call(
+                lambda: service().get_passage(
+                    chunk_id,
+                    context_chunks=context_chunks,
+                )
+            ),
         )
 
     @app.tool(
@@ -665,12 +707,15 @@ def create_server(
         field.
         """
 
-        return await _tool_call(
-            lambda: service().set_source_metadata(
-                metadata=metadata,
-                source_id=source_id,
-                source_path=source_path,
-            )
+        return _present(
+            "set_source_metadata",
+            await _tool_call(
+                lambda: service().set_source_metadata(
+                    metadata=metadata,
+                    source_id=source_id,
+                    source_path=source_path,
+                )
+            ),
         )
 
     @app.tool(
@@ -697,13 +742,16 @@ def create_server(
         Identify the source with exactly one of source_id or source_path.
         """
 
-        return await _tool_call(
-            lambda: service().set_source_inclusion(
-                source_path=source_path,
-                source_id=source_id,
-                included=included,
-                reason=reason,
-            )
+        return _present(
+            "set_source_inclusion",
+            await _tool_call(
+                lambda: service().set_source_inclusion(
+                    source_path=source_path,
+                    source_id=source_id,
+                    included=included,
+                    reason=reason,
+                )
+            ),
         )
 
     @app.tool(
@@ -723,7 +771,7 @@ def create_server(
         to redistribute every included PDF and EPUB.
         """
 
-        return await _tool_call(service().export_bundle)
+        return _present("export_bundle", await _tool_call(service().export_bundle))
 
     @app.tool(
         annotations={
@@ -746,8 +794,11 @@ def create_server(
         true.
         """
 
-        return await _tool_call(
-            lambda: service().import_bundle(bundle_name, activate=activate)
+        return _present(
+            "import_bundle",
+            await _tool_call(
+                lambda: service().import_bundle(bundle_name, activate=activate)
+            ),
         )
 
     return app
@@ -830,6 +881,18 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tool-detail",
+        choices=TOOL_DETAIL_MODES,
+        default=os.environ.get("RESEARCH_ULTRARAG_TOOL_DETAIL", LEAN_TOOL_DETAIL),
+        help=(
+            "How much of a tool response the agent receives. 'lean' (the "
+            "default) returns the evidence, stable handles, and state an agent "
+            "acts on. 'full' also returns ranking internals, extraction "
+            "diagnostics, revision fingerprints, and pipeline timings, which is "
+            "a debugging aid for a terminal client and never the agent's answer."
+        ),
+    )
+    parser.add_argument(
         "--ui-port",
         default=os.environ.get("RESEARCH_ULTRARAG_UI_PORT"),
         help=(
@@ -877,6 +940,7 @@ def main() -> None:
             dense_backend=args.dense_backend,
             runtime_root=args.runtime_root,
             embedding_threads=args.embedding_threads,
+            tool_detail=args.tool_detail,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc

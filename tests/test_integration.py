@@ -13,6 +13,32 @@ from fastmcp.client.transports import StdioTransport
 
 from research_ultra_rag_mcp.instructions import SERVER_INSTRUCTIONS
 
+# Answer-level keys the full-detail payload carries and the default agent-facing
+# answer must not: they describe how the server works, not what the research
+# found, so an agent neither needs them nor can act on them.
+LEAN_ONLY_ABSENT = (
+    "allowed_formats",
+    "generation_root",
+    "ignored_extensions",
+    "last_build_metrics",
+    "retrieval",
+    "source_exclusion_revision",
+    "ui_launcher",
+    "version",
+)
+
+# The same rule one level down, for a returned passage.
+LEAN_ONLY_HIT_KEYS = (
+    "component_ranks",
+    "component_scores",
+    "document_id",
+    "fusion_score",
+    "metadata_provenance",
+    "rerank_score",
+    "source_path",
+    "text_fidelity",
+)
+
 
 async def _ingest_until_complete(
     client: Client,
@@ -161,7 +187,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         initial = await client.call_tool("status", {})
         assert initial.data["ready"] is False
         assert initial.data["selected_source_count"] == 1
-        assert initial.data["ignored_extensions"] == {".md": 1}
+        for key in LEAN_ONLY_ABSENT:
+            assert key not in initial.data
 
         metadata = await client.call_tool(
             "set_source_metadata",
@@ -180,9 +207,11 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             client,
             {"chunk_size": 50, "chunk_overlap": 10},
         )
+        assert ingested.data["status"] == "ready"
+        assert ingested.data["generation_changed"] is True
         assert ingested.data["document_count"] == 1
-        assert ingested.data["ignored_extensions"] == {".md": 1}
-        assert ingested.data["default_retrieval_method"] == "hybrid"
+        assert "phase_timings_seconds" not in ingested.data
+        assert "embedding_model" not in ingested.data
 
         current = json.loads(
             (project / ".research-rag" / "runtime" / "current.json").read_text(
@@ -209,8 +238,13 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert (generation_root / "indexes" / "vectors" / "index.json").is_file()
 
         ready = await client.call_tool("status", {})
-        assert ready.data["hybrid_ready"] is True
-        assert ready.data["generation_upgrade_required"] is False
+        assert set(ready.data["available_retrieval_methods"]) == {
+            "bm25",
+            "dense",
+            "hybrid",
+        }
+        # An upgrade note appears only when an upgrade is actually required.
+        assert "generation_upgrade_required" not in ready.data
         # No --ui-port was passed, so this server hosts no UI and says so.
         assert ready.data["ui_url"] is None
         assert ready.data["ui_ready"] is False
@@ -225,16 +259,16 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         source_id = initial_hit["source_id"]
         assert source_id.startswith("src_")
         assert initial_hit["title"] == "Citable Evidence"
-        assert initial_hit["source_path"] == "sources/evidence.pdf"
+        assert initial_hit["source_relative_path"] == "evidence.pdf"
         assert initial_hit["locator"]["page"] == 1
+        assert "Citable Evidence" in initial_hit["citation"]
         assert "cobalt heron" in initial_hit["text"].lower()
         assert "notes" not in initial_hit["text"].lower()
-        assert result.data["retrieval_method"] == "hybrid"
-        assert initial_hit["component_ranks"] == {"bm25": 1, "dense": 1}
-        assert initial_hit["fusion_score"] is not None
         assert initial_hit["direct_quote_safe"] is False
-        assert initial_hit["text_fidelity"] == "cleaned_semantic_text"
-        assert result.data["requested_top_k"] == 1
+        assert result.data["stale"] is False
+        assert result.data["reranked"] is True
+        for key in LEAN_ONLY_HIT_KEYS:
+            assert key not in initial_hit
 
         manifest_before_metadata = (generation_root / "manifest.json").read_bytes()
         chunks_before_metadata = (
@@ -256,7 +290,9 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert corrected_metadata.data["changed"] is True
         assert corrected_metadata.data["effective_immediately"] is True
         assert corrected_metadata.data["requires_ingest"] is False
-        assert corrected_metadata.data["generation_metadata_snapshot_outdated"] is True
+        assert "immediately" in corrected_metadata.data["message"]
+        assert "effective_metadata" not in corrected_metadata.data
+        assert "source_path" not in corrected_metadata.data
         assert (
             generation_root / "manifest.json"
         ).read_bytes() == manifest_before_metadata
@@ -267,7 +303,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         metadata_status = await client.call_tool("status", {})
         assert metadata_status.data["stale"] is False
         assert metadata_status.data["metadata_overlay_active"] is True
-        assert metadata_status.data["changes"]["metadata_changed"] is True
+        assert "immediately" in metadata_status.data["message"]
+        # Change lists appear only when the generation is stale, so a
+        # metadata-only overlay is reported as an overlay, not as churn.
+        assert "changes" not in metadata_status.data
 
         corrected_sources = await client.call_tool(
             "list_sources",
@@ -301,10 +340,11 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "get_passage",
             {"chunk_id": hit["chunk_id"], "context_chunks": 0},
         )
-        assert corrected_context.data["context"][0]["title"] == (
-            "Reviewed Marsh Evidence"
-        )
-        assert corrected_context.data["context"][0]["categories"] == ["corrected"]
+        corrected_passage = corrected_context.data["context"][0]
+        assert corrected_passage["title"] == "Reviewed Marsh Evidence"
+        assert corrected_passage["authors"] == ["Field Researcher"]
+        assert "categories" not in corrected_passage
+        assert "notice" not in corrected_context.data
 
         references_result = await client.call_tool(
             "search",
@@ -315,14 +355,14 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "passages_per_reference": 2,
             },
         )
-        assert references_result.data["result_view"] == "references"
-        assert references_result.data["distinct_reference_count"] == 1
-        assert references_result.data["hits"][0]["chunk_id"] == hit["chunk_id"]
-        assert len(references_result.data["reference_groups"]) == 1
-        assert (
-            references_result.data["reference_groups"][0]["passages"][0]["chunk_id"]
-            == hit["chunk_id"]
-        )
+        # The reference view answers with the groups instead of the flat list.
+        assert "hits" not in references_result.data
+        reference_group = references_result.data["reference_groups"][0]
+        assert reference_group["source_id"] == source_id
+        assert reference_group["title"] == "Reviewed Marsh Evidence"
+        assert reference_group["passages"][0]["chunk_id"] == hit["chunk_id"]
+        assert "document_id" not in reference_group
+        assert "categories" not in reference_group
 
         dense_result = await client.call_tool(
             "search",
@@ -335,10 +375,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             },
         )
         assert dense_result.data["hits"][0]["chunk_id"] == hit["chunk_id"]
-        assert (
-            dense_result.data["hits"][0]["component_scores"]["dense_cosine_similarity"]
-            is not None
-        )
+        assert "component_scores" not in dense_result.data["hits"][0]
 
         unchecked = await client.call_tool(
             "search",
@@ -348,8 +385,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "include_staleness": False,
             },
         )
-        assert unchecked.data["staleness_checked"] is False
+        # A null stale verdict means the freshness check was skipped; the
+        # `staleness_checked` flag itself stays out of the lean answer.
         assert unchecked.data["stale"] is None
+        assert "staleness_checked" not in unchecked.data
         assert unchecked.data["hits"][0]["chunk_id"] == hit["chunk_id"]
 
         filtered_out = await client.call_tool(
@@ -361,7 +400,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "categories": ["unrelated"],
             },
         )
-        assert filtered_out.data["result_count"] == 0
+        assert filtered_out.data["hits"] == []
 
         exported = await client.call_tool("export_bundle", {}, timeout=1800)
         assert exported.data["source_count"] == 1
@@ -386,7 +425,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             timeout=1800,
         )
         assert reranked.data["reranked"] is True
-        assert reranked.data["hits"][0]["rerank_score"] is not None
+        assert "rerank_score" not in reranked.data["hits"][0]
 
         excluded = await client.call_tool(
             "set_source_inclusion",
@@ -402,7 +441,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "search",
             {"query": "cobalt heron", "top_k": 1},
         )
-        assert excluded_search.data["result_count"] == 0
+        assert excluded_search.data["hits"] == []
 
         restored = await client.call_tool(
             "set_source_inclusion",
@@ -413,7 +452,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "search",
             {"query": "cobalt heron", "top_k": 1},
         )
-        assert restored_search.data["result_count"] == 1
+        assert len(restored_search.data["hits"]) == 1
 
     imported_project = project.parent / "portable-import-project"
     imported_project.mkdir()
@@ -447,9 +486,12 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             timeout=1800,
         )
         assert reconstructed.data["status"] == "imported"
+        assert reconstructed.data["activated"] is True
+        assert reconstructed.data["portable_metadata_effective_immediately"] is True
+        assert "generation_root" not in reconstructed.data
         imported_status = await imported_client.call_tool("status", {})
         assert imported_status.data["stale"] is False
-        assert imported_status.data["generation_upgrade_required"] is False
+        assert "generation_upgrade_required" not in imported_status.data
         imported_search = await imported_client.call_tool(
             "search",
             {"query": "cobalt heron amber marsh", "top_k": 1},
@@ -461,7 +503,16 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
     offline_transport = StdioTransport(
         command=str(executable),
-        args=["--project-root", str(project), "--offline"],
+        args=[
+            "--project-root",
+            str(project),
+            "--offline",
+            # The documented debug path: the same server with the complete
+            # payload, which is what a terminal client inspects and what the
+            # shared UI reads.
+            "--tool-detail",
+            "full",
+        ],
         log_file=project / "research-server-offline-stderr.log",
     )
     async with Client(
@@ -480,6 +531,18 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         )
         assert offline_result.data["retrieval_method"] == "hybrid"
         assert offline_result.data["hits"][0]["rerank_score"] is not None
+        assert offline_result.data["filters"]["active_document_count"] == 1
+        assert offline_result.data["withheld_candidates"]["total"] == 0
+        assert (
+            offline_result.data["hits"][0]["text_fidelity"] == "cleaned_semantic_text"
+        )
+        offline_status = await offline_client.call_tool("status", {})
+        assert offline_status.data["generation_upgrade_required"] is False
+        assert offline_status.data["retrieval"]["available_methods"] == [
+            "bm25",
+            "dense",
+            "hybrid",
+        ]
 
 
 @pytest.mark.integration

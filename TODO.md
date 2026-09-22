@@ -23,6 +23,10 @@ The open work on this server. Everything listed here is unimplemented. Current b
 
 - **Split the resumable ingestion loop into per-phase handlers** and enable `C901` with a documented threshold. `service.py`'s `ingest` is roughly 1,100 lines, which makes reviewing a change to it risky; no complexity check is enabled today.
 
+## Tool surface
+
+- **Decide the fate of the `document_ids` search filter.** It is public, and the full-detail payload reports the IDs it takes, but a lean answer does not, so an agent has no way to obtain one. Either resolve document IDs from `source_id` values at the tool boundary, or treat the filter as full-detail-only and keep it out of the agent workflow.
+
 ## Shared UI
 
 - **Align the UI's rerank control with the server default.** The pinned workspace's checkbox starts unticked and sends an explicit `rerank=false`, so UI searches stay unranked while agent searches rerank. Changing it belongs in `ui-ultra-rag-mcp`, followed by a pin bump here.
@@ -41,4 +45,5 @@ uv run ruff format --check .            # formatting
 uv run research-ultra-rag-verify /path/to/project --query "your question"
 uv run python scripts/benchmark_write_pattern.py --root /path/on/target/disk
 uv run python scripts/evaluate_retrieval.py --project /path/to/project --offline
+uv run python scripts/measure_tool_payloads.py --project /path/to/project --offline
 ```

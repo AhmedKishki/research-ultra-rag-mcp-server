@@ -97,16 +97,21 @@ Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
 BM25 lexical retrieval; FastEmbed creates the semantic vectors, which dense
 search scans exactly by default and reads from an embedded index only above the
 documented corpus size; weighted reciprocal-rank fusion combines the two
-independent rankings. A
-hit's component ranks explain where it appeared. Dense similarity, fusion, and
-reranker scores are ranking signals, not confidence or truth probabilities, and
-scores should not be compared across different queries. Every search reports
-rerank_requested, reranked, and rerank_fallback, so whether the reranker really
-ran is visible rather than assumed. Never invent missing
-bibliographic fields, relevance scores, page numbers, or quotations. Search may
-return fewer than requested results, including zero, when relevance gates abstain.
+independent rankings. Every tool answer is deliberately lean: it carries the
+evidence, the stable handles, and the state you act on, not ranking internals,
+extraction diagnostics, or storage paths, which would spend your context on
+something you cannot use. Scores and candidate accounting are therefore not
+part of a normal answer; a user who needs them can start the server with
+--tool-detail full. `reranked` and `rerank_fallback` still report whether the
+reranker really ran, so that fact stays visible rather than assumed. Ranking
+signals are not confidence or truth probabilities, and are not comparable
+across different queries. Never invent
+missing bibliographic fields, relevance scores, page numbers, or quotations.
+Search may return fewer than requested results, including zero, when relevance
+gates abstain.
 Corrupt extraction units are excluded whole under an English-oriented policy;
 the server records their locators and reason codes without retaining garbage
-text. The same guard filters older generations at retrieval time. Never guess an
-encoding repair or fabricate replacement wording.
+text, and `status` reports the corpus-level counts. The same guard filters older
+generations at retrieval time. Never guess an encoding repair or fabricate
+replacement wording.
 """

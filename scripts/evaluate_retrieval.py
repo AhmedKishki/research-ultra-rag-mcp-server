@@ -45,7 +45,11 @@ from typing import Any
 
 from fastmcp import Client
 
-from research_ultra_rag_mcp.config import configured_source_directory, resolve_config
+from research_ultra_rag_mcp.config import (
+    FULL_TOOL_DETAIL,
+    configured_source_directory,
+    resolve_config,
+)
 from research_ultra_rag_mcp.transport import create_research_transport
 
 DEFAULT_JUDGMENTS = Path("evaluation/ai-and-fetishism-queries.json")
@@ -624,6 +628,9 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     transport = create_research_transport(
         config,
         log_file=config.logs_root / "evaluate-retrieval-stderr.log",
+        # The harness measures ranked chunk IDs, document IDs, and withheld
+        # candidates, so it reads the full payload rather than a lean answer.
+        tool_detail=FULL_TOOL_DETAIL,
     )
     report_path = (
         args.report.expanduser().resolve()

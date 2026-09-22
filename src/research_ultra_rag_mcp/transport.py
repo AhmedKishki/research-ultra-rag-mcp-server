@@ -15,7 +15,16 @@ def create_research_transport(
     config: ResearchConfig,
     *,
     log_file: str | Path,
+    tool_detail: str | None = None,
 ) -> StdioTransport:
+    """Start a private server for one research project.
+
+    ``tool_detail`` defaults to the project's setting. The diagnostic consumers
+    in this package — the browser UI, the terminal verifier, the bundle CLI, and
+    the evaluation harness — pass ``full`` because they render, verify, or
+    measure what an agent's lean answer deliberately leaves out.
+    """
+
     arguments = [
         "-m",
         "research_ultra_rag_mcp",
@@ -29,6 +38,8 @@ def create_research_transport(
         str(config.model_cache_root),
         "--dense-backend",
         config.dense_backend,
+        "--tool-detail",
+        tool_detail or config.tool_detail,
         "--log-level",
         config.log_level,
     ]

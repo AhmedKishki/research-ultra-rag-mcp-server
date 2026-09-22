@@ -21,6 +21,15 @@ class ConfigurationError(ValueError):
 
 _RUNTIME_MARKER = ".research-ultra-rag-runtime.json"
 
+# How much of a tool response the agent receives. `lean` is the agent-facing
+# default because an agent cannot act on ranking internals, extraction
+# diagnostics, or revision fingerprints, and paying for them costs the answer
+# itself; `full` returns the complete service payload for debugging a retrieval
+# or ingestion problem from a terminal client.
+LEAN_TOOL_DETAIL = "lean"
+FULL_TOOL_DETAIL = "full"
+TOOL_DETAIL_MODES = (LEAN_TOOL_DETAIL, FULL_TOOL_DETAIL)
+
 
 @dataclass(frozen=True, slots=True)
 class ResearchConfig:
@@ -38,6 +47,7 @@ class ResearchConfig:
     dense_backend: str = "auto"
     runtime_root: Path | None = None
     embedding_threads: int | None = None
+    tool_detail: str = LEAN_TOOL_DETAIL
 
     @property
     def generations_root(self) -> Path:
@@ -369,6 +379,7 @@ def resolve_config(
     log_level: str = "warn",
     dense_backend: str = "auto",
     embedding_threads: int | str | None = None,
+    tool_detail: str = LEAN_TOOL_DETAIL,
 ) -> ResearchConfig:
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
@@ -417,6 +428,15 @@ def resolve_config(
 
     if log_level not in {"debug", "info", "warn", "error"}:
         raise ConfigurationError(f"Unsupported log level: {log_level}")
+
+    normalized_tool_detail = (
+        tool_detail.strip().casefold() if isinstance(tool_detail, str) else ""
+    )
+    if normalized_tool_detail not in TOOL_DETAIL_MODES:
+        raise ConfigurationError(
+            f"Unsupported tool detail: {tool_detail!r}; expected one of: "
+            f"{', '.join(TOOL_DETAIL_MODES)}"
+        )
 
     if (
         embedding_threads is None
@@ -510,6 +530,7 @@ def resolve_config(
         dense_backend=normalized_dense_backend,
         runtime_root=custom_state if relocated else None,
         embedding_threads=normalized_threads,
+        tool_detail=normalized_tool_detail,
     )
 
 

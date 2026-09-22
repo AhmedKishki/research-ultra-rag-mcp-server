@@ -13,7 +13,7 @@ from typing import Any
 
 from fastmcp import Client
 
-from .config import configured_source_directory, resolve_config
+from .config import FULL_TOOL_DETAIL, configured_source_directory, resolve_config
 from .sources import sha256_file
 from .transport import create_research_transport
 
@@ -122,6 +122,9 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     transport = create_research_transport(
         config,
         log_file=config.logs_root / "bundle-stderr.log",
+        # A terminal bundle operation reports paths, checksums, and counts, so it
+        # reads the full payload rather than the agent's lean answer.
+        tool_detail=FULL_TOOL_DETAIL,
     )
     async with Client(transport, timeout=1800, init_timeout=1800) as client:
         if args.operation == "export":

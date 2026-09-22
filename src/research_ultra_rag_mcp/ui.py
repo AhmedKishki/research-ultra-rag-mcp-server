@@ -24,6 +24,7 @@ from ui_ultra_rag_mcp import (
 from ui_ultra_rag_mcp import create_ui_app as create_shared_ui_app
 
 from .config import (
+    FULL_TOOL_DETAIL,
     ConfigurationError,
     ResearchConfig,
     configured_source_directory,
@@ -156,6 +157,10 @@ def _adapter_factory(config: ResearchConfig) -> AdapterFactory:
         transport = create_research_transport(
             config,
             log_file=config.logs_root / "research-ui-mcp-stderr.log",
+            # The UI is a diagnostic surface: it renders the component ranks,
+            # scores, and source inventory that the agent's lean tool answer
+            # deliberately leaves out.
+            tool_detail=FULL_TOOL_DETAIL,
         )
         async with Client(
             transport,

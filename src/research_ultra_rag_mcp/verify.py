@@ -11,7 +11,7 @@ from typing import Any
 
 from fastmcp import Client
 
-from .config import configured_source_directory, resolve_config
+from .config import FULL_TOOL_DETAIL, configured_source_directory, resolve_config
 from .transport import create_research_transport
 
 
@@ -147,6 +147,9 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
     transport = create_research_transport(
         config,
         log_file=log_path,
+        # The verifier prints the whole response for a human to inspect, so it
+        # reads the full payload rather than the agent's lean answer.
+        tool_detail=FULL_TOOL_DETAIL,
     )
 
     async with Client(transport, timeout=1800, init_timeout=1800) as client:

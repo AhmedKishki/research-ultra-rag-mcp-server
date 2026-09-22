@@ -12,18 +12,19 @@ The server is built on [UltraRAG](https://github.com/OpenBMB/UltraRAG), whose co
 
 Plain-language summary of every capability, and why it is there:
 
+- **Tool answers an agent can act on.** Every tool returns a lean answer by default: the evidence, the stable handles, the inclusion and readiness state, and the counts an agent acts on. Ranking internals, extraction diagnostics, revision fingerprints, filesystem paths, and empty or default-valued fields are left out, because they would spend an agent's context on something it cannot use. A server started with `--tool-detail full` returns the complete payload for debugging, which is what the browser UI, the terminal verifier, the bundle command, and the evaluation harness read.
 - **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
-- **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten, and `status.ui_launcher` reports the current state.
+- **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten, and the full-detail `status` payload reports the launcher's current state.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
-- **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, per-field provenance and warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage.
+- **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, extraction warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage; per-field provenance is part of the full-detail payload.
 - **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by three layers of reviewed metadata: the project a source was gathered for (`projects`, `projects_any`), the branch it belongs to (`categories`, `categories_any`), and the terms that identify it (`keywords`), plus `document_ids`. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
 - **Portable project bundles.** Export a project (PDFs, review state, and the cleaned artifacts) as one archive and import it on another machine.
 - **Resumable ingestion.** Every call has a soft time budget. If it runs out, the server returns a checkpointed `in_progress` result and you simply call it again. Client timeouts, cancellations, and restarts lose at most one small batch of work.
-- **Text-health policy with disclosure.** Corrupt text (broken character maps) and chunks with no readable letters or digits are excluded, and the response tells you why and where. A quotation in another language or script is *not* excluded — it is returned with an advisory `text_notes` entry instead.
-- **An embedding-fidelity audit.** Each chunk records how many embedding tokens it contains and whether its vector covers only the beginning of its text, so silent truncation is visible per hit and in aggregate.
+- **Text-health policy with disclosure.** Corrupt text (broken character maps) and chunks with no readable letters or digits are excluded, and the server records why and where: `status` reports the corpus-level counts, and the full-detail payload reports them per search. A quotation in another language or script is *not* excluded — it is returned with an advisory `text_notes` entry instead.
+- **An embedding-fidelity audit.** Each chunk records how many embedding tokens it contains and whether its vector covers only the beginning of its text, so silent truncation is visible in aggregate in `status` and per passage in the full-detail payload.
 - **Immutable, project-local generations.** A build creates a new generation and only becomes active after both indexes pass validation. A failed build leaves the previous generation searchable.
 - **Cheap updates.** Adding or changing a source reuses the unchanged documents, chunks, and vectors, then rebuilds only the indexes. Dense search reads the generation's portable vectors directly rather than maintaining a separate index, so there is nothing to rebuild or keep in sync.
 
@@ -128,6 +129,33 @@ The same installation can serve two isolated projects, which is why `--project-r
 
 A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.example.json).
 
+### How much a tool answer contains
+
+Every tool answers with the lean payload by default, because a research session spends its context on evidence rather than on plumbing. A search returns the query, the generation it read, `stale`, `reranked`, and the passages; a passage carries its `rank`, `chunk_id`, `source_id`, `source_relative_path`, title, authors, year, DOI, `locator`, `citation`, `text`, `direct_quote_safe: false`, and — only when they exist — advisory `text_notes` and `metadata_warnings`. The reference view returns `reference_groups` in place of `hits`, so a grouped answer never carries the same passage twice.
+
+An empty list, a null value, or a harmless default is left out rather than returned as a placeholder, so a field that is absent means "nothing to report" — no unresolved ID, no missing source, no upgrade due — not "unknown". Two values stay explicit even when they are false: `stale` (where `null` means the freshness check was skipped) and `reranked` (so whether the reranker really ran is visible rather than assumed).
+
+What a lean answer deliberately leaves out is everything that describes how the server works instead of what the research found: per-hit component ranks, fusion and reranker scores, dense cosine similarity, embedding token counts, match kind, `document_id`, `source_path`, a hit's category/keyword/project tags, ranking-gate rejections and their counts, extraction statistics, per-field metadata provenance, revision fingerprints, filesystem paths, model identifiers, and phase timings.
+
+Add `--tool-detail full` when you are debugging rather than reading evidence:
+
+```json
+{
+  "mcpServers": {
+    "research-ultra-rag": {
+      "command": "/ABSOLUTE/PATH/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+      "args": [
+        "--project-root", "/ABSOLUTE/PATH/my-research-project",
+        "--tool-detail", "full"
+      ],
+      "timeout": 1800
+    }
+  }
+}
+```
+
+`RESEARCH_ULTRARAG_TOOL_DETAIL=full` sets the same option, and `--tool-detail lean` overrides a changed environment. The debug mode is not the agent's answer and is not meant to be submitted to one: it exists so a human can see the candidate accounting, the gate that rejected a passage, the withheld corpus material, which metadata value came from where, and how long each phase took. The browser UI, the terminal verifier, `research-ultra-rag-bundle`, and the retrieval-evaluation harness always read that complete payload, whichever detail mode your MCP client uses, so nothing in this project depends on you enabling it.
+
 ### Let the server host the browser UI (optional)
 
 Add `--ui-port` (or set `RESEARCH_ULTRARAG_UI_PORT`) and the same server also serves the local UI on that loopback port for as long as it runs, reusing exactly the project, runtime root, model cache, dense backend, and offline setting it was launched with:
@@ -188,9 +216,9 @@ What to expect from a first build:
 Two identifiers matter, and they mean different things:
 
 - A `source_id` is derived from the project ID and the source-relative path. It survives changes to the file's contents, but renaming or moving the file creates a new `source_id`. Use it for `set_source_metadata` and `set_source_inclusion`.
-- A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change.
+- A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change. It is an internal identity for the `document_ids` search filter rather than the durable handle, and the lean answers do not report it.
 
-Calling `list_sources` also registers discovered IDs in the portable project catalog. That is what lets the lean `known_sources` array keep an ID-to-path handle when an original is renamed, moved, or temporarily absent — without guessing that metadata from an old path belongs to a new one. `reviewed_metadata_sources` lists every saved override by the same stable ID, so you can inspect, replace, or remove each persisted decision even if the original file is not present right now.
+Calling `list_sources` also registers discovered IDs in the portable project catalog. That is what keeps a registered ID addressable when an original is renamed, moved, or temporarily absent — the full-detail payload lists those records as `known_sources` — without guessing that metadata from an old path belongs to a new one. `reviewed_metadata_sources` lists every saved override by the same stable ID, so you can inspect, replace, or remove each persisted decision even if the original file is not present right now.
 
 Both mutation tools require exactly one selector: `source_id` is preferred, and `source_path` remains available for compatibility.
 
@@ -223,13 +251,13 @@ Search can legitimately return fewer results than `top_k`, including none, when 
 
 `result_view="passages"` (the default) is the plain global ranking.
 
-`result_view="references"` is for when one prolific source would otherwise dominate. It walks the same relevance-gated candidates but admits at most `passages_per_reference` passages from each stable `source_id`, keeping `top_k` as the total number of passages. The response reports how many references it returned and how many were available. It does not merge editions by title, DOI, or filename. Two flags tell you why a result set may look short: `relevance_limited` means the candidate pool ran short, and `grouping_limited` means the per-reference cap stopped the view from filling its passage budget.
+`result_view="references"` is for when one prolific source would otherwise dominate. It walks the same relevance-gated candidates but admits at most `passages_per_reference` passages from each stable `source_id`, keeping `top_k` as the total number of passages. Its `reference_groups` list names each reference and the passages selected from it, in place of the flat `hits` list the passage view returns. It does not merge editions by title, DOI, or filename. A result set can look short for two reasons — the candidate pool ran short, or the per-reference cap stopped the view from filling its passage budget. The lean answer leaves both counts out; the full-detail payload names them (`relevance_limited`, `grouping_limited`).
 
 ### Selecting and excluding sources per query
 
-`source_ids` restricts a search to the sources you name and `exclude_source_ids` removes sources from the result, both by the stable `source_id` that `list_sources` reports. Omitting both searches the whole corpus, which is the default: include everything, exclude nothing. Filters are applied before ranking, so `top_k` is the budget inside the selection, and the response echoes what was applied under `filters`.
+`source_ids` restricts a search to the sources you name and `exclude_source_ids` removes sources from the result, both by the stable `source_id` that `list_sources` reports. Omitting both searches the whole corpus, which is the default: include everything, exclude nothing. Filters are applied before ranking, so `top_k` is the budget inside the selection.
 
-A `source_id` is derived from a source's normalized relative path: it survives edits to the file's bytes and changes when the file is renamed or moved. An ID that resolves to nothing in the selected generation is reported in `filters.unknown_source_ids` (`unknown_exclude_source_ids` for exclusions), and an include list that resolves to nothing at all is an error rather than a silently unfiltered search. A reviewed exclusion always wins: naming an excluded source in `source_ids` cannot bring it back, so the response reports `filters.active_document_count` of 0 and no hits.
+A `source_id` is derived from a source's normalized relative path: it survives edits to the file's bytes and changes when the file is renamed or moved. An ID that resolves to nothing in the selected generation is reported as `unresolved_source_ids` (`unresolved_exclude_source_ids` for exclusions), and an include list that resolves to nothing at all is an error rather than a silently unfiltered search. A reviewed exclusion always wins: naming an excluded source in `source_ids` cannot bring it back, so the response returns no hits. The full-detail payload reports the same facts under `filters`, where `active_document_count` says how many sources the search actually covered.
 
 ### Dividing a corpus with categories and projects
 
@@ -259,7 +287,7 @@ Each filter is all-of at the plural name (`categories`, `projects`, `keywords` r
 
 By default a search also reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked. At this size it is a small share of a query, so the flag removes a cost that scales rather than a latency you feel today.
 
-Pass `include_staleness=false` when a session has already checked `status` and only needs evidence. The response then reports `stale=null` and `staleness_checked=false`, which means "not checked", not "fresh". Everything else about the search is unchanged, including which hits are returned.
+Pass `include_staleness=false` when a session has already checked `status` and only needs evidence. The response then reports `stale: null`, which means "not checked", not "fresh"; the full-detail payload also carries `staleness_checked: false`. Everything else about the search is unchanged, including which hits are returned.
 
 ### What makes a generation stale
 
@@ -493,15 +521,17 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, upgrade requirements, counts, review-state revisions, the category and project inventories, the UI launcher state, the running and installed versions with a `restart_required` flag, build metrics, and every retained generation with its creation time, counts, file count, and size. Read-only. |
-| `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. |
-| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. |
+| `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. The full-detail payload adds the paths, versions, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
+| `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. |
+| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by the same `projects`, `projects_any`, `categories`, `categories_any`, and `keywords`. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its neighbors and provenance. |
 | `set_source_metadata` | Saves a reviewed metadata correction for one source. Applies immediately to an indexed source. |
 | `set_source_inclusion` | Excludes or restores one source. Reversible; never deletes the file. |
 | `export_bundle` | Writes a portable project archive. |
 | `import_bundle` | Validates and reconstructs a project from an archive placed in `.research-rag/bundles/`. |
+
+Every one of them answers with the lean payload described under [How much a tool answer contains](#how-much-a-tool-answer-contains); `--tool-detail full` returns the complete payload instead.
 
 ## How it works under the hood
 
@@ -570,6 +600,7 @@ If something looks wrong:
 - `--offline` reports missing runtime or models. Run once online, or point `--model-cache-root` at a populated cache.
 - `status` says the generation is stale. Search still uses the previous generation until a re-ingestion succeeds. That is intentional.
 - Search returns nothing. This can be correct: the relevance gates prefer abstaining over returning weak matches. Try a precise BM25 query, or inspect dense mode, before lowering any quality expectation.
+- You want to see why a query missed, which passages a gate rejected, or how long ingestion took. That is the debugging mode, not the agent's answer: start the server with `--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) and inspect the complete payload, which carries the candidate accounting, the withheld material with its reason codes, per-field metadata provenance, and phase timings.
 - Import reports a project-ID conflict. The wrong `.research-rag/project.json` is in use. A source conflict means an existing file has different bytes. Neither safeguard should be bypassed.
 
 ## UltraRAG credit and licensing
