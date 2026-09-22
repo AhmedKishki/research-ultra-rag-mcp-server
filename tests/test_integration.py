@@ -89,71 +89,49 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert tools["set_source_inclusion"].annotations is not None
         assert tools["set_source_inclusion"].annotations.destructiveHint is True
         expected_parameters = {
-            "ingest": {
-                "chunk_size",
-                "chunk_overlap",
-                "force_recompute",
-                "work_budget_seconds",
-            },
+            "status": set(),
+            "ingest": {"force_recompute"},
             "search": {
                 "query",
                 "top_k",
-                "result_view",
-                "passages_per_reference",
-                "categories",
                 "categories_any",
-                "projects",
                 "projects_any",
                 "keywords",
-                "document_ids",
                 "source_ids",
                 "exclude_source_ids",
-                "retrieval_method",
-                "rerank",
-                "include_staleness",
             },
-            "list_sources": {
-                "categories",
-                "categories_any",
-                "projects",
-                "projects_any",
-                "keywords",
-            },
-            "get_passage": {"chunk_id", "context_chunks"},
-            "set_source_inclusion": {
-                "source_id",
-                "source_path",
-                "included",
-                "reason",
-            },
+            "list_sources": set(),
+            "get_passage": {"chunk_id"},
+            "set_source_inclusion": {"source_path", "included", "reason"},
         }
         for tool_name, parameter_names in expected_parameters.items():
             properties = tools[tool_name].inputSchema["properties"]
             assert set(properties) == parameter_names
             assert all(properties[name].get("description") for name in properties)
 
-        search_properties = tools["search"].inputSchema["properties"]
-        assert search_properties["retrieval_method"]["default"] == "hybrid"
-        assert set(search_properties["retrieval_method"]["enum"]) == {
-            "hybrid",
-            "bm25",
-            "dense",
-        }
-        assert search_properties["rerank"]["default"] is True
-        assert search_properties["result_view"]["default"] == "passages"
-        assert set(search_properties["result_view"]["enum"]) == {
-            "passages",
-            "references",
-        }
-        passages_per_reference = search_properties["passages_per_reference"]
-        assert passages_per_reference["default"] == 2
-        assert passages_per_reference["minimum"] == 1
-        assert passages_per_reference["maximum"] == 5
-        assert search_properties["include_staleness"]["default"] is True
-        work_budget = tools["ingest"].inputSchema["properties"]["work_budget_seconds"]
-        assert work_budget["default"] == 45
-        assert work_budget["minimum"] == 10
-        assert work_budget["maximum"] == 300
+        # The retired knobs are gone from the published surface, not hidden.
+        for retired in (
+            "retrieval_method",
+            "rerank",
+            "include_staleness",
+            "result_view",
+            "passages_per_reference",
+            "document_ids",
+            "categories",
+            "projects",
+            "chunk_size",
+            "chunk_overlap",
+            "work_budget_seconds",
+            "context_chunks",
+            "source_id",
+        ):
+            assert retired not in tools["search"].inputSchema["properties"]
+            assert retired not in tools["ingest"].inputSchema["properties"]
+            assert retired not in tools["list_sources"].inputSchema["properties"]
+            assert retired not in tools["get_passage"].inputSchema["properties"]
+            assert (
+                retired not in tools["set_source_inclusion"].inputSchema["properties"]
+            )
 
         initial = await client.call_tool("status", {})
         assert initial.data["ready"] is False
@@ -182,10 +160,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             encoding="utf-8",
         )
 
-        ingested = await _ingest_until_complete(
-            client,
-            {"chunk_size": 50, "chunk_overlap": 10},
-        )
+        ingested = await _ingest_until_complete(client, {})
         assert ingested.data["status"] == "ready"
         assert ingested.data["generation_changed"] is True
         assert ingested.data["document_count"] == 1
@@ -309,10 +284,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         # metadata-only overlay is reported as an overlay, not as churn.
         assert "changes" not in metadata_status.data
 
-        corrected_sources = await client.call_tool(
-            "list_sources",
-            {"categories": ["corrected"], "keywords": ["heron"]},
-        )
+        corrected_sources = await client.call_tool("list_sources", {})
         assert corrected_sources.data["source_count"] == 1
         assert corrected_sources.data["sources"][0]["source_id"] == source_id
         assert corrected_sources.data["sources"][0]["title"] == (
@@ -324,7 +296,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             {
                 "query": "cobalt heron amber marsh",
                 "top_k": 1,
-                "categories": ["corrected"],
+                "categories_any": ["corrected"],
                 "keywords": ["heron"],
             },
         )
@@ -338,7 +310,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
         corrected_context = await client.call_tool(
             "get_passage",
-            {"chunk_id": hit["chunk_id"], "context_chunks": 0},
+            {"chunk_id": hit["chunk_id"]},
         )
         corrected_passage = corrected_context.data["context"][0]
         assert corrected_passage["title"] == "Reviewed Marsh Evidence"
@@ -346,70 +318,19 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert "categories" not in corrected_passage
         assert "notice" not in corrected_context.data
 
-        references_result = await client.call_tool(
-            "search",
-            {
-                "query": "cobalt heron amber marsh",
-                "top_k": 1,
-                "result_view": "references",
-                "passages_per_reference": 2,
-            },
-        )
-        # The reference view answers with the groups instead of the flat list.
-        assert "hits" not in references_result.data
-        reference_group = references_result.data["reference_groups"][0]
-        assert reference_group["source_id"] == source_id
-        assert reference_group["title"] == "Reviewed Marsh Evidence"
-        assert reference_group["passages"][0]["chunk_id"] == hit["chunk_id"]
-        assert "document_id" not in reference_group
-        assert "categories" not in reference_group
-
-        dense_result = await client.call_tool(
-            "search",
-            {
-                "query": "cobalt heron amber marsh labour ecology",
-                "top_k": 1,
-                "retrieval_method": "dense",
-                "categories": ["corrected"],
-                "keywords": ["heron"],
-            },
-        )
-        assert dense_result.data["hits"][0]["chunk_id"] == hit["chunk_id"]
-        assert "component_scores" not in dense_result.data["hits"][0]
-
-        unchecked = await client.call_tool(
-            "search",
-            {
-                "query": "cobalt heron amber marsh labour ecology",
-                "top_k": 1,
-                "include_staleness": False,
-            },
-        )
-        # A null stale verdict means the freshness check was skipped; the
-        # `staleness_checked` flag itself stays out of the lean answer.
-        assert unchecked.data["stale"] is None
-        assert "staleness_checked" not in unchecked.data
-        assert unchecked.data["hits"][0]["chunk_id"] == hit["chunk_id"]
-
         filtered_out = await client.call_tool(
             "search",
             {
                 "query": "wetland bird",
                 "top_k": 1,
-                "retrieval_method": "dense",
-                "categories": ["unrelated"],
+                "categories_any": ["unrelated"],
             },
         )
         assert filtered_out.data["hits"] == []
 
         reranked = await client.call_tool(
             "search",
-            {
-                "query": "cobalt heron amber marsh",
-                "top_k": 1,
-                "retrieval_method": "hybrid",
-                "rerank": True,
-            },
+            {"query": "cobalt heron amber marsh", "top_k": 1},
             timeout=1800,
         )
         assert reranked.data["reranked"] is True
@@ -418,7 +339,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         excluded = await client.call_tool(
             "set_source_inclusion",
             {
-                "source_id": source_id,
+                "source_path": "evidence.pdf",
                 "included": False,
                 "reason": "Agent-reviewed duplicate representation test.",
             },
@@ -433,7 +354,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
         restored = await client.call_tool(
             "set_source_inclusion",
-            {"source_id": source_id, "included": True},
+            {"source_path": "evidence.pdf", "included": True},
         )
         assert restored.data["effective_immediately"] is True
         restored_search = await client.call_tool(
@@ -461,11 +382,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
     ) as offline_client:
         offline_result = await offline_client.call_tool(
             "search",
-            {
-                "query": "cobalt heron amber marsh",
-                "top_k": 1,
-                "rerank": True,
-            },
+            {"query": "cobalt heron amber marsh", "top_k": 1},
             timeout=1800,
         )
         assert offline_result.data["retrieval_method"] == "hybrid"

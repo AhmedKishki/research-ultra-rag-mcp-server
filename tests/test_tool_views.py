@@ -142,55 +142,6 @@ def test_search_omits_an_upgrade_note_that_is_not_required() -> None:
     assert required["generation_upgrade_required"] is True
 
 
-def test_reference_view_groups_lean_passages() -> None:
-    payload = _search_payload(
-        result_view="references",
-        reference_groups=[
-            {
-                "rank": 1,
-                "source_id": "src_one",
-                "document_id": "doc_one",
-                "title": "Citable Evidence",
-                "authors": ["A. Researcher"],
-                "year": 2025,
-                "doi": "10.1/example",
-                "source_path": "sources/evidence.pdf",
-                "source_relative_path": "evidence.pdf",
-                "categories": ["research"],
-                "keywords": ["wetland"],
-                "project": ["ai-and-fetishism"],
-                "passage_count": 1,
-                "passages": [_hit()],
-            }
-        ],
-    )
-    lean = present_tool_response("search", payload, detail=LEAN_TOOL_DETAIL)
-
-    assert set(lean) == {
-        "query",
-        "generation_id",
-        "stale",
-        "reranked",
-        "reference_groups",
-    }
-    assert set(lean["reference_groups"][0]) == {
-        "source_id",
-        "source_relative_path",
-        "title",
-        "authors",
-        "passages",
-    }
-    grouped = lean["reference_groups"][0]["passages"][0]
-    assert set(grouped) == {
-        "chunk_id",
-        "locator",
-        "citation",
-        "text",
-        "direct_quote_safe",
-    }
-    assert grouped["chunk_id"] == "chk_one"
-
-
 def test_passage_context_is_lean_and_keeps_no_rank() -> None:
     payload = {
         "generation_id": "20260101T000000Z-abcdef",
@@ -613,10 +564,6 @@ def _search_payload(**overrides: object) -> dict[str, object]:
         "candidate_count": 9,
         "candidate_distinct_reference_count": 2,
         "requested_top_k": 6,
-        "result_view": "passages",
-        "passages_per_reference": None,
-        "grouping": None,
-        "grouping_skipped_candidate_count": 0,
         "fusion": {"method": "weighted_reciprocal_rank_fusion", "rrf_k": 60},
         "relevance_policy": {"dense_minimum_cosine_similarity": 0.72},
         "rejected_candidates": {"dense_below_threshold": 11},
@@ -629,9 +576,7 @@ def _search_payload(**overrides: object) -> dict[str, object]:
         "result_count": 2,
         "distinct_reference_count": 2,
         "relevance_limited": False,
-        "grouping_limited": False,
         "hits": [_hit(), _anonymous_hit()],
-        "reference_groups": None,
         "notice": "Returned text is cleaned for semantic retrieval.",
     }
     payload.update(overrides)

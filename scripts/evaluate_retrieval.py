@@ -50,7 +50,12 @@ from research_ultra_rag_mcp.config import (
     configured_source_directory,
     resolve_config,
 )
+from research_ultra_rag_mcp.service import ResearchService
 from research_ultra_rag_mcp.transport import create_research_transport
+from research_ultra_rag_mcp.ultrarag import (
+    VanillaUltraRAG,
+    create_vanilla_transport,
+)
 
 DEFAULT_JUDGMENTS = Path("evaluation/ai-and-fetishism-queries.json")
 MODES = ("bm25", "dense", "hybrid", "hybrid+rerank")
@@ -507,26 +512,16 @@ def _selection(value: str, allowed: tuple[str, ...], label: str) -> list[str]:
     return chosen
 
 
-def _search_arguments(mode: str, query: str, top_k: int) -> dict[str, Any]:
-    arguments: dict[str, Any] = {
-        "query": query,
-        "top_k": top_k,
-        "result_view": "passages",
-        # The harness measures retrieval, not freshness, so it uses the
-        # documented opt-out instead of paying for the source-tree walk.
-        "include_staleness": False,
-    }
+def _mode_settings(mode: str) -> dict[str, Any]:
+    """Return the engine settings that name one measured mode."""
+
     if mode == "hybrid+rerank":
-        arguments["retrieval_method"] = "hybrid"
-        arguments["rerank"] = True
-    else:
-        arguments["retrieval_method"] = mode
-        arguments["rerank"] = False
-    return arguments
+        return {"retrieval_method": "hybrid", "rerank": True}
+    return {"retrieval_method": mode, "rerank": False}
 
 
 async def _run_one(
-    client: Any,
+    service: ResearchService,
     *,
     query_id: str,
     query_class: str,
@@ -536,13 +531,12 @@ async def _run_one(
     target: dict[str, Any],
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    payload = (
-        await client.call_tool(
-            "search",
-            _search_arguments(mode, query, top_k),
-            timeout=1800,
-        )
-    ).data
+    payload = await service.search(
+        query,
+        top_k=top_k,
+        include_staleness=False,
+        **_mode_settings(mode),
+    )
     elapsed = time.perf_counter() - started
     if not isinstance(payload, dict) or not isinstance(payload.get("hits"), list):
         raise EvaluationError(f"search returned an unexpected payload for {query_id}")
@@ -658,12 +652,27 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         },
         "notice": (
             "Judgment resolution reads the generation's canonical chunks.jsonl "
-            "read-only. Retrieval itself goes only through the public MCP search "
-            "tool, and this harness never writes inside the project."
+            "read-only, and this harness never writes inside the project. "
+            "Retrieval runs through ResearchService.search, which is the same "
+            "engine the search tool calls, because the agent-facing tool is "
+            "hybrid-only and this harness also measures BM25 and dense."
         ),
     }
 
-    async with Client(transport, timeout=1800, init_timeout=1800) as client:
+    vanilla_transport = create_vanilla_transport(config)
+    async with (
+        Client(
+            vanilla_transport,
+            timeout=1800,
+            init_timeout=1800,
+        ) as vanilla_client,
+        Client(
+            transport,
+            timeout=1800,
+            init_timeout=1800,
+        ) as client,
+    ):
+        service = ResearchService(config, VanillaUltraRAG(vanilla_client))
         status = (await client.call_tool("status", {})).data
         generation_root = status.get("generation_root")
         if not generation_root:
@@ -703,7 +712,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         warm_target = resolved[warm_query["target_id"]]
         warm_started = time.perf_counter()
         await _run_one(
-            client,
+            service,
             query_id="warmup",
             query_class=warm_query["class"],
             query=warm_query["query"],
@@ -722,7 +731,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             ranks: list[str] = []
             for mode in modes:
                 run = await _run_one(
-                    client,
+                    service,
                     query_id=query["query_id"],
                     query_class=query["class"],
                     query=query["query"],
@@ -741,7 +750,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             for query in queries:
                 deep_runs.append(
                     await _run_one(
-                        client,
+                        service,
                         query_id=query["query_id"],
                         query_class=query["class"],
                         query=query["query"],
@@ -764,7 +773,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "search_count": len(runs) + len(deep_runs),
     }
 
-    print_summary(f"passage view, top_k={args.top_k}", report["summary"])
+    print_summary(f"top_k={args.top_k}", report["summary"])
     if report["deep_summary"]:
         print_summary(f"deep pass, top_k={args.deep_top_k}", report["deep_summary"])
     report_path.parent.mkdir(parents=True, exist_ok=True)

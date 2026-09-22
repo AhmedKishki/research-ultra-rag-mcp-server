@@ -17,19 +17,15 @@ Use `research-ultra-rag-mcp` to discover and synthesize evidence across one proj
 
 The local UI uses the same public tools. Call `status` again before relying on state observed earlier in a long session.
 
-## Choosing retrieval
+## How retrieval is chosen for you
 
-- `hybrid`: ordinary research; weighted RRF combines BM25 (`1.25`) and dense (`1.0`) ranks.
-- `bm25`: exact terms, names, and distinctive phrases. A candidate must contain at least one non-stopword query token.
-- `dense`: conceptual similarity. A candidate must have cosine similarity `>= 0.72`.
-- `rerank=true`: CPU cross-encoder reranking, which is **on by default** and runs after the normal gates; slower (about 2.3 s per warm query against 0.17 s for unreranked hybrid) and it may download a second model on first use. Pass `rerank=false` for the lowest latency or when the model is unavailable. On the judged set in `MEASUREMENTS.md` it is the largest measured gain, lifting first-position success from 66% to 81% and entity questions from 60% to 80%. When the response contains `rerank_fallback`, the model could not be loaded and the order you received is the plain unranked candidate order.
-- `result_view="passages"`: preserve the global passage ranking.
-- `result_view="references"`: use the same ranked candidate pool but cap each `source_id` at `passages_per_reference` (default `2`) within the unchanged total `top_k` passage budget. Use this when several useful references matter more than several passages from one reference.
-- `include_staleness=true` (default) makes each search re-compare the source directory with the generation to report `stale`. That comparison grows with the number of sources, so pass `include_staleness=false` for follow-up searches in a session where you have already called `status` and only need evidence. The response then reports `stale: null`, which means the freshness was not checked, not that the generation is current. Call `status` before telling a user whether their corpus is up to date.
+- Hybrid retrieval with CPU cross-encoder reranking, always. BM25 (weighted `1.25`) and dense (`1.0`) ranks are fused, candidates are gated (BM25 needs at least one non-stopword query token, dense needs cosine `>= 0.72`), and the reranker then reorders at most 50 candidates. On the judged set in `MEASUREMENTS.md` this is the best of the measured modes, so there is no mode to choose.
+- It is the slow path by design: about 2.3 s per warm query against 0.17 s for unranked hybrid, and it may download a second model on first use. When the response contains `rerank_fallback`, the model could not be loaded and the order you received is the plain unranked candidate order.
+- Every search re-compares the source directory with the generation to report `stale`. That comparison grows with the number of sources but is always done, so `stale` is never null through this tool. Call `status` when you need the detail behind a stale verdict.
 
 ## Reading an answer
 
-A search answers with `query`, `generation_id`, `stale`, `reranked`, and its passages; the reference view answers with `reference_groups` instead of `hits`. A field that is absent means there is nothing to report — no unresolved ID, no required ingestion, no warning — not that its value is unknown. `stale: null` means the freshness check was skipped, and `reranked: false` with `rerank_fallback` means the reranker did not run and the order you received is the plain candidate order.
+A search answers with `query`, `generation_id`, `stale`, `reranked`, and its passages. A field that is absent means there is nothing to report — no unresolved ID, no required ingestion, no warning — not that its value is unknown. `reranked: false` with `rerank_fallback` means the reranker did not run and the order you received is the plain candidate order.
 
 - `text`: cleaned semantic text for comprehension and paraphrase, never quotation.
 - `direct_quote_safe`: always `false` under this extraction contract.
@@ -38,10 +34,9 @@ A search answers with `query`, `generation_id`, `stale`, `reranked`, and its pas
 - `title`, `authors`: resolved bibliography, present only when it was resolved. `citation` is the ready-to-use form of the reference: authors, title, year, DOI, and the locator.
 - `chunk_id`: this passage's handle for `get_passage`.
 - `text_notes`, when present: advisory script notes such as `non_latin_dominant` or `mixed_script_text`. They never mean the passage was unusable; read its locator before treating it as English prose.
-- In the reference view, read `reference_groups`: each entry names one reference once and lists the passages selected from it. `passages_per_reference` caps each source, and `top_k` remains the total passage budget.
 - A stale `status` carries `changes`: counts for added and modified sources, `removed_sources` naming what is gone from the directory, and the review and exclusion flags. Available sources are counted there rather than listed; `list_sources` is the inventory, and `status` never becomes a corpus listing.
 
-Category and keyword filters use AND semantics. Document IDs use membership semantics; they name a content/path version inside one generation and are not reported in an answer, so select sources by `source_id`. Extraction artifacts and nonempty chunks containing no Unicode alphanumeric content are rejected. Text, numbers, and formulas containing at least one letter or digit are not symbol-only. A candidate is withheld only for corruption evidence: replacement characters, private-use or unassigned code points, or a known damaged encoding sequence. Script mixing never withholds a passage.
+Categories and projects are matched with any-of semantics (`categories_any`, `projects_any`: a result must carry at least one listed value), and keywords are matched with all-of semantics. Extraction artifacts and nonempty chunks containing no Unicode alphanumeric content are rejected. Text, numbers, and formulas containing at least one letter or digit are not symbol-only. A candidate is withheld only for corruption evidence: replacement characters, private-use or unassigned code points, or a known damaged encoding sequence. Script mixing never withholds a passage.
 
 - Treat automatically extracted bibliography as a best-effort starting point, not an authority. If a title, author, year, or DOI is missing, uncertain, or wrong, inspect the original and tell the user, who corrects it in `.research-rag/source-metadata.json`; there is no metadata tool and you must not edit that file yourself. Reviewed values are authoritative at read time, so a correction reaches listings, filters, citations, and neighboring passages with no re-ingestion, while a source absent from the selected generation takes effect after the next ingestion. Do not expect ingestion heuristics to know document- or publisher-specific conventions.
 
@@ -61,7 +56,7 @@ Never invent a title, author, DOI, date, locator, score, or quotation.
 - Symbol-only chunks are omitted during ingestion and guarded at retrieval for older generations. A chunk with at least one Unicode letter or digit is not symbol-only, including an alphanumeric formula or numeric content; other extraction-artifact checks still apply.
 - Read `generation_changed`, `status`, and the reuse/rebuild and vector counts from the ingestion response before reporting what occurred.
 - Metadata review is a file edit, not a tool call. The project's `.research-rag/source-metadata.json` holds a complete override per source: omitting a field stops overriding it, `{}` restores every automatic value, and an explicitly empty value clears one field. It is authoritative at the next read wherever the source is in the selected generation. Never write that file yourself; report what looks wrong and let the user correct it.
-- Exclusion is explicit, reversible, and immediately enforced without deleting the source. Call `set_source_inclusion` with exactly one selector, preferably `source_id`; re-ingest to omit it physically from new indexes.
+- Exclusion is explicit, reversible, and immediately enforced without deleting the source. Call `set_source_inclusion` with the filename that `list_sources` reports; re-ingest to omit it physically from new indexes.
 - A chunk ID belongs to the generation that returned it and may change after a rebuild.
 - A project moves by copying its directory: `sources/` plus `.research-rag/`. `runtime/` is disposable and rebuilds on the next ingestion.
 

@@ -44,9 +44,6 @@ CORRUPT_TEXT = (
     "ᓌˈ⭡᭯ ᓌ᢯ᣵޘ䜘؞༽䍴䠁ˈᴰ㓸䙐ᡀ⊑ḃ⋫⨶ᡀᵜ⽮Պॆ "
     "ˈᒦᕅਁ ⧟ຳнޜǄᴹ∂ᓏ⢙൪ൠ 䳮�"
 )
-GROUPED_SEARCH_QRELS = (
-    Path(__file__).parent / "fixtures" / "grouped_search_source_qrels.json"
-)
 
 
 class FakeUltraRAG:
@@ -438,46 +435,6 @@ class ProgressivelyFilteredUltraRAG(FakeUltraRAG):
         return await super().search_bm25(query, top_k)
 
 
-class JudgedGroupedSearchUltraRAG(FakeUltraRAG):
-    def __init__(self, qrels: dict[str, object]) -> None:
-        super().__init__()
-        sources = qrels["sources"]
-        assert isinstance(sources, list)
-        self.term_counts_by_title = {
-            str(source["title"]): list(source["candidate_term_counts"])
-            for source in sources
-        }
-
-    async def chunk(
-        self,
-        input_path: Path,
-        output_path: Path,
-        *,
-        chunk_size: int,
-        chunk_overlap: int,
-    ) -> None:
-        assert chunk_size > chunk_overlap
-        self.chunk_calls += 1
-        unit = read_jsonl(input_path)[0]
-        title = str(unit["title"])
-        term_counts = self.term_counts_by_title[title]
-        write_jsonl(
-            output_path,
-            (
-                {
-                    "id": index,
-                    "doc_id": unit["id"],
-                    "title": title,
-                    "contents": (
-                        f"{'Evidence ' * int(term_count)}"
-                        f"Judged passage {index + 1} from {title}."
-                    ),
-                }
-                for index, term_count in enumerate(term_counts)
-            ),
-        )
-
-
 def test_unsearchable_upstream_chunks_are_counted_without_losing_a_unit() -> None:
     document = {
         "document_id": "doc_test",
@@ -643,9 +600,10 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     assert status["model_cache_root"] == str(config.model_cache_root)
     assert status["last_build_metrics"]["created_vector_count"] == result["chunk_count"]
 
-    sources = await service.list_sources(categories=["political economy"])
+    sources = await service.list_sources()
     assert sources["source_count"] == 1
     assert sources["sources"][0]["source_path"] == "sources/article.pdf"
+    assert sources["sources"][0]["categories"] == ["political economy"]
 
     generation_root = Path(result["generation_root"])
     manifest = json.loads(
@@ -664,7 +622,7 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     search = await service.search(
         "cobalt labour",
         top_k=1,
-        categories=["political economy"],
+        categories_any=["political economy"],
     )
     hit = search["hits"][0]
     assert hit["source_path"] == "sources/article.pdf"
@@ -692,7 +650,7 @@ async def _assert_research_generation_and_structured_search(project: Path) -> No
     dense_search = await service.search(
         "cobalt labour",
         top_k=1,
-        categories=["political economy"],
+        categories_any=["political economy"],
         retrieval_method="dense",
         rerank=True,
     )
@@ -876,12 +834,7 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
     assert status["changes"]["metadata_changed"] is True
     assert status["generation_id"] == ingested["generation_id"]
 
-    old_sources = await service.list_sources(categories=["old category"])
-    assert old_sources["source_count"] == 0
-    sources = await service.list_sources(
-        categories=["new category"],
-        keywords=["new keyword"],
-    )
+    sources = await service.list_sources()
     assert sources["source_count"] == 1
     listed = sources["sources"][0]
     assert listed["title"] == "Corrected Reviewed Title"
@@ -893,17 +846,16 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
 
     old_dense = await service.search(
         "cobalt evidence",
-        categories=["old category"],
+        categories_any=["old category"],
         keywords=["old keyword"],
         retrieval_method="dense",
     )
     assert old_dense["hits"] == []
     search = await service.search(
         "cobalt evidence",
-        categories=["new category"],
+        categories_any=["new category"],
         keywords=["new keyword"],
         retrieval_method="dense",
-        result_view="references",
     )
     hit = search["hits"][0]
     assert hit["title"] == "Corrected Reviewed Title"
@@ -914,8 +866,6 @@ async def _assert_reviewed_metadata_is_a_runtime_overlay(project: Path) -> None:
     assert hit["keywords"] == ["new keyword"]
     assert "Correct Author, Corrected Reviewed Title (2026)" in hit["citation"]
     assert "doi:10.1000/corrected" in hit["citation"]
-    assert search["reference_groups"][0]["title"] == "Corrected Reviewed Title"
-    assert search["reference_groups"][0]["categories"] == ["new category"]
 
     passage = await service.get_passage(hit["chunk_id"])
     context = passage["context"][0]
@@ -1687,192 +1637,6 @@ def _source_level_metrics(
         "recall": recall,
         "ndcg": discounted_gain(actual) / ideal_gain if ideal_gain else 0.0,
     }
-
-
-async def _assert_document_grouped_search_uses_judged_candidate_pool(
-    project: Path,
-) -> None:
-    qrels = json.loads(GROUPED_SEARCH_QRELS.read_text(encoding="utf-8"))
-    sources = qrels["sources"]
-    for source in sources:
-        write_pdf(
-            project / source["source_path"],
-            [f"Source material for {source['title']}"],
-            title=source["title"],
-        )
-
-    config = resolve_config(project, vanilla_executable=sys.executable)
-    service = ResearchService(  # type: ignore[arg-type]
-        config,
-        JudgedGroupedSearchUltraRAG(qrels),
-        dense=FakeDenseBackend(),
-    )
-    await service.ingest(chunk_size=50, chunk_overlap=10)
-    search_arguments = {
-        "top_k": int(qrels["top_k"]),
-        "retrieval_method": "dense",
-    }
-    default_passages = await service.search(qrels["query"], **search_arguments)
-    explicit_passages = await service.search(
-        qrels["query"],
-        result_view="passages",
-        **search_arguments,
-    )
-    grouped = await service.search(
-        qrels["query"],
-        result_view="references",
-        passages_per_reference=int(qrels["passages_per_reference"]),
-        **search_arguments,
-    )
-    one_passage = await service.search(
-        qrels["query"],
-        top_k=1,
-        retrieval_method="dense",
-        result_view="references",
-        passages_per_reference=int(qrels["passages_per_reference"]),
-    )
-    dominant_document_only = await service.search(
-        qrels["query"],
-        top_k=int(qrels["top_k"]),
-        retrieval_method="dense",
-        result_view="references",
-        passages_per_reference=int(qrels["passages_per_reference"]),
-        document_ids=[str(default_passages["hits"][0]["document_id"])],
-    )
-    cap_one = await service.search(
-        qrels["query"],
-        result_view="references",
-        passages_per_reference=1,
-        **search_arguments,
-    )
-    reranked = await service.search(
-        qrels["query"],
-        result_view="references",
-        passages_per_reference=int(qrels["passages_per_reference"]),
-        rerank=True,
-        **search_arguments,
-    )
-
-    assert explicit_passages == default_passages
-    assert default_passages["result_view"] == "passages"
-    assert default_passages["passages_per_reference"] is None
-    assert default_passages["reference_groups"] is None
-    assert default_passages["distinct_reference_count"] == 1
-    assert [hit["source_path"] for hit in default_passages["hits"]] == [
-        "sources/a.pdf"
-    ] * 4
-
-    assert grouped["result_view"] == "references"
-    assert grouped["result_count"] == 4
-    assert grouped["candidate_count"] == 13
-    assert grouped["candidate_distinct_reference_count"] == 4
-    assert grouped["distinct_reference_count"] == 3
-    assert grouped["grouping"] == {
-        "method": "source_id_passage_cap",
-        "passages_per_reference": 2,
-        "skipped_candidate_count": 8,
-    }
-    assert grouped["grouping_skipped_candidate_count"] == 8
-    assert one_passage["grouping_skipped_candidate_count"] == 0
-    assert one_passage["grouping"]["skipped_candidate_count"] == 0
-    assert dominant_document_only["result_count"] == 2
-    assert dominant_document_only["relevance_limited"] is False
-    assert dominant_document_only["grouping_limited"] is True
-    assert [hit["source_path"] for hit in grouped["hits"]] == [
-        "sources/a.pdf",
-        "sources/a.pdf",
-        "sources/b.pdf",
-        "sources/c.pdf",
-    ]
-    assert [group["source_path"] for group in grouped["reference_groups"]] == [
-        "sources/a.pdf",
-        "sources/b.pdf",
-        "sources/c.pdf",
-    ]
-    assert [group["passage_count"] for group in grouped["reference_groups"]] == [
-        2,
-        1,
-        1,
-    ]
-    assert [
-        passage["chunk_id"]
-        for group in grouped["reference_groups"]
-        for passage in group["passages"]
-    ] == [hit["chunk_id"] for hit in grouped["hits"]]
-
-    grades = {
-        source["source_path"]: int(source["relevance_grade"]) for source in sources
-    }
-    flat_metrics = _source_level_metrics(
-        default_passages,
-        grades,
-        cutoff=int(qrels["top_k"]),
-    )
-    grouped_metrics = _source_level_metrics(
-        grouped,
-        grades,
-        cutoff=int(qrels["top_k"]),
-    )
-    cap_one_metrics = _source_level_metrics(
-        cap_one,
-        grades,
-        cutoff=int(qrels["top_k"]),
-    )
-    assert flat_metrics["precision"] == 1.0
-    assert flat_metrics["recall"] == pytest.approx(1 / 3)
-    assert grouped_metrics == {
-        "precision": 1.0,
-        "recall": 1.0,
-        "ndcg": 1.0,
-    }
-    assert cap_one_metrics["precision"] == 0.75
-    assert cap_one_metrics["recall"] == grouped_metrics["recall"]
-    assert cap_one_metrics["ndcg"] == grouped_metrics["ndcg"]
-    assert grouped_metrics["recall"] > flat_metrics["recall"]
-    assert grouped_metrics["ndcg"] > flat_metrics["ndcg"]
-
-    assert [hit["source_path"] for hit in reranked["hits"]] == [
-        "sources/a.pdf",
-        "sources/a.pdf",
-        "sources/b.pdf",
-        "sources/c.pdf",
-    ]
-    assert reranked["candidate_count"] == 13
-    assert reranked["hits"][0]["rerank_score"] is not None
-    assert reranked["hits"][2]["rerank_score"] is None
-    assert reranked["hits"][3]["rerank_score"] is None
-
-
-def test_document_grouped_search_uses_judged_candidate_pool(project: Path) -> None:
-    asyncio.run(_assert_document_grouped_search_uses_judged_candidate_pool(project))
-
-
-async def _assert_grouped_search_parameter_validation(project: Path) -> None:
-    config = resolve_config(project, vanilla_executable=sys.executable)
-    service = ResearchService(  # type: ignore[arg-type]
-        config,
-        FakeUltraRAG(),
-        dense=FakeDenseBackend(),
-    )
-    with pytest.raises(
-        ResearchError,
-        match="result_view must be one of: passages, references",
-    ):
-        await service.search("evidence", result_view="documents")
-    for invalid_cap in (0, 6):
-        with pytest.raises(
-            ResearchError,
-            match="passages_per_reference must be between 1 and 5",
-        ):
-            await service.search(
-                "evidence",
-                result_view="references",
-                passages_per_reference=invalid_cap,
-            )
-
-
-def test_grouped_search_parameter_validation(project: Path) -> None:
-    asyncio.run(_assert_grouped_search_parameter_validation(project))
 
 
 async def _assert_relevance_gates_allow_abstention(project: Path) -> None:
@@ -2831,7 +2595,7 @@ async def _assert_metadata_edit_preserves_ingestion_checkpoint(
         service_module.METADATA_STORAGE_POLICY
     )
     assert manifest["documents"][0]["title"] == "Automatic Title"
-    listed = await service.list_sources(categories=["theory"])
+    listed = await service.list_sources()
     assert listed["sources"][0]["title"] == "Reviewed During Build"
     assert not any(config.failures_root.iterdir())
 
@@ -3603,7 +3367,7 @@ async def _assert_filtered_bm25_deepens_without_loading_the_corpus(
     search = await service.search(
         "cobalt",
         top_k=5,
-        categories=["selected"],
+        categories_any=["selected"],
         retrieval_method="bm25",
     )
 

@@ -16,10 +16,38 @@ from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.server import _ui_port_from
 from research_ultra_rag_mcp.ui import EmbeddedUi, create_ui_app
 
+TOOL_PARAMETERS: dict[str, set[str]] = {
+    "status": set(),
+    "ingest": {"force_recompute"},
+    "search": {
+        "query",
+        "top_k",
+        "categories_any",
+        "projects_any",
+        "keywords",
+        "source_ids",
+        "exclude_source_ids",
+    },
+    "list_sources": set(),
+    "get_passage": {"chunk_id"},
+    "set_source_inclusion": {"included", "reason", "source_path"},
+}
+
 
 class FakeResearchClient:
+    """Stand in for the MCP client, including the tool schemas it publishes."""
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def list_tools(self) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                name=name,
+                inputSchema={"properties": {key: {} for key in parameters}},
+            )
+            for name, parameters in TOOL_PARAMETERS.items()
+        ]
 
     async def call_tool(
         self,
@@ -199,22 +227,17 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert profile.json()["capabilities"]["source_selection"] is True
     assert profile.json()["capabilities"]["category_partitions"] is True
     assert profile.json()["capabilities"]["project_metadata"] is True
+    assert profile.json()["capabilities"]["metadata_filters"] is False
+    assert profile.json()["capabilities"]["retrieval_modes"] is False
+    assert profile.json()["capabilities"]["reranking"] is False
+    assert profile.json()["capabilities"]["chunk_settings"] is False
     assert profile.json()["result_text_label"].startswith("Cleaned semantic text")
     assert status.json()["generation_id"] == "generation-1"
     assert sources.json()["sources"][0]["title"] == "Evidence"
     assert context.json()["requested_chunk_id"] == "chunk-1"
     assert ("status", {}) in fake.calls
-    assert (
-        "list_sources",
-        {
-            "categories": ["theory", "history"],
-            "categories_any": None,
-            "projects": None,
-            "projects_any": None,
-            "keywords": None,
-        },
-    ) in fake.calls
-    assert ("get_passage", {"chunk_id": "chunk-1", "context_chunks": 2}) in fake.calls
+    assert ("list_sources", {}) in fake.calls
+    assert ("get_passage", {"chunk_id": "chunk-1"}) in fake.calls
 
 
 def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
@@ -222,12 +245,7 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
     with client:
         search = client.post(
             "/api/search",
-            json={
-                "query": "research question",
-                "top_k": 5,
-                "retrieval_method": "hybrid",
-                "rerank": False,
-            },
+            json={"query": "research question", "top_k": 5},
         )
         narrowed = client.post(
             "/api/search",
@@ -249,11 +267,7 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
         )
         ingestion = client.post(
             "/api/ingest",
-            json={
-                "chunk_size": 384,
-                "chunk_overlap": 64,
-                "force_recompute": True,
-            },
+            json={"force_recompute": True},
         )
         retired_metadata = client.post(
             "/api/source-metadata",
@@ -278,15 +292,7 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
     assert retired_metadata.status_code == 404
     assert retired_export.status_code == 404
     assert retired_import.status_code == 404
-    assert (
-        "search",
-        {
-            "query": "research question",
-            "top_k": 5,
-            "retrieval_method": "hybrid",
-            "rerank": False,
-        },
-    ) in fake.calls
+    assert ("search", {"query": "research question", "top_k": 5}) in fake.calls
     assert (
         "search",
         {
@@ -298,14 +304,7 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
         },
     ) in fake.calls
     assert narrowed.json()["hits"][0]["citation"].endswith("p. 1")
-    assert (
-        "ingest",
-        {
-            "chunk_size": 384,
-            "chunk_overlap": 64,
-            "force_recompute": True,
-        },
-    ) in fake.calls
+    assert ("ingest", {"force_recompute": True}) in fake.calls
 
 
 def test_ui_repeats_batched_ingestion_until_ready(project: Path) -> None:
@@ -314,10 +313,7 @@ def test_ui_repeats_batched_ingestion_until_ready(project: Path) -> None:
     app = create_ui_app(config, research_client=fake)
 
     with TestClient(app) as client:
-        response = client.post(
-            "/api/ingest",
-            json={"chunk_size": 384, "chunk_overlap": 64},
-        )
+        response = client.post("/api/ingest", json={})
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"

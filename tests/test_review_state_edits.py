@@ -83,11 +83,11 @@ def test_hand_written_metadata_file_is_honoured(project: Path) -> None:
             "cobalt evidence",
             top_k=5,
             rerank=False,
-            projects=["ai-and-fetishism"],
-            categories=["marxism"],
+            projects_any=["ai-and-fetishism"],
+            categories_any=["marxism"],
             keywords=["use value"],
         )
-        assert filtered["filters"]["projects_all"] == ["ai-and-fetishism"]
+        assert filtered["filters"]["projects_any"] == ["ai-and-fetishism"]
         assert len(filtered["hits"]) == 1
         assert filtered["hits"][0]["title"] == "Hand-edited title"
         assert filtered["hits"][0]["project"] == ["ai-and-fetishism"]

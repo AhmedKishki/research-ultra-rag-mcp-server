@@ -37,24 +37,6 @@ def test_verifier_repeats_checkpointed_ingestion_until_terminal() -> None:
     assert client.calls == [("ingest", arguments, 1800)] * 3
 
 
-def test_verifier_grouped_search_flags() -> None:
-    defaults = _parser().parse_args(["/tmp/research-project"])
-    assert defaults.result_view == "passages"
-    assert defaults.passages_per_reference == 2
-
-    references = _parser().parse_args(
-        [
-            "/tmp/research-project",
-            "--result-view",
-            "references",
-            "--passages-per-reference",
-            "4",
-        ]
-    )
-    assert references.result_view == "references"
-    assert references.passages_per_reference == 4
-
-
 class VerificationClient:
     calls: ClassVar[list[tuple[str, dict[str, Any]]]] = []
 
@@ -84,7 +66,7 @@ class VerificationClient:
         return SimpleNamespace(data=dict(arguments))
 
 
-def test_verifier_forwards_grouped_search_flags(
+def test_verifier_forwards_the_agent_search_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -106,21 +88,10 @@ def test_verifier_forwards_grouped_search_flags(
             "grouped evidence",
             "--top-k",
             "7",
-            "--result-view",
-            "references",
-            "--passages-per-reference",
-            "3",
         ]
     )
 
     result = asyncio.run(_verify(args))
 
-    assert result["search"] == {
-        "query": "grouped evidence",
-        "top_k": 7,
-        "result_view": "references",
-        "passages_per_reference": 3,
-        "retrieval_method": "hybrid",
-        "rerank": False,
-    }
+    assert result["search"] == {"query": "grouped evidence", "top_k": 7}
     assert VerificationClient.calls[-1] == ("search", result["search"])

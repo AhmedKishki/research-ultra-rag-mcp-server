@@ -170,13 +170,12 @@ def test_categories_partition_the_corpus_for_search_and_listing(project: Path) -
             "labour evidence",
             top_k=10,
             rerank=False,
-            categories=["cobalt corpus"],
+            categories_any=["cobalt corpus"],
         )
         assert {hit["source_path"] for hit in one_partition["hits"]} == {
             "sources/cobalt.pdf"
         }
-        assert one_partition["filters"]["categories_all"] == ["cobalt corpus"]
-        assert one_partition["filters"]["categories_any"] == []
+        assert one_partition["filters"]["categories_any"] == ["cobalt corpus"]
 
         union = await service.search(
             "labour evidence",
@@ -190,18 +189,19 @@ def test_categories_partition_the_corpus_for_search_and_listing(project: Path) -
         }
         assert union["filters"]["categories_any"] == ["cobalt corpus", "waste corpus"]
 
-        contradictory = await service.search(
+        no_such_partition = await service.search(
             "labour evidence",
             top_k=10,
             rerank=False,
-            categories=["cobalt corpus"],
-            categories_any=["waste corpus"],
+            categories_any=["no such corpus"],
         )
-        assert contradictory["hits"] == []
+        assert no_such_partition["hits"] == []
 
-        listed = await service.list_sources(categories_any=["waste corpus"])
+        # The source inventory is the whole corpus; it takes no filters.
+        listed = await service.list_sources()
         assert [item["source_path"] for item in listed["sources"]] == [
-            "sources/waste.pdf"
+            "sources/cobalt.pdf",
+            "sources/waste.pdf",
         ]
 
     asyncio.run(exercise())
@@ -225,12 +225,12 @@ def test_source_selection_combines_with_categories(project: Path) -> None:
             "labour evidence",
             top_k=10,
             rerank=False,
-            categories=["shared corpus"],
+            categories_any=["shared corpus"],
             source_ids=[source_ids["waste.pdf"]],
         )
         assert {hit["source_path"] for hit in selected["hits"]} == {"sources/waste.pdf"}
         assert selected["filters"]["active_document_count"] == 1
-        assert selected["filters"]["categories_all"] == ["shared corpus"]
+        assert selected["filters"]["categories_any"] == ["shared corpus"]
         assert selected["filters"]["source_ids"] == [source_ids["waste.pdf"]]
 
     asyncio.run(exercise())
@@ -261,11 +261,10 @@ def test_project_layer_selects_and_reports(project: Path) -> None:
             "labour evidence",
             top_k=10,
             rerank=False,
-            projects=["ai-and-fetishism"],
+            projects_any=["ai-and-fetishism"],
         )
         assert {hit["source_path"] for hit in mine["hits"]} == {"sources/cobalt.pdf"}
-        assert mine["filters"]["projects_all"] == ["ai-and-fetishism"]
-        assert mine["filters"]["projects_any"] == []
+        assert mine["filters"]["projects_any"] == ["ai-and-fetishism"]
         # The layer is returned with every hit and reference group, so a caller
         # can see why a passage was selected without a second lookup.
         assert [hit["project"] for hit in mine["hits"]] == [["ai-and-fetishism"]]
@@ -285,14 +284,9 @@ def test_project_layer_selects_and_reports(project: Path) -> None:
             "labour evidence",
             top_k=10,
             rerank=False,
-            projects=["unassigned"],
+            projects_any=["unassigned"],
         )
         assert untagged["hits"] == []
-
-        listed = await service.list_sources(projects=["other-project"])
-        assert [item["source_path"] for item in listed["sources"]] == [
-            "sources/waste.pdf"
-        ]
 
     asyncio.run(exercise())
 
@@ -323,14 +317,14 @@ def test_three_metadata_layers_combine(project: Path) -> None:
             "labour evidence",
             top_k=10,
             rerank=False,
-            projects=["ai-and-fetishism"],
-            categories=["marxism"],
+            projects_any=["ai-and-fetishism"],
+            categories_any=["marxism"],
             keywords=["fetishism"],
         )
         assert {hit["source_path"] for hit in matched["hits"]} == {"sources/cobalt.pdf"}
         filters = matched["filters"]
-        assert filters["projects_all"] == ["ai-and-fetishism"]
-        assert filters["categories_all"] == ["marxism"]
+        assert filters["projects_any"] == ["ai-and-fetishism"]
+        assert filters["categories_any"] == ["marxism"]
         assert filters["keywords_all"] == ["fetishism"]
 
         # A branch filter from the other layer still resolves independently.
@@ -338,7 +332,7 @@ def test_three_metadata_layers_combine(project: Path) -> None:
             "labour evidence",
             top_k=10,
             rerank=False,
-            projects=["ai-and-fetishism"],
+            projects_any=["ai-and-fetishism"],
             categories_any=["marxism", "political ecology"],
             keywords=["waste"],
         )

@@ -21,7 +21,6 @@ __all__ = [
     "lean_list_sources",
     "lean_passage",
     "lean_passage_context",
-    "lean_reference_group",
     "lean_search",
     "lean_source_inclusion",
     "lean_status",
@@ -69,31 +68,6 @@ def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def lean_reference_group(group: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one reference group: the source, and its passages without it."""
-
-    result: dict[str, Any] = {}
-    for key in ("source_id", "source_relative_path", "title", "authors"):
-        _add(result, key, group.get(key))
-    result["passages"] = [
-        lean_group_passage(item) for item in group.get("passages") or []
-    ]
-    return result
-
-
-def lean_group_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one grouped passage; the group already names its source."""
-
-    result: dict[str, Any] = {}
-    _add(result, "chunk_id", passage.get("chunk_id"))
-    result["locator"] = dict(passage.get("locator") or {})
-    result["citation"] = passage.get("citation")
-    result["text"] = passage.get("text")
-    result["direct_quote_safe"] = bool(passage.get("direct_quote_safe"))
-    _add(result, "text_notes", passage.get("text_notes"))
-    return result
-
-
 def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return a search answer: query, generation, freshness, reranking, evidence.
 
@@ -117,13 +91,7 @@ def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
         "unresolved_exclude_source_ids",
         filters.get("unknown_exclude_source_ids"),
     )
-    groups = payload.get("reference_groups")
-    if groups is None:
-        result["hits"] = [lean_passage(hit) for hit in payload.get("hits") or []]
-    else:
-        result["reference_groups"] = [
-            lean_reference_group(group) for group in groups or []
-        ]
+    result["hits"] = [lean_passage(hit) for hit in payload.get("hits") or []]
     return result
 
 

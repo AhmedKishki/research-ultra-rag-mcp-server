@@ -6,7 +6,7 @@ import argparse
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal, TypeAlias, TypeVar
+from typing import Annotated, Any, TypeAlias, TypeVar
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -30,27 +30,6 @@ SERVER_NAME = "research-ultra-rag-mcp"
 T = TypeVar("T")
 
 
-ChunkSize: TypeAlias = Annotated[
-    int,
-    Field(
-        description=(
-            "Maximum GPT-2 token count per chunk; must be between 50 and 384."
-        ),
-        ge=50,
-        le=384,
-    ),
-]
-ChunkOverlap: TypeAlias = Annotated[
-    int,
-    Field(
-        description=(
-            "GPT-2 tokens repeated between adjacent chunks; must be non-negative "
-            "and smaller than chunk_size."
-        ),
-        ge=0,
-        le=383,
-    ),
-]
 SearchQuery: TypeAlias = Annotated[
     str,
     Field(
@@ -69,32 +48,12 @@ TopK: TypeAlias = Annotated[
         le=50,
     ),
 ]
-CategoryFilter: TypeAlias = Annotated[
-    list[str] | None,
-    Field(
-        description=(
-            "Case-insensitive category filters; a result must contain every supplied "
-            "category. Omit or pass null for no category filter."
-        )
-    ),
-]
 KeywordFilter: TypeAlias = Annotated[
     list[str] | None,
     Field(
         description=(
             "Case-insensitive keyword filters; a result must contain every supplied "
             "keyword. Omit or pass null for no keyword filter."
-        )
-    ),
-]
-DocumentIdFilter: TypeAlias = Annotated[
-    list[str] | None,
-    Field(
-        description=(
-            "Document IDs to include; a result may match any supplied ID. A "
-            "document ID identifies one content/path version inside a "
-            "generation and is not reported in an answer, so prefer source_id. "
-            "Omit or pass null for no document filter."
         )
     ),
 ]
@@ -132,78 +91,12 @@ CategoriesAnyFilter: TypeAlias = Annotated[
         )
     ),
 ]
-ProjectFilter: TypeAlias = Annotated[
-    list[str] | None,
-    Field(
-        description=(
-            "Reviewed project tags to require; a result must carry every supplied "
-            "project. A project tag records which project a source was gathered "
-            "for, so it is normally the server's own project name and this layer "
-            "matters when a corpus is shared between projects. "
-            "`status.projects` lists the current inventory. Omit or pass null for "
-            "no filter."
-        )
-    ),
-]
 ProjectsAnyFilter: TypeAlias = Annotated[
     list[str] | None,
     Field(
         description=(
             "Reviewed project tags to match with 'any of' semantics; a result must "
             "carry at least one supplied project. Omit or pass null for no filter."
-        )
-    ),
-]
-RetrievalMethod: TypeAlias = Annotated[
-    Literal["hybrid", "bm25", "dense"],
-    Field(
-        description=(
-            "Retrieval mode: hybrid combines BM25 and dense results, bm25 favors "
-            "exact terms, and dense favors semantic similarity."
-        )
-    ),
-]
-ResultView: TypeAlias = Annotated[
-    Literal["passages", "references"],
-    Field(
-        description=(
-            "Response view: passages preserves the flat ranked passage list; "
-            "references additionally groups the selected best passages by source "
-            "reference without changing the total top_k passage budget."
-        )
-    ),
-]
-PassagesPerReference: TypeAlias = Annotated[
-    int,
-    Field(
-        description=(
-            "Maximum passages selected from one source reference in references "
-            "view (1-5). The overall response still returns at most top_k passages."
-        ),
-        ge=1,
-        le=5,
-    ),
-]
-Rerank: TypeAlias = Annotated[
-    bool,
-    Field(
-        description=(
-            "Whether to apply the CPU cross-encoder reranker. It is on by default "
-            "because it is the largest measured retrieval-quality gain; set it false "
-            "for the lowest latency or to skip loading its model. When the pinned "
-            "model cannot be loaded, the search returns the unranked candidate order "
-            "and reports rerank_fallback."
-        )
-    ),
-]
-IncludeStaleness: TypeAlias = Annotated[
-    bool,
-    Field(
-        description=(
-            "Whether to check whether the selected generation is stale. "
-            "Checking walks the source directory, so its cost grows with the "
-            "collection. When false, the response reports stale=null instead "
-            "of a verdict."
         )
     ),
 ]
@@ -216,33 +109,11 @@ ForceRecompute: TypeAlias = Annotated[
         )
     ),
 ]
-WorkBudgetSeconds: TypeAlias = Annotated[
-    int,
-    Field(
-        description=(
-            "Soft per-call ingestion work budget in seconds. Call ingest again "
-            "when it returns status='in_progress'."
-        ),
-        ge=10,
-        le=300,
-    ),
-]
 ChunkId: TypeAlias = Annotated[
     str,
     Field(
         description="Exact chunk_id returned by search for the current generation.",
         min_length=1,
-    ),
-]
-ContextChunks: TypeAlias = Annotated[
-    int,
-    Field(
-        description=(
-            "Number of neighboring chunks to return on each side of the requested "
-            "passage (0-5)."
-        ),
-        ge=0,
-        le=5,
     ),
 ]
 SourcePath: TypeAlias = Annotated[
@@ -254,25 +125,6 @@ SourcePath: TypeAlias = Annotated[
             "rejected."
         ),
         min_length=1,
-    ),
-]
-SourceIdSelector: TypeAlias = Annotated[
-    str | None,
-    Field(
-        description=(
-            "Stable project-scoped source_id returned by list_sources or search. "
-            "Provide exactly one of source_id or source_path."
-        ),
-        min_length=1,
-    ),
-]
-SourcePathSelector: TypeAlias = Annotated[
-    SourcePath | None,
-    Field(
-        description=(
-            "Filename selector: the source's source_relative_path as reported by "
-            "list_sources or search. Provide exactly one of source_id or source_path."
-        )
     ),
 ]
 InclusionFlag: TypeAlias = Annotated[
@@ -414,33 +266,21 @@ def create_server(
         }
     )
     async def ingest(
-        chunk_size: ChunkSize = 384,
-        chunk_overlap: ChunkOverlap = 64,
         force_recompute: ForceRecompute = False,
-        work_budget_seconds: WorkBudgetSeconds = 45,
     ) -> dict[str, Any]:
         """Create or refresh an immutable BM25 plus dense generation.
 
-        Markdown and all other formats are ignored. chunk_size is measured in
-        GPT-2 tokens and is capped at 384 for the embedding model. Compatible
-        unchanged documents, chunks, and vectors are reused unless force_recompute
-        is true. Complete BM25 and Qdrant indexes are still built for every changed
-        generation. Work is checkpointed between bounded batches. If the result
-        status is in_progress, call ingest again with the same settings. Existing
-        generations are retained, and current changes only after both indexes pass
-        verification.
+        Markdown and all other formats are ignored. Compatible unchanged
+        documents, chunks, and vectors are reused unless force_recompute is true.
+        Chunking uses this server's fixed settings. Work is checkpointed between
+        bounded batches: if the result status is in_progress, call ingest again
+        until it returns ready or unchanged. Existing generations are retained,
+        and current changes only after both indexes pass verification.
         """
 
         return _present(
             "ingest",
-            await _tool_call(
-                lambda: service().ingest(
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                    force_recompute=force_recompute,
-                    work_budget_seconds=work_budget_seconds,
-                )
-            ),
+            await _tool_call(lambda: service().ingest(force_recompute=force_recompute)),
         )
 
     @app.tool(
@@ -454,48 +294,36 @@ def create_server(
     async def search(
         query: SearchQuery,
         top_k: TopK = 8,
-        result_view: ResultView = "passages",
-        passages_per_reference: PassagesPerReference = 2,
-        categories: CategoryFilter = None,
         categories_any: CategoriesAnyFilter = None,
-        projects: ProjectFilter = None,
         projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
-        document_ids: DocumentIdFilter = None,
         source_ids: SourceIdFilter = None,
         exclude_source_ids: ExcludeSourceIdFilter = None,
-        retrieval_method: RetrievalMethod = "hybrid",
-        rerank: Rerank = True,
-        include_staleness: IncludeStaleness = True,
     ) -> dict[str, Any]:
         """Search the current generation and return cleaned semantic evidence.
 
-        Filters narrow the corpus before ranking, so top_k is a budget inside the
-        selection. Reviewed metadata has three layers: `projects` requires every
-        listed project tag and `projects_any` at least one, `categories` requires
-        every listed branch and `categories_any` at least one, and `keywords`
-        requires every listed term. `document_ids` and `source_ids` include, and
-        `exclude_source_ids` removes.
-        A source ID survives a change to a file's bytes and changes when the file
-        is renamed or moved. Reviewed source exclusions always win, an unresolved
-        caller-supplied ID is reported as `unresolved_source_ids` or
-        `unresolved_exclude_source_ids`, and an include list that resolves to
-        nothing is an error rather than an unfiltered result. Hybrid is the
-        default; BM25 and dense retrieval can be inspected separately. CPU
-        reranking is on by default because it is the largest measured quality
-        gain, and it is slower and lazily loads another local model; set
-        rerank=false to skip it. `reranked` says whether it really ran; when the
-        model cannot be loaded the unranked candidate order is returned and
-        `rerank_fallback` explains why.
-        The default passage view returns the flat ranking in `hits`. The
-        reference view returns `reference_groups` instead, which caps passages
-        from each reference while top_k remains the total passage budget.
+        Retrieval is hybrid with CPU reranking, which is the largest measured
+        quality gain, and every answer reports whether the reranker really ran;
+        when its model cannot be loaded the unranked candidate order is returned
+        and `rerank_fallback` explains why. A generation that predates dense
+        support must be re-ingested first, and `status` says so.
+
+        Optional filters narrow the corpus before ranking, so top_k is a budget
+        inside the selection: `projects_any` and `categories_any` keep a result
+        that carries at least one of the listed project tags or categories,
+        `keywords` requires every listed keyword, `source_ids` includes named
+        sources, and `exclude_source_ids` removes them. A source ID survives a
+        change to a file's bytes and changes when the file is renamed or moved;
+        the filename from list_sources works as well. Reviewed source exclusions
+        always win, an unresolved caller-supplied ID is reported as
+        `unresolved_source_ids` or `unresolved_exclude_source_ids`, and an
+        include list that resolves to nothing is an error rather than an
+        unfiltered result.
+
         Results may be fewer than top_k when relevance gates reject weak
-        candidates. Set
-        include_staleness=false to skip the source-directory walk that produces
-        the stale verdict; stale is then null. Returned
-        text is not safe for direct quotation; open the original at the returned
-        source path and locator.
+        candidates. The answer names the source of every passage by filename,
+        title, and authors, with a ready-to-use citation. Returned text is not
+        safe for direct quotation; open the original at the returned locator.
         """
 
         return _present(
@@ -504,19 +332,14 @@ def create_server(
                 lambda: service().search(
                     query,
                     top_k=top_k,
-                    result_view=result_view,
-                    passages_per_reference=passages_per_reference,
-                    categories=categories,
                     categories_any=categories_any,
-                    projects=projects,
                     projects_any=projects_any,
                     keywords=keywords,
-                    document_ids=document_ids,
                     source_ids=source_ids,
                     exclude_source_ids=exclude_source_ids,
-                    retrieval_method=retrieval_method,
-                    rerank=rerank,
-                    include_staleness=include_staleness,
+                    retrieval_method="hybrid",
+                    rerank=True,
+                    include_staleness=True,
                 )
             ),
         )
@@ -529,36 +352,20 @@ def create_server(
             "openWorldHint": False,
         }
     )
-    async def list_sources(
-        categories: CategoryFilter = None,
-        categories_any: CategoriesAnyFilter = None,
-        projects: ProjectFilter = None,
-        projects_any: ProjectsAnyFilter = None,
-        keywords: KeywordFilter = None,
-    ) -> dict[str, Any]:
+    async def list_sources() -> dict[str, Any]:
         """List stable source IDs, inclusion state, and saved metadata overrides.
 
-        This works before ingestion and durably registers each discovered
-        source ID in the project catalog: `discovered_sources` carries every live
-        PDF/EPUB with its inclusion and index state, `sources` carries the
-        bibliography of what is searchable now, `excluded_sources` carries each
-        exclusion with its reason, and `reviewed_metadata_sources` makes every
-        saved override inspectable.
-        ``categories``, ``categories_any``, ``projects``, ``projects_any``, and
-        ``keywords`` narrow the indexed list by reviewed metadata.
+        This is the corpus inventory and works before ingestion. It durably
+        registers each discovered source ID in the project catalog:
+        `discovered_sources` carries every live PDF/EPUB with its inclusion and
+        index state, `sources` carries the bibliography of what is searchable
+        now, `excluded_sources` carries each exclusion with its reason, and
+        `reviewed_metadata_sources` makes every saved override inspectable.
         """
 
         return _present(
             "list_sources",
-            await _tool_call(
-                lambda: service().list_sources(
-                    categories=categories,
-                    categories_any=categories_any,
-                    projects=projects,
-                    projects_any=projects_any,
-                    keywords=keywords,
-                )
-            ),
+            await _tool_call(lambda: service().list_sources()),
         )
 
     @app.tool(
@@ -571,21 +378,16 @@ def create_server(
     )
     async def get_passage(
         chunk_id: ChunkId,
-        context_chunks: ContextChunks = 1,
     ) -> dict[str, Any]:
         """Return cleaned semantic context near one retrieved passage.
 
-        Context preserves source and page/section provenance but is not safe for
-        direct quotation. Open the original PDF or EPUB for exact wording.
+        The passage is returned with one neighboring chunk on each side. Context
+        preserves source and page/section provenance but is not safe for direct
+        quotation. Open the original PDF or EPUB for exact wording.
         """
         return _present(
             "get_passage",
-            await _tool_call(
-                lambda: service().get_passage(
-                    chunk_id,
-                    context_chunks=context_chunks,
-                )
-            ),
+            await _tool_call(lambda: service().get_passage(chunk_id)),
         )
 
     @app.tool(
@@ -598,8 +400,7 @@ def create_server(
     )
     async def set_source_inclusion(
         included: InclusionFlag,
-        source_id: SourceIdSelector = None,
-        source_path: SourcePathSelector = None,
+        source_path: SourcePath,
         reason: ExclusionReason = None,
     ) -> dict[str, Any]:
         """Include or exclude a PDF/EPUB from the project knowledge base.
@@ -609,7 +410,7 @@ def create_server(
         search, source listing, and passage lookup, and future ingestion skips the
         source. The source file is never deleted or modified. Inclusion is
         reversible; re-ingest if the current generation does not contain it.
-        Identify the source with exactly one of source_id or source_path.
+        Identify the source by the filename that list_sources or search reports.
         """
 
         return _present(
@@ -617,7 +418,6 @@ def create_server(
             await _tool_call(
                 lambda: service().set_source_inclusion(
                     source_path=source_path,
-                    source_id=source_id,
                     included=included,
                     reason=reason,
                 )

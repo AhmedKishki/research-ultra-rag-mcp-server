@@ -360,29 +360,24 @@ def _requested_ids(values: list[str] | None) -> list[str]:
 def _document_matches_metadata(
     document: dict[str, Any],
     *,
-    categories: set[str],
     keywords: set[str],
     categories_any: set[str] = frozenset(),
-    projects: set[str] = frozenset(),
     projects_any: set[str] = frozenset(),
 ) -> bool:
-    """Match one document against the three reviewed-metadata filter layers.
+    """Match one document against the reviewed-metadata filter layers.
 
     `project` records which project a source was gathered for, `categories` the
     branches it belongs to, and `keywords` the terms that identify it. A source
     normally carries one project, so that layer is a passthrough inside a
-    one-project server and becomes meaningful when a corpus is bundled, imported,
-    or shared.
+    one-project server and becomes meaningful when a corpus is copied or shared.
     """
 
     document_categories = _normalized_filter(document.get("categories"))
     document_keywords = _normalized_filter(document.get("keywords"))
     document_projects = _normalized_filter(document.get("project"))
     return (
-        categories.issubset(document_categories)
-        and keywords.issubset(document_keywords)
+        keywords.issubset(document_keywords)
         and (not categories_any or not categories_any.isdisjoint(document_categories))
-        and projects.issubset(document_projects)
         and (not projects_any or not projects_any.isdisjoint(document_projects))
     )
 
@@ -3833,26 +3828,22 @@ class ResearchService:
         chunk: dict[str, Any],
         documents_by_id: dict[str, dict[str, Any]],
         *,
-        categories: set[str],
         categories_any: set[str],
         keywords: set[str],
-        projects: set[str],
         projects_any: set[str],
-        document_ids: set[str],
+        document_filter: set[str],
         excluded_document_ids: set[str],
     ) -> bool:
         document = _document_for_chunk(chunk, documents_by_id)
         return not (
             chunk["document_id"] in excluded_document_ids
+            or (document_filter and chunk["document_id"] not in document_filter)
             or not _document_matches_metadata(
                 document,
-                categories=categories,
                 keywords=keywords,
                 categories_any=categories_any,
-                projects=projects,
                 projects_any=projects_any,
             )
-            or (document_ids and chunk["document_id"] not in document_ids)
         )
 
     async def _bm25_ranking(
@@ -3863,12 +3854,10 @@ class ResearchService:
         documents_by_id: dict[str, dict[str, Any]],
         limit: int,
         *,
-        categories: set[str],
         categories_any: set[str],
-        projects: set[str],
         projects_any: set[str],
         keywords: set[str],
-        document_ids: set[str],
+        document_filter: set[str],
         excluded_document_ids: set[str],
         withheld: dict[str, dict[str, Any]],
     ) -> tuple[list[str], dict[str, int], dict[str, dict[str, Any]]]:
@@ -3883,12 +3872,10 @@ class ResearchService:
                 {},
             )
         filtered = bool(
-            categories
-            or categories_any
+            categories_any
             or keywords
-            or projects
             or projects_any
-            or document_ids
+            or document_filter
             or excluded_document_ids
         )
         requested = min(
@@ -3938,12 +3925,10 @@ class ResearchService:
                         and self._matches_filters(
                             item,
                             documents_by_id,
-                            categories=categories,
                             categories_any=categories_any,
                             keywords=keywords,
-                            projects=projects,
                             projects_any=projects_any,
-                            document_ids=document_ids,
+                            document_filter=document_filter,
                             excluded_document_ids=excluded_document_ids,
                         )
                     ),
@@ -4024,18 +4009,13 @@ class ResearchService:
         query: str,
         *,
         top_k: int = 8,
-        categories: list[str] | None = None,
         categories_any: list[str] | None = None,
-        projects: list[str] | None = None,
         projects_any: list[str] | None = None,
         keywords: list[str] | None = None,
-        document_ids: list[str] | None = None,
         source_ids: list[str] | None = None,
         exclude_source_ids: list[str] | None = None,
         retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
         rerank: bool = False,
-        result_view: str = "passages",
-        passages_per_reference: int = 2,
         include_staleness: bool = True,
     ) -> dict[str, Any]:
         """Retrieve evidence.
@@ -4054,11 +4034,6 @@ class ResearchService:
         retrieval_method = retrieval_method.casefold().strip()
         if retrieval_method not in RETRIEVAL_METHODS:
             raise ResearchError("retrieval_method must be one of: bm25, dense, hybrid")
-        result_view = result_view.casefold().strip()
-        if result_view not in {"passages", "references"}:
-            raise ResearchError("result_view must be one of: passages, references")
-        if not 1 <= passages_per_reference <= 5:
-            raise ResearchError("passages_per_reference must be between 1 and 5")
 
         async with self._operation():
             current = self._load_current_optional()
@@ -4087,12 +4062,9 @@ class ResearchService:
                     "Run ingest to build a hybrid generation."
                 )
 
-            normalized_document_ids = _requested_ids(document_ids)
             requested_source_ids = _requested_ids(source_ids)
             requested_exclude_source_ids = _requested_ids(exclude_source_ids)
-            category_filter = _normalized_filter(categories)
             category_any_filter = _normalized_filter(categories_any)
-            project_filter = _normalized_filter(projects)
             project_any_filter = _normalized_filter(projects_any)
             keyword_filter = _normalized_filter(keywords)
             source_include_document_ids, unknown_source_ids = (
@@ -4113,15 +4085,11 @@ class ResearchService:
             # Reviewed exclusions always win over a search-level exclusion, and a
             # search-level include can never re-admit an excluded source.
             excluded_document_ids = excluded_document_ids | source_exclude_document_ids
-            document_filter = set(normalized_document_ids) | source_include_document_ids
+            document_filter = set(source_include_document_ids)
 
             dense_document_filter: set[str] | None = None
             metadata_filter_active = bool(
-                category_filter
-                or category_any_filter
-                or project_filter
-                or project_any_filter
-                or keyword_filter
+                category_any_filter or project_any_filter or keyword_filter
             )
             if metadata_filter_active:
                 dense_document_filter = {
@@ -4129,10 +4097,8 @@ class ResearchService:
                     for document_id, document in documents_by_id.items()
                     if _document_matches_metadata(
                         document,
-                        categories=category_filter,
                         keywords=keyword_filter,
                         categories_any=category_any_filter,
-                        projects=project_filter,
                         projects_any=project_any_filter,
                     )
                 }
@@ -4148,10 +4114,8 @@ class ResearchService:
                 if document_id not in excluded_document_ids
                 and _document_matches_metadata(
                     document,
-                    categories=category_filter,
                     keywords=keyword_filter,
                     categories_any=category_any_filter,
-                    projects=project_filter,
                     projects_any=project_any_filter,
                 )
                 and (not document_filter or document_id in document_filter)
@@ -4169,11 +4133,7 @@ class ResearchService:
             candidate_depth = min(
                 active_chunk_count,
                 MAXIMUM_CANDIDATES,
-                (
-                    MAXIMUM_CANDIDATES
-                    if result_view == "references"
-                    else max(MINIMUM_CANDIDATES, top_k * 4)
-                ),
+                max(MINIMUM_CANDIDATES, top_k * 4),
             )
 
             use_bm25 = retrieval_method in {"bm25", "hybrid"}
@@ -4213,12 +4173,10 @@ class ResearchService:
                         total_chunk_count,
                         documents_by_id,
                         candidate_depth,
-                        categories=category_filter,
                         categories_any=category_any_filter,
                         keywords=keyword_filter,
-                        projects=project_filter,
                         projects_any=project_any_filter,
-                        document_ids=document_filter,
+                        document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
                     ),
@@ -4233,12 +4191,10 @@ class ResearchService:
                     total_chunk_count,
                     documents_by_id,
                     candidate_depth,
-                    categories=category_filter,
                     categories_any=category_any_filter,
                     keywords=keyword_filter,
-                    projects=project_filter,
                     projects_any=project_any_filter,
-                    document_ids=document_filter,
+                    document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                     withheld=withheld,
                 )
@@ -4277,12 +4233,10 @@ class ResearchService:
                 if not self._matches_filters(
                     chunk,
                     documents_by_id,
-                    categories=category_filter,
                     categories_any=category_any_filter,
                     keywords=keyword_filter,
-                    projects=project_filter,
                     projects_any=project_any_filter,
-                    document_ids=document_filter,
+                    document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                 ):
                     continue
@@ -4372,25 +4326,7 @@ class ResearchService:
                     for item in ordered_ids
                 }
             )
-            grouping_skipped_candidate_count = 0
-            if result_view == "references":
-                selected_ids: list[str] = []
-                selected_per_reference: defaultdict[str, int] = defaultdict(int)
-                for chunk_id in ordered_ids:
-                    source_id = str(
-                        _document_for_chunk(chunks_by_id[chunk_id], documents_by_id)[
-                            "source_id"
-                        ]
-                    )
-                    if selected_per_reference[source_id] >= passages_per_reference:
-                        grouping_skipped_candidate_count += 1
-                        continue
-                    selected_ids.append(chunk_id)
-                    selected_per_reference[source_id] += 1
-                    if len(selected_ids) == top_k:
-                        break
-            else:
-                selected_ids = ordered_ids[:top_k]
+            selected_ids = ordered_ids[:top_k]
 
             hits: list[dict[str, Any]] = []
             for rank, chunk_id in enumerate(selected_ids, 1):
@@ -4426,40 +4362,8 @@ class ResearchService:
                     }
                 )
 
-            reference_groups: list[dict[str, Any]] | None = None
-            if result_view == "references":
-                groups_by_source: dict[str, dict[str, Any]] = {}
-                reference_groups = []
-                for hit in hits:
-                    source_id = str(hit["source_id"])
-                    group = groups_by_source.get(source_id)
-                    if group is None:
-                        group = {
-                            "rank": len(reference_groups) + 1,
-                            "source_id": source_id,
-                            "document_id": hit["document_id"],
-                            "title": hit["title"],
-                            "authors": hit["authors"],
-                            "year": hit["year"],
-                            "doi": hit["doi"],
-                            "source_path": hit["source_path"],
-                            "categories": hit["categories"],
-                            "keywords": hit["keywords"],
-                            "project": hit["project"],
-                            "passage_count": 0,
-                            "passages": [],
-                        }
-                        groups_by_source[source_id] = group
-                        reference_groups.append(group)
-                    group["passages"].append(hit)
-                    group["passage_count"] += 1
-
             distinct_reference_count = len({str(hit["source_id"]) for hit in hits})
             relevance_limited = candidate_count < top_k
-            grouping_limited = result_view == "references" and len(hits) < min(
-                top_k,
-                candidate_count,
-            )
 
             if include_staleness:
                 # Walking the source tree is the only per-request work here that
@@ -4479,12 +4383,10 @@ class ResearchService:
                 "generation_upgrade_required": bool(upgrade_reasons),
                 "excluded_source_count": len(exclusions),
                 "filters": {
-                    "categories_all": sorted(category_filter),
                     "categories_any": sorted(category_any_filter),
-                    "projects_all": sorted(project_filter),
                     "projects_any": sorted(project_any_filter),
                     "keywords_all": sorted(keyword_filter),
-                    "document_ids": sorted(document_filter),
+                    "source_document_ids": sorted(document_filter),
                     "source_ids": requested_source_ids,
                     "exclude_source_ids": requested_exclude_source_ids,
                     "unknown_source_ids": unknown_source_ids,
@@ -4510,20 +4412,6 @@ class ResearchService:
                     candidate_distinct_reference_count
                 ),
                 "requested_top_k": top_k,
-                "result_view": result_view,
-                "passages_per_reference": (
-                    passages_per_reference if result_view == "references" else None
-                ),
-                "grouping": (
-                    {
-                        "method": "source_id_passage_cap",
-                        "passages_per_reference": passages_per_reference,
-                        "skipped_candidate_count": (grouping_skipped_candidate_count),
-                    }
-                    if result_view == "references"
-                    else None
-                ),
-                "grouping_skipped_candidate_count": (grouping_skipped_candidate_count),
                 "fusion": (
                     {
                         "method": "weighted_reciprocal_rank_fusion",
@@ -4598,9 +4486,7 @@ class ResearchService:
                 "result_count": len(hits),
                 "distinct_reference_count": distinct_reference_count,
                 "relevance_limited": relevance_limited,
-                "grouping_limited": grouping_limited,
                 "hits": hits,
-                "reference_groups": reference_groups,
                 "notice": (
                     "Returned text is cleaned for semantic retrieval and is not "
                     "quote-safe. Open the original PDF or EPUB at the supplied "
@@ -4608,15 +4494,7 @@ class ResearchService:
                 ),
             }
 
-    async def list_sources(
-        self,
-        *,
-        categories: list[str] | None = None,
-        categories_any: list[str] | None = None,
-        projects: list[str] | None = None,
-        projects_any: list[str] | None = None,
-        keywords: list[str] | None = None,
-    ) -> dict[str, Any]:
+    async def list_sources(self) -> dict[str, Any]:
         async with self._operation():
             current = self._load_current_optional()
             try:
@@ -4688,41 +4566,11 @@ class ResearchService:
                 }
             _generation_root, manifest = current
             documents_by_id = _effective_documents(manifest, metadata)
-            category_filter = _normalized_filter(categories)
-            category_any_filter = _normalized_filter(categories_any)
-            project_filter = _normalized_filter(projects)
-            project_any_filter = _normalized_filter(projects_any)
-            keyword_filter = _normalized_filter(keywords)
-            sources = []
-            for document in documents_by_id.values():
-                if document.get("source_relative_path") in exclusions:
-                    continue
-                document_categories = {
-                    str(item).casefold() for item in document.get("categories", [])
-                }
-                document_projects = {
-                    str(item).casefold() for item in document.get("project", [])
-                }
-                document_keywords = {
-                    str(item).casefold() for item in document.get("keywords", [])
-                }
-                if category_filter and not category_filter.issubset(
-                    document_categories
-                ):
-                    continue
-                if category_any_filter and category_any_filter.isdisjoint(
-                    document_categories
-                ):
-                    continue
-                if project_filter and not project_filter.issubset(document_projects):
-                    continue
-                if project_any_filter and project_any_filter.isdisjoint(
-                    document_projects
-                ):
-                    continue
-                if keyword_filter and not keyword_filter.issubset(document_keywords):
-                    continue
-                sources.append(_public_document(document))
+            sources = [
+                _public_document(document)
+                for document in documents_by_id.values()
+                if document.get("source_relative_path") not in exclusions
+            ]
             return {
                 "ready": True,
                 "generation_id": manifest["generation_id"],

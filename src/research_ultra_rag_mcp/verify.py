@@ -37,26 +37,6 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--passages-per-reference",
-        type=int,
-        default=2,
-        help=(
-            "Maximum passages from one source in references view (1-5); --top-k "
-            "remains the total passage budget."
-        ),
-    )
-    parser.add_argument(
-        "--retrieval-method",
-        choices=("hybrid", "bm25", "dense"),
-        default="hybrid",
-        help="Retrieval method to verify (default: hybrid).",
-    )
-    parser.add_argument(
-        "--rerank",
-        action="store_true",
-        help="Also verify the optional CPU cross-encoder reranker.",
-    )
-    parser.add_argument(
         "--ingest",
         action="store_true",
         help="Create and select a new generation before searching.",
@@ -66,8 +46,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="With --ingest, bypass all compatible document/chunk/vector reuse.",
     )
-    parser.add_argument("--chunk-size", type=int, default=384)
-    parser.add_argument("--chunk-overlap", type=int, default=64)
     parser.add_argument(
         "--offline",
         action="store_true",
@@ -129,8 +107,6 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(f"Project root is not a directory: {project}")
     if not 1 <= args.top_k <= 50:
         raise RuntimeError("--top-k must be between 1 and 50")
-    if not 1 <= args.passages_per_reference <= 5:
-        raise RuntimeError("--passages-per-reference must be between 1 and 5")
     if args.force_recompute and not args.ingest:
         raise RuntimeError("--force-recompute requires --ingest")
 
@@ -162,11 +138,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         if args.ingest:
             ingestion = await _ingest_until_complete(
                 client,
-                {
-                    "chunk_size": args.chunk_size,
-                    "chunk_overlap": args.chunk_overlap,
-                    "force_recompute": args.force_recompute,
-                },
+                {"force_recompute": args.force_recompute},
             )
         elif not before.get("ready"):
             raise RuntimeError(
@@ -177,14 +149,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         search = (
             await client.call_tool(
                 "search",
-                {
-                    "query": args.query,
-                    "top_k": args.top_k,
-                    "result_view": args.result_view,
-                    "passages_per_reference": args.passages_per_reference,
-                    "retrieval_method": args.retrieval_method,
-                    "rerank": args.rerank,
-                },
+                {"query": args.query, "top_k": args.top_k},
                 timeout=1800,
             )
         ).data

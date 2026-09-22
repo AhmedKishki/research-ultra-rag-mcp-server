@@ -67,6 +67,10 @@ RESEARCH_UI_PROFILE = UIProfile(
         source_selection=True,
         category_partitions=True,
         project_metadata=True,
+        metadata_filters=False,
+        retrieval_modes=False,
+        reranking=False,
+        chunk_settings=False,
     ),
 )
 
@@ -79,6 +83,8 @@ class ResearchToolClient(Protocol):
         **kwargs: Any,
     ) -> Any: ...
 
+    async def list_tools(self) -> Any: ...
+
 
 class ResearchUIAdapter:
     """Map the shared UI contract to the public research MCP tools."""
@@ -86,6 +92,7 @@ class ResearchUIAdapter:
     def __init__(self, config: ResearchConfig, client: ResearchToolClient) -> None:
         self.config = config
         self.client = client
+        self._parameters: dict[str, set[str]] = {}
 
     async def health(self) -> Mapping[str, Any]:
         return {
@@ -93,16 +100,46 @@ class ResearchUIAdapter:
             "source_root": str(self.config.source_root),
         }
 
+    async def _declared_parameters(self, operation: str) -> set[str]:
+        """Return the parameter names one tool declares, read once per process.
+
+        The pinned shared UI sends its full optional set, including fields a
+        profile hides. Each tool's own signature is the contract, so this server
+        forwards only what that tool declares.
+        """
+
+        declared = self._parameters.get(operation)
+        if declared is not None:
+            return declared
+        try:
+            tools = await self.client.list_tools()
+        except Exception as exc:
+            message = str(exc).strip() or exc.__class__.__name__
+            raise UIRequestError(message[:MAX_ERROR_LENGTH]) from exc
+        for tool in tools:
+            if getattr(tool, "name", None) != operation:
+                continue
+            schema = getattr(tool, "inputSchema", None) or {}
+            declared = set((schema.get("properties") or {}).keys())
+            self._parameters[operation] = declared
+            return declared
+        raise UIRequestError(
+            f"Research tool {operation!r} is not available",
+            status_code=502,
+        )
+
     async def call(
         self,
         operation: str,
         arguments: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        declared = await self._declared_parameters(operation)
+        forwarded = {key: value for key, value in arguments.items() if key in declared}
         while True:
             try:
                 result = await self.client.call_tool(
                     operation,
-                    dict(arguments),
+                    forwarded,
                     timeout=1800,
                     raise_on_error=True,
                 )

@@ -17,8 +17,7 @@ Plain-language summary of every capability, and why it is there:
 - **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
 - **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, and a locator that points back into the original file (PDF page, or EPUB section), so you can always find the page behind a passage.
-- **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by three layers of reviewed metadata: the project a source was gathered for (`projects`, `projects_any`), the branch it belongs to (`categories`, `categories_any`), and the terms that identify it (`keywords`), plus `document_ids`. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
-- **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
+- **One way to search, with the measured best settings.** Every search is hybrid retrieval with CPU reranking, which is the largest measured quality gain available. A query can be narrowed by source, by the project a source was gathered for, by the branch it belongs to, and by the terms that identify it, all from reviewed metadata. Filters are applied before ranking, so `top_k` is a budget inside the selection.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year in the project's review-state file and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
 - **Resumable ingestion.** Every call has a soft time budget. If it runs out, the server returns a checkpointed `in_progress` result and you simply call it again. Client timeouts, cancellations, and restarts lose at most one small batch of work.
@@ -178,7 +177,7 @@ The normal sequence an agent should follow:
 1. Call `status`.
 2. Report whether no generation exists yet, the selected generation is stale, or a schema/policy upgrade is required.
 3. Ask permission before a persistent ingestion when that is appropriate.
-4. Call `ingest`. While it returns `status="in_progress"`, call it again with the same settings.
+4. Call `ingest`. While it returns `status="in_progress"`, call it again unchanged.
 5. Search only once the completed generation is active.
 
 A prompt you can copy:
@@ -198,11 +197,11 @@ What to expect from a first build:
 Two identifiers matter, and they mean different things:
 
 - A `source_id` is derived from the project ID and the source-relative path. It survives changes to the file's contents, but renaming or moving the file creates a new `source_id`. Use it, or the filename, with `set_source_inclusion`.
-- A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change. It is an internal identity for the `document_ids` search filter rather than the durable handle, and it is not reported in answers.
+- A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change. It is an internal identity for the generation's own accounting, and it is not reported in answers.
 
 Calling `list_sources` also registers discovered IDs in the portable project catalog. That is what keeps a registered ID addressable when an original is renamed, moved, or temporarily absent — the full-detail payload lists those records as `known_sources` — without guessing that metadata from an old path belongs to a new one. `reviewed_metadata_sources` lists every saved override by the same stable ID, so you can inspect, replace, or remove each persisted decision even if the original file is not present right now.
 
-Both mutation tools require exactly one selector: `source_id` is preferred, and `source_path` remains available for compatibility.
+The one mutation tool names its source by the filename that `list_sources` reports, so an exclusion reads the way a person would describe it.
 
 ## Research workflow
 
@@ -218,22 +217,13 @@ Prompts that work well:
 - "List the source IDs, then exclude the duplicate source ID as a reviewed duplicate of the preferred source ID; do not delete either file."
 - "Restore that source ID, then re-ingest if it is absent from the current generation."
 
-### Choosing a search mode
+### How a search works
 
-Hybrid is the normal choice. Use the others to look at one signal at a time:
+Hybrid is the engine's default and the tool's only setting. BM25 matches the words you typed; a dense vector search matches meaning; the two rankings are fused; and a CPU cross-encoder then reranks the fused candidates. The engine can also serve either signal alone, which is how `MEASUREMENTS.md` reports each mode, but the tool does not ask which one you want — the measurements say hybrid with reranking is the best of them. BM25 is strongest single-signal retrieval when a question names a person, place, or project; dense alone is the weakest, finding the judged passage within ten results for 63% of questions and worse on names, because its similarity gate returns fewer passages; hybrid beat BM25 alone at the top; and reranking is the largest measured gain of all, putting the judged passage first for 81% of questions against 66% without it, with the right document in the results for 94% against 91%.
 
-- **BM25** is lexical: it matches the words you typed. Best for exact names, terms, and phrases, and useful when a semantic result surprises you. In measurement it is the strongest single signal when a question names a person, place, or project, and it finds remembered phrasings almost perfectly.
-- **Dense** is semantic: it matches meaning. Useful for concepts phrased differently from the sources, though on its own it is the weakest of the three modes — it found the judged passage within ten results for 63% of questions, returns fewer passages because of its similarity gate, and is worst on names, which need the words to match. Use it with BM25 rather than instead of it.
-- **Hybrid** combines both rankings. It put the judged passage first more often than BM25 alone did, with the same reach at ten results.
-- **Reranking** is on by default and is slower — about 2.3 s per warm query against 0.17 s for hybrid without it, plus a second model downloaded on first use — because it is the largest measured quality gain available: the judged passage came back first for 81% of questions against 66% without it, and the right document was among the results for 94% against 91%. Pass `rerank=false` when latency matters more than ranking. If the pinned model cannot be loaded, the search returns the unranked order and says so in `rerank_fallback` rather than failing. In the browser UI the **CPU rerank** checkbox is the opt-in: it is unticked by default, so a UI search sends `rerank=false` explicitly.
+Reranking costs time — about 2.3 s per warm query against 0.17 s for unranked hybrid, plus a second model downloaded on first use — and if the pinned model cannot be loaded the search returns the unranked order and says so in `rerank_fallback` rather than failing.
 
 Search can legitimately return fewer results than `top_k`, including none, when candidates fail the relevance gates — abstaining is a feature, not an error. A rank or similarity score is an ordering signal, never a truth or confidence probability. The mode comparisons above are measurements, not impressions: the judged question set and the harness that runs it are in `evaluation/` and `scripts/evaluate_retrieval.py`, and the full tables, including the fact that questions phrased in your own words are much harder for every mode than remembered phrasing, are in `MEASUREMENTS.md`.
-
-### Passage view versus reference view
-
-`result_view="passages"` (the default) is the plain global ranking.
-
-`result_view="references"` is for when one prolific source would otherwise dominate. It walks the same relevance-gated candidates but admits at most `passages_per_reference` passages from each stable `source_id`, keeping `top_k` as the total number of passages. Its `reference_groups` list names each reference and the passages selected from it, in place of the flat `hits` list the passage view returns. It does not merge editions by title, DOI, or filename. A result set can look short for two reasons — the candidate pool ran short, or the per-reference cap stopped the view from filling its passage budget. The lean answer leaves both counts out; the full-detail payload names them (`relevance_limited`, `grouping_limited`).
 
 ### Selecting and excluding sources per query
 
@@ -265,11 +255,9 @@ Reviewed source metadata carries three filter layers, and each is independent:
 
 Each filter is all-of at the plural name (`categories`, `projects`, `keywords` require every listed value) and any-of at the `_any` variant (`categories_any`, `projects_any`). A one-project server normally tags every source with its own project name, so the project layer is a passthrough there; it becomes useful when a corpus is copied into another project or shared. `status` reports both inventories — `categories` and `projects`, each with its `searchable_source_count` — so an agent can see the parts before searching them, and reviewed exclusions are not counted there. The browser UI lists the same partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
 
-### Checking freshness per query
+### Freshness with every search
 
-By default a search also reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked. At this size it is a small share of a query, so the flag removes a cost that scales rather than a latency you feel today.
-
-Pass `include_staleness=false` when a session has already checked `status` and only needs evidence. The response then reports `stale: null`, which means "not checked", not "fresh"; the full-detail payload also carries `staleness_checked: false`. Everything else about the search is unchanged, including which hits are returned.
+Every search reports whether the selected generation is stale, which means comparing every source file with what the generation recorded. That comparison costs about 10 ms for a 55-source project and grows with the collection, so it is the one part of a search whose cost depends on how many files you have rather than on the question asked; at this size it is a small share of a query, so it is always done rather than left to the caller to remember.
 
 ### What makes a generation stale
 
@@ -305,7 +293,7 @@ What you can do in it:
 
 - inspect status, staleness, upgrade state, and build metrics;
 - browse the indexed source list and resolved bibliography;
-- run hybrid, BM25, or dense search with filters and optional reranking, including limiting a search to or away from named sources and searching one or several category partitions at once;
+- search the corpus, limiting a search to or away from named sources and to one or several category or project partitions at once;
 - read neighboring passages around a hit;
 - open a PDF in the browser, or download an EPUB original;
 - exclude or restore a source without deleting anything;
@@ -326,7 +314,7 @@ Without it, the UI and your agent read different runtime roots and can show diff
 
 To make the separate process repeatable the server writes that launcher for you when it initialises the project: `<project>/open-ui.sh` is a symlink to `.research-rag/bin/open-ui.sh`, which starts the standalone UI with this project's `--project-root`, `--runtime-root`, and `--port`. `./open-ui.sh` starts it and prints the URL, `./open-ui.sh --open` also opens the browser, `./open-ui.sh --stop` stops it together with the private server it started, and `./open-ui.sh --port 5052` moves it to another port. An existing `open-ui.sh` is never overwritten, and `status.ui_launcher` reports whether the script and the link are present. The generated script never exports `RESEARCH_ULTRARAG_UI_PORT`, because the servers it starts read that variable as the default for `--ui-port`, so each one hosts a UI of its own and starts the next. It calls the UI command by absolute path — the console script installed beside the server's interpreter — so it works from a shell where that command is not on `PATH`. Keep it out of version control: it is machine-local.
 
-Two differences between a UI session and an agent session are worth knowing before you compare results. The **CPU rerank** checkbox is off unless you tick it, so a UI search sends `rerank=false` explicitly while an agent search reranks by default. And the retained-generation inventory that `status` reports (`generations`, `retained_generation_bytes`) is not shown in the current UI views; use an agent or `research-ultra-rag-verify` to see what retained generations occupy.
+One difference between a UI session and an agent session is worth knowing before you compare results: the retained-generation inventory that `status` reports (`generations`, `retained_generation_bytes`) is not shown in the current UI views, so use an agent or `research-ultra-rag-verify` to see what retained generations occupy.
 
 ## Use the terminal verifier
 
@@ -355,7 +343,7 @@ uv run research-ultra-rag-verify \
   --ingest --force-recompute
 ```
 
-Useful flags: `--retrieval-method bm25|dense|hybrid`, `--rerank`, `--top-k`, and `--result-view references --passages-per-reference 2` for source-diverse results. Add `--offline` when every required cache already exists.
+Useful flags: `--top-k`, `--query`, and `--ingest --force-recompute` to rebuild first. Add `--offline` when every required cache already exists.
 
 On success it prints a JSON object with `"status": "passed"`, the before/after status, optional ingestion metrics, and the search result. With `--ingest` it repeats checkpointed calls until ingestion finishes. The usual first-run failures are a missing network or model download, an unsupported Python version, a damaged PDF/EPUB, or `--offline` before the runtime and models are cached.
 
@@ -489,11 +477,11 @@ Six tools are exposed. All are project-scoped and none of them deletes a source 
 | Tool | What it does |
 |---|---|
 | `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. It also reports `restart_required` when the running process is older than the installed version. The full-detail payload adds the paths, the version block, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
-| `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. |
-| `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
-| `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by the same `projects`, `projects_any`, `categories`, `categories_any`, and `keywords`. Registers discovered IDs in the project catalog. |
-| `get_passage` | Returns one passage with its neighbors and provenance. |
-| `set_source_inclusion` | Excludes or restores one source. Reversible; never deletes the file. |
+| `ingest` | Creates or refreshes a generation with the server's own chunking settings. Resumable, with a soft per-call work budget; `force_recompute` bypasses reuse. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. |
+| `search` | Retrieves evidence candidates with hybrid retrieval and reranking. Optional narrowing by source (`source_ids`, `exclude_source_ids`) and by reviewed metadata (`projects_any` and `categories_any` keep a result carrying at least one listed value; `keywords` requires every listed term). Always reports whether the generation is stale. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
+| `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Takes no parameters: it is the corpus inventory. Registers discovered IDs in the project catalog. |
+| `get_passage` | Returns one passage with its immediate neighbors and provenance. |
+| `set_source_inclusion` | Excludes or restores one source, named by its filename. Reversible; never deletes the file. |
 
 Every one of them answers as described under [What a tool answer contains](#what-a-tool-answer-contains).
 
@@ -553,7 +541,7 @@ Things to know before you rely on a result:
 - The text-health policy withholds a passage only for corruption evidence, never for mixing scripts, so a quotation in another language stays retrievable and comes back with `text_notes`.
 - A chunk longer than the embedding model's token limit is embedded from its beginning only. BM25 still matches its full text, while dense search covers the start. Ingestion counts and reports these chunks (`dense_truncated`) but does not split them.
 - Duplicate sources are a judgement call. The server never deletes an original; you review and exclude.
-- Large CPU ingestions and reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget. Reranking is on by default for `search`; pass `rerank=false` when you want the fastest answer.
+- Large CPU ingestions and reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget. Reranking always runs for `search`, so the slow path is the only path; there is no faster switch to remember.
 - Cleaned text is not a quote-verification surface — open the original.
 - A running server keeps the code it started with, because a stdio server's process belongs to your MCP client. `status` reports `restart_required` when the process is older than what is installed, and the full-detail payload names the running and installed versions; restarting the server in the client clears it. The browser UI can be restarted from this side, and `scripts/update.sh <project>` does that for a named project.
 - Earlier successful generations are kept. Automatic pruning is not implemented, so old generations accumulate until you remove them yourself.

@@ -144,7 +144,7 @@ The returned passage text is about 6 kB of both search answers, so a search rati
 
 ## 4. Retrieval quality and query latency
 
-Measured through the public `search` tool on the current generation (13,158 chunks, 55 documents): 32 judged queries over 19 target passages, `include_staleness=false`, 160 searches in 107 s (mean 0.604 s), after a discarded 10.44 s warm-up. `scripts/evaluate_retrieval.py` produces these tables and a per-query JSON report; `evaluation/README.md` documents the judged set and its protocol.
+Measured through `ResearchService.search`, the engine the `search` tool calls, on the current generation (13,158 chunks, 55 documents): 32 judged queries over 19 target passages, `include_staleness=false`, 160 searches in 107 s (mean 0.604 s), after a discarded 10.44 s warm-up. `scripts/evaluate_retrieval.py` produces these tables and a per-query JSON report; `evaluation/README.md` documents the judged set and its protocol.
 
 ### Per-mode latency
 

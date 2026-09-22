@@ -32,33 +32,30 @@ For research questions:
    indexes. Use force_recompute=true only when the user explicitly asks to
    regenerate or reuse must be bypassed. Report generation_changed and the
    reuse/build counts from the result. Ingestion uses a soft per-call
-   budget. If it returns status=in_progress, call ingest again with exactly the
-   same chunk settings and force mode until it returns ready or unchanged. The
+   budget. If it returns status=in_progress, call ingest again with the same
+   force mode until it returns ready or unchanged. The
    selected prior generation remains searchable while this work is staged.
-3. Call search with the user's substantive query. Use the default hybrid method
-   for ordinary research. Use bm25 alone for exact terminology or names;
-   use dense alone to inspect semantic matches. Use projects, categories,
-   keywords, document_ids, or source_ids only when the user asks to narrow the
-   collection: a project tag records which project a source was gathered for,
-   categories are the branches it belongs to, and keywords are the terms that
-   identify it. The default
-   passage view preserves the global passage ranking. Use result_view=references
-   when breadth across sources matters; it keeps top_k as a total passage budget
-   and caps how many passages one reference may occupy.
+3. Call search with the user's substantive query. Retrieval is hybrid with
+   reranking, which the measurements in MEASUREMENTS.md show is the best
+   configuration, so there is no method to choose. Narrow the collection only
+   when the user asks: projects_any and categories_any keep a result carrying at
+   least one of the listed project tags or branches, keywords requires every
+   listed term, source_ids includes named sources, and exclude_source_ids
+   removes them. A project tag records which project a source was gathered for,
+   and categories are the branches it belongs to.
 4. Treat returned hits as evidence candidates, not automatically true claims.
    The text field is cleaned semantic text and direct_quote_safe=false. Never
    present it as a direct quotation. Cite the resolved bibliography and locator,
    then open the original source when exact wording is required.
 5. Use get_passage when surrounding context is needed. Verify important quotes
    directly against the original PDF or EPUB.
-6. Reranking is on by default because it is the largest measured quality gain:
+6. Reranking always runs because it is the largest measured quality gain:
    first-position success on the judged set rises from 66% to 84% and entity
-   questions from 60% to 90%. It is slower on CPU (about 2.3 s against 0.6 s per
-   warm query) and downloads a second pinned model the first time it is used, so
-   pass rerank=false when latency matters more than ranking, and tell the user
-   when you have skipped it. If the response reports rerank_fallback, the model
-   could not be loaded and the order you received is the plain unranked candidate
-   order; say that instead of implying the results were reranked.
+   questions from 60% to 90%. It is slower on CPU (about 2.3 s per warm query)
+   and downloads a second pinned model the first time it is used. If the response
+   reports rerank_fallback, the model could not be loaded and the order you
+   received is the plain unranked candidate order; say that instead of implying
+   the results were reranked.
 7. If multiple files appear to represent the same source, do not count them as
    independent support. The server does not guess duplicates automatically.
    After agent/user review, set included=false with set_source_inclusion and a
@@ -78,8 +75,8 @@ where the user can correct one by hand; they are authoritative at read time, so
 a correction applies to listings, filters, citations, and neighboring passages
 without re-ingestion, while a source absent from the selected generation takes
 effect after the next ingestion. Never edit that file yourself.
-Identify a source by its stable source_id or by its filename
-(list_sources.source_relative_path); provide exactly one selector.
+Identify a source by the filename that list_sources or search reports
+(source_relative_path).
 
 Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
 BM25 lexical retrieval; FastEmbed creates the semantic vectors, which dense
