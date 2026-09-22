@@ -1,16 +1,9 @@
-"""Measure the lean agent-facing tool answers against the full-detail payload.
+"""Measure the size of each tool answer in both detail modes.
 
-Every MCP tool answers with the lean projection from `tool_views.py` unless the
-server runs with ``--tool-detail full``. This harness measures both, on one real
-project, and reports the UTF-8 JSON size of each answer so the token budget is a
-recorded number rather than an impression.
-
-It starts one in-process server per tool and per detail mode, so it is a slow
-manual measurement, not a test. It is read-only: `status`, `search`,
-`list_sources`, and `get_passage` do not change a generation, and `list_sources`
-only performs the idempotent source-ID registration it is documented to do.
-`ingest` is deliberately not measured, because a measurement tool must never
-build.
+Reports the UTF-8 JSON size of one lean answer and of the same call in
+``--tool-detail full``, on one project. One in-process server starts per tool and
+per mode, so it is a slow manual measurement rather than a test. `ingest` is not
+measured, because a measurement tool must not build.
 
 Usage:
 
@@ -145,8 +138,8 @@ async def _measure(args: argparse.Namespace) -> int:
                 arguments,
             )
         except (ToolError, OSError, RuntimeError, TypeError) as exc:
-            # One tool that cannot answer must not hide the other rows: a
-            # project without a generation still measures what it can.
+            # Keep going when one tool cannot answer, for example before the
+            # first ingestion.
             failed = True
             print(f"{tool:14s} {'-':>10s} {'-':>10s} {'-':>6s}  {exc}")
             continue

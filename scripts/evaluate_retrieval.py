@@ -629,7 +629,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         config,
         log_file=config.logs_root / "evaluate-retrieval-stderr.log",
         # The harness measures ranked chunk IDs, document IDs, and withheld
-        # candidates, so it reads the full payload rather than a lean answer.
+        # candidates.
         tool_detail=FULL_TOOL_DETAIL,
     )
     report_path = (

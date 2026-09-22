@@ -13,9 +13,7 @@ from fastmcp.client.transports import StdioTransport
 
 from research_ultra_rag_mcp.instructions import SERVER_INSTRUCTIONS
 
-# Answer-level keys the full-detail payload carries and the default agent-facing
-# answer must not: they describe how the server works, not what the research
-# found, so an agent neither needs them nor can act on them.
+# Answer-level keys that only the full-detail payload carries.
 LEAN_ONLY_ABSENT = (
     "allowed_formats",
     "generation_root",
@@ -507,9 +505,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "--project-root",
             str(project),
             "--offline",
-            # The documented debug path: the same server with the complete
-            # payload, which is what a terminal client inspects and what the
-            # shared UI reads.
+            # Developer detail mode: the complete payload.
             "--tool-detail",
             "full",
         ],

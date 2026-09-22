@@ -12,19 +12,19 @@ The server is built on [UltraRAG](https://github.com/OpenBMB/UltraRAG), whose co
 
 Plain-language summary of every capability, and why it is there:
 
-- **Tool answers an agent can act on.** Every tool returns a lean answer by default: the evidence, the stable handles, the inclusion and readiness state, and the counts an agent acts on. Ranking internals, extraction diagnostics, revision fingerprints, filesystem paths, and empty or default-valued fields are left out, because they would spend an agent's context on something it cannot use. A server started with `--tool-detail full` returns the complete payload for debugging, which is what the browser UI, the terminal verifier, the bundle command, and the evaluation harness read.
+- **Lean tool answers, with a developer debugging mode.** Every tool returns the fields an agent acts on; a field that is empty, null, or at its default is omitted. `--tool-detail full` returns the complete payload instead.
 - **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
-- **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten, and the full-detail `status` payload reports the launcher's current state.
+- **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. An existing file or symlink is never overwritten.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
-- **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, extraction warnings, and a locator that points back into the original file (PDF page, or EPUB section). You can always find the page behind a passage; per-field provenance is part of the full-detail payload.
+- **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, extraction warnings, and a locator that points back into the original file (PDF page, or EPUB section), so you can always find the page behind a passage.
 - **Four ways to search.** BM25 lexical search for exact names and phrases, dense semantic search for meaning, hybrid search (the default) for normal use, and a CPU reranker, on by default, that reorders a candidate set and delivers the largest measured quality gain. A query can be narrowed to named sources (`source_ids`), away from named sources (`exclude_source_ids`), and by three layers of reviewed metadata: the project a source was gathered for (`projects`, `projects_any`), the branch it belongs to (`categories`, `categories_any`), and the terms that identify it (`keywords`), plus `document_ids`. Filters are applied before ranking, so `top_k` is a budget inside the selection. A freshness check can be skipped per query when a caller only needs evidence.
 - **Optional source-diverse results.** `result_view="references"` caps how many passages any single source can contribute, so one book chapter cannot fill the whole answer.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
 - **Portable project bundles.** Export a project (PDFs, review state, and the cleaned artifacts) as one archive and import it on another machine.
 - **Resumable ingestion.** Every call has a soft time budget. If it runs out, the server returns a checkpointed `in_progress` result and you simply call it again. Client timeouts, cancellations, and restarts lose at most one small batch of work.
-- **Text-health policy with disclosure.** Corrupt text (broken character maps) and chunks with no readable letters or digits are excluded, and the server records why and where: `status` reports the corpus-level counts, and the full-detail payload reports them per search. A quotation in another language or script is *not* excluded — it is returned with an advisory `text_notes` entry instead.
-- **An embedding-fidelity audit.** Each chunk records how many embedding tokens it contains and whether its vector covers only the beginning of its text, so silent truncation is visible in aggregate in `status` and per passage in the full-detail payload.
+- **Text-health policy with disclosure.** Corrupt text (broken character maps) and chunks with no readable letters or digits are excluded, and `status` reports the corpus-level counts. A quotation in another language or script is *not* excluded — it is returned with an advisory `text_notes` entry instead.
+- **An embedding-fidelity audit.** Each chunk records how many embedding tokens it contains and whether its vector covers only the beginning of its text, so silent truncation is counted in the ingestion and status output.
 - **Immutable, project-local generations.** A build creates a new generation and only becomes active after both indexes pass validation. A failed build leaves the previous generation searchable.
 - **Cheap updates.** Adding or changing a source reuses the unchanged documents, chunks, and vectors, then rebuilds only the indexes. Dense search reads the generation's portable vectors directly rather than maintaining a separate index, so there is nothing to rebuild or keep in sync.
 
@@ -129,32 +129,15 @@ The same installation can serve two isolated projects, which is why `--project-r
 
 A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.example.json).
 
-### How much a tool answer contains
+### What a tool answer contains
 
-Every tool answers with the lean payload by default, because a research session spends its context on evidence rather than on plumbing. A search returns the query, the generation it read, `stale`, `reranked`, and the passages; a passage carries its `rank`, `chunk_id`, `source_id`, `source_relative_path`, title, authors, year, DOI, `locator`, `citation`, `text`, `direct_quote_safe: false`, and — only when they exist — advisory `text_notes` and `metadata_warnings`. The reference view returns `reference_groups` in place of `hits`, so a grouped answer never carries the same passage twice.
+A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `rank`, `chunk_id`, `source_id`, `source_relative_path`, `title`, `authors`, `year`, `doi`, `locator`, `citation`, `text`, `direct_quote_safe: false`, and `text_notes` or `metadata_warnings` when there are any. The reference view returns `reference_groups` in place of `hits`.
 
-An empty list, a null value, or a harmless default is left out rather than returned as a placeholder, so a field that is absent means "nothing to report" — no unresolved ID, no missing source, no upgrade due — not "unknown". Two values stay explicit even when they are false: `stale` (where `null` means the freshness check was skipped) and `reranked` (so whether the reranker really ran is visible rather than assumed).
+`status` returns readiness, `stale`, the source and generation counts, `chunk_count`, `categories`, `projects`, `available_retrieval_methods`, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `ingestion_progress`, `retained_generation_count`, `retained_generation_bytes`, and every retained generation. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. The remaining tools return the identity of what they changed and what it applies to.
 
-What a lean answer deliberately leaves out is everything that describes how the server works instead of what the research found: per-hit component ranks, fusion and reranker scores, dense cosine similarity, embedding token counts, match kind, `document_id`, `source_path`, a hit's category/keyword/project tags, ranking-gate rejections and their counts, extraction statistics, per-field metadata provenance, revision fingerprints, filesystem paths, model identifiers, and phase timings.
+A field that is empty, null, or false is omitted, so an absent field means there is nothing to report. `stale` (where `null` means the freshness check was skipped) and `reranked` are always present.
 
-Add `--tool-detail full` when you are debugging rather than reading evidence:
-
-```json
-{
-  "mcpServers": {
-    "research-ultra-rag": {
-      "command": "/ABSOLUTE/PATH/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
-      "args": [
-        "--project-root", "/ABSOLUTE/PATH/my-research-project",
-        "--tool-detail", "full"
-      ],
-      "timeout": 1800
-    }
-  }
-}
-```
-
-`RESEARCH_ULTRARAG_TOOL_DETAIL=full` sets the same option, and `--tool-detail lean` overrides a changed environment. The debug mode is not the agent's answer and is not meant to be submitted to one: it exists so a human can see the candidate accounting, the gate that rejected a passage, the withheld corpus material, which metadata value came from where, and how long each phase took. The browser UI, the terminal verifier, `research-ultra-rag-bundle`, and the retrieval-evaluation harness always read that complete payload, whichever detail mode your MCP client uses, so nothing in this project depends on you enabling it.
+`--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) returns the complete payload instead: ranking and reranking scores, candidate and gate counts, withheld candidates with their reason codes, per-field metadata provenance, embedding audits, filesystem paths, model identifiers, revision fingerprints, and phase timings. It is a developer debugging mode: the browser UI, `research-ultra-rag-verify`, `research-ultra-rag-bundle`, and the evaluation harness select it for their own server, and no part of this project requires it.
 
 ### Let the server host the browser UI (optional)
 
@@ -216,7 +199,7 @@ What to expect from a first build:
 Two identifiers matter, and they mean different things:
 
 - A `source_id` is derived from the project ID and the source-relative path. It survives changes to the file's contents, but renaming or moving the file creates a new `source_id`. Use it for `set_source_metadata` and `set_source_inclusion`.
-- A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change. It is an internal identity for the `document_ids` search filter rather than the durable handle, and the lean answers do not report it.
+- A `document_id` identifies one content/path version inside a generation and changes when the bytes or the path change. It is an internal identity for the `document_ids` search filter rather than the durable handle, and it is not reported in answers.
 
 Calling `list_sources` also registers discovered IDs in the portable project catalog. That is what keeps a registered ID addressable when an original is renamed, moved, or temporarily absent — the full-detail payload lists those records as `known_sources` — without guessing that metadata from an old path belongs to a new one. `reviewed_metadata_sources` lists every saved override by the same stable ID, so you can inspect, replace, or remove each persisted decision even if the original file is not present right now.
 
@@ -531,7 +514,7 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 | `export_bundle` | Writes a portable project archive. |
 | `import_bundle` | Validates and reconstructs a project from an archive placed in `.research-rag/bundles/`. |
 
-Every one of them answers with the lean payload described under [How much a tool answer contains](#how-much-a-tool-answer-contains); `--tool-detail full` returns the complete payload instead.
+Every one of them answers as described under [What a tool answer contains](#what-a-tool-answer-contains).
 
 ## How it works under the hood
 
@@ -600,7 +583,7 @@ If something looks wrong:
 - `--offline` reports missing runtime or models. Run once online, or point `--model-cache-root` at a populated cache.
 - `status` says the generation is stale. Search still uses the previous generation until a re-ingestion succeeds. That is intentional.
 - Search returns nothing. This can be correct: the relevance gates prefer abstaining over returning weak matches. Try a precise BM25 query, or inspect dense mode, before lowering any quality expectation.
-- You want to see why a query missed, which passages a gate rejected, or how long ingestion took. That is the debugging mode, not the agent's answer: start the server with `--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) and inspect the complete payload, which carries the candidate accounting, the withheld material with its reason codes, per-field metadata provenance, and phase timings.
+- You want the ranking or candidate detail behind a query, or the ingestion timings. Start the server with `--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) and inspect the complete payload.
 - Import reports a project-ID conflict. The wrong `.research-rag/project.json` is in use. A source conflict means an existing file has different bytes. Neither safeguard should be bypassed.
 
 ## UltraRAG credit and licensing

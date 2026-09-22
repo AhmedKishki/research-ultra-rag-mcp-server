@@ -147,8 +147,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
     transport = create_research_transport(
         config,
         log_file=log_path,
-        # The verifier prints the whole response for a human to inspect, so it
-        # reads the full payload rather than the agent's lean answer.
+        # The verifier prints the complete payload for a human to inspect.
         tool_detail=FULL_TOOL_DETAIL,
     )
 

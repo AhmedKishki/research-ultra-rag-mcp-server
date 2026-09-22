@@ -21,11 +21,8 @@ class ConfigurationError(ValueError):
 
 _RUNTIME_MARKER = ".research-ultra-rag-runtime.json"
 
-# How much of a tool response the agent receives. `lean` is the agent-facing
-# default because an agent cannot act on ranking internals, extraction
-# diagnostics, or revision fingerprints, and paying for them costs the answer
-# itself; `full` returns the complete service payload for debugging a retrieval
-# or ingestion problem from a terminal client.
+# Tool answer detail. `lean` is what the MCP tools return; `full` is the
+# developer debugging mode and returns the service payload unchanged.
 LEAN_TOOL_DETAIL = "lean"
 FULL_TOOL_DETAIL = "full"
 TOOL_DETAIL_MODES = (LEAN_TOOL_DETAIL, FULL_TOOL_DETAIL)

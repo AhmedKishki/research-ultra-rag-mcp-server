@@ -126,9 +126,9 @@ Measured on the reference project, medians:
 
 The staleness walk is an order of magnitude larger than everything else and is the only term that grows with the number of source files: about 0.18 ms per source, so roughly 176 ms at 1,000 sources. That is why `include_staleness=false` exists. Nothing else here is cached, deliberately: caching the document map saves about 0.6 ms per query while adding cross-request state that must be invalidated correctly, and reusing SQLite connections saves about 0.09 ms while requiring one connection to be reachable from whichever thread serves the next call. At the scale where either would matter, parsing the manifest dominates both, so the right answer there is a persistent document-metadata index rather than a per-process cache. A staleness verdict cached behind a directory signature was rejected because it would be wrong: a directory's own modification time does not change when a file inside it is replaced in place, so such a cache would report a changed corpus as fresh. At this corpus size the flag does not change how fast a search feels — a warm hybrid query measured 567 ms with the check and 583 ms without it, inside the machine's run-to-run variance — and it is not claimed to.
 
-### What one answer occupies in the agent's context
+### Tool answer size
 
-Every tool returns the lean projection from `tool_views.py` unless the server runs with `--tool-detail full`, and both are JSON UTF-8 bytes of the same call. Measured with `scripts/measure_tool_payloads.py` on the corpus state `status` reports in this environment (63 discovered sources, 59 indexed, 14,072 chunks, 5 retained generations), with the hybrid default and reranking enabled:
+`scripts/measure_tool_payloads.py` reports the JSON UTF-8 size of one lean answer and of the same call in `--tool-detail full`. Measured on the corpus state `status` reports here (63 discovered sources, 59 indexed, 14,072 chunks, 5 retained generations), hybrid default, reranking enabled:
 
 | Tool | Lean answer | Full-detail answer | Ratio |
 |---|---|---|---|
@@ -136,7 +136,7 @@ Every tool returns the lean projection from `tool_views.py` unless the server ru
 | `list_sources` | 58,108 bytes | 149,155 bytes | 0.39 |
 | `search`, `top_k=6` | 10,799 bytes | 19,831 bytes | 0.54 |
 
-What the two modes have in common is the part that cannot be dropped: in a search, the returned passage text is roughly 6 kB of the lean answer and the same in the full one, so the ratio is bounded below by how much evidence was asked for. Everything the ratio removes is accounting rather than evidence — component ranks, per-candidate gate rejections, withheld candidates, per-passage embedding audits, metadata provenance, revision fingerprints, filesystem paths, model identifiers, and phase timings. `list_sources` shows the effect most clearly because its full payload repeats those fields for every source: 149 kB of JSON in which the reviewed metadata, the stable IDs, and the inclusion state are a minority. The absolute numbers track the corpus (both source lists grow with the number of sources, and `search` grows with `top_k` and passage length); the ratio is the property that carries over.
+The returned passage text is about 6 kB of both search answers, so a search ratio is bounded by how much evidence was requested. The two source lists grow with the number of sources and `search` grows with `top_k` and passage length, so absolute bytes track the corpus while the ratio carries over.
 
 ## 4. Retrieval quality and query latency
 

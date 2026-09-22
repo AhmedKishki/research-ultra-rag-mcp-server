@@ -157,9 +157,8 @@ def _adapter_factory(config: ResearchConfig) -> AdapterFactory:
         transport = create_research_transport(
             config,
             log_file=config.logs_root / "research-ui-mcp-stderr.log",
-            # The UI is a diagnostic surface: it renders the component ranks,
-            # scores, and source inventory that the agent's lean tool answer
-            # deliberately leaves out.
+            # The UI reads the complete payload: it renders the ranking scores
+            # and the full source inventory.
             tool_detail=FULL_TOOL_DETAIL,
         )
         async with Client(

@@ -122,8 +122,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
     transport = create_research_transport(
         config,
         log_file=config.logs_root / "bundle-stderr.log",
-        # A terminal bundle operation reports paths, checksums, and counts, so it
-        # reads the full payload rather than the agent's lean answer.
+        # A terminal bundle operation reports paths, checksums, and counts.
         tool_detail=FULL_TOOL_DETAIL,
     )
     async with Client(transport, timeout=1800, init_timeout=1800) as client:

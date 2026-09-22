@@ -19,8 +19,7 @@ from research_ultra_rag_mcp.service import ResearchError
 from research_ultra_rag_mcp.tool_views import present_tool_response
 
 # Keys the service builds for ranking, extraction, and storage diagnostics. A
-# lean answer must never carry one of them: an agent cannot act on them, and
-# paying for them costs the answer itself.
+# lean answer must not carry one.
 DIAGNOSTIC_KEYS = {
     "annotations",
     "candidate_count",

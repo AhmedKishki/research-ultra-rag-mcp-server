@@ -1,28 +1,8 @@
-"""Agent-facing projections of the public MCP tool payloads.
+"""Projections from service payloads to MCP tool answers.
 
-An agent's context window is the scarcest resource in a research session, so
-every MCP tool answers with a lean payload by default: the evidence, the stable
-handles, and the state an agent acts on. Ranking internals, extraction
-diagnostics, filesystem paths, revision fingerprints, model identifiers,
-pipeline timings, and constant or empty fields stay out of that answer, because
-an agent cannot act on them and paying for them costs the answer itself.
-
-Nothing is lost. The service still builds the complete payload; the local UI,
-``research-ultra-rag-verify``, ``research-ultra-rag-bundle``, and the evaluation
-harness read it directly, and a server started with ``--tool-detail full`` (or
-``RESEARCH_ULTRARAG_TOOL_DETAIL=full``) exposes it through the tools as well for
-debugging a retrieval or ingestion problem.
-
-The rules for a lean projection:
-
-- keep every field an agent acts on: evidence text, stable IDs, locators,
-  citations, inclusion and readiness state, actionable warnings, and counts;
-- keep the values that are the answer itself, including an empty result list or
-  a false readiness flag;
-- omit optional detail that is empty, null, or its harmless default, so a
-  response carries no placeholder noise;
-- never invent a value, and never rename a field that the documentation
-  describes.
+Every tool answers with the lean projection, which `present_tool_response`
+applies. `--tool-detail full` is the developer detail mode: it returns the
+service payload unchanged, for debugging retrieval and ingestion.
 """
 
 from __future__ import annotations
@@ -57,7 +37,7 @@ def _copy(source: Mapping[str, Any], keys: Iterable[str]) -> dict[str, Any]:
 
 
 def _meaningful(value: Any) -> bool:
-    """Whether a value is worth the tokens it costs in a lean response."""
+    """Whether a value carries information rather than a default."""
 
     if value is None or value is False:
         return False
@@ -67,17 +47,16 @@ def _meaningful(value: Any) -> bool:
 
 
 def _add(target: dict[str, Any], key: str, value: Any) -> None:
-    """Add optional detail, skipping a value that says nothing on its own."""
+    """Set a key unless its value is empty, null, false, or zero."""
 
     if _meaningful(value):
         target[key] = value
 
 
 def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one evidence passage with its bibliography and locator.
+    """Return one passage: identity, bibliography, locator, citation, and text.
 
-    The dropping rule applies to an anonymous or undated source: absent authors,
-    year, and DOI are omitted rather than returned as empty placeholders.
+    Unresolved authors, year, and DOI are omitted.
     """
 
     result: dict[str, Any] = {}
@@ -96,7 +75,7 @@ def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_reference_group(group: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one reference view group: a source and the passages from it."""
+    """Return one reference group: its source and the passages selected from it."""
 
     result: dict[str, Any] = {}
     _add(result, "rank", group.get("rank"))
@@ -109,16 +88,11 @@ def lean_reference_group(group: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the search answer: ranked evidence, freshness, and reranking state.
+    """Return a search answer: query, generation, freshness, reranking, evidence.
 
-    `stale` stays explicit because a null value means the freshness check was
-    skipped rather than that the generation is current. `reranked` stays
-    explicit because whether the quality gain really applied must be visible
-    rather than assumed; `rerank_fallback` appears only when it did not run.
-    Unresolved caller-supplied IDs are reported because a partly resolved
-    selection is a fact the caller has to know. The reference view answers with
-    the grouped passages instead of the flat list, so a grouped answer does not
-    carry every passage twice.
+    `stale` and `reranked` are always present; the other optional fields appear
+    only when they carry a value. The reference view answers with
+    `reference_groups` instead of `hits`.
     """
 
     result: dict[str, Any] = _copy(payload, ("query", "generation_id", "stale"))
@@ -147,7 +121,7 @@ def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_passage_context(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one passage with its neighbors for reading, not for scoring."""
+    """Return the requested passage with its neighbouring passages."""
 
     result: dict[str, Any] = _copy(payload, ("generation_id", "requested_chunk_id"))
     result["context"] = [lean_passage(item) for item in payload.get("context") or []]
@@ -173,15 +147,10 @@ def lean_generation(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return project readiness, freshness, counts, and retention.
+    """Return project state: readiness, freshness, counts, inventory, retention.
 
-    `stale` stays explicit, and the change lists appear only when the generation
-    is actually stale, because that is when an agent has to explain them. The
-    retention inventory stays because it is the only answer to a question about
-    disk use; pruning is a manual decision the agent must describe, not perform.
-    `restart_required` appears only when the running process is older than the
-    installed version, because that is when telling the user to restart the
-    server in their client is the action.
+    Change lists appear only when the generation is stale, and `restart_required`
+    only when the running process is older than the installed version.
     """
 
     result = _copy(payload, ("ready", "stale", "project_name"))
@@ -230,12 +199,10 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_ingest(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return ingestion progress or the counts that describe the new generation.
+    """Return ingestion state: what changed, what was reused, what was discarded.
 
-    Reuse and rebuild counts stay because they say what the call actually did;
-    phase timings, model identifiers, and extraction internals do not. Counters
-    that exist only to disclose something unusual — discarded, withheld, or
-    densely truncated material — appear only when they are not zero.
+    The counters that report discarded, withheld, or densely truncated material
+    appear only when they are not zero.
     """
 
     result = _copy(payload, ("status", "generation_changed"))
@@ -265,7 +232,7 @@ def lean_ingest(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_source_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one searchable source's stable handle and reviewed bibliography."""
+    """Return one searchable source's handle and bibliography."""
 
     result: dict[str, Any] = {}
     for key in ("source_id", "source_relative_path", "title"):
@@ -278,11 +245,9 @@ def lean_source_record(record: Mapping[str, Any]) -> dict[str, Any]:
 def lean_list_sources(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return source handles, inclusion state, and saved metadata overrides.
 
-    The four source lists are the answer itself, so they stay even when empty,
-    and each record keeps only the fields an agent selects, filters, or reviews
-    a source by. `sources` carries the bibliography of what is searchable now;
-    `discovered_sources` carries every live PDF/EPUB with its index state, so a
-    handle exists before the first ingestion.
+    `sources` holds the bibliography of what is searchable now and
+    `discovered_sources` every live PDF/EPUB with its index state, so a handle
+    exists before the first ingestion.
     """
 
     result = _copy(payload, ("ready",))
@@ -337,12 +302,10 @@ def lean_list_sources(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_source_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return what a reviewed metadata write saved and when it takes effect.
+    """Return the saved reviewed metadata, whether it changed, and its effect.
 
-    The saved override itself stays, including an empty one: an empty `metadata`
-    with `changed: true` is how a cleared override reads. The recomputed
-    effective document is left out because it restates the override for the
-    common case, and `message` already says whether ingestion is required.
+    The saved override is always present, including an empty one: an empty
+    `metadata` with `changed: true` is how a cleared override reads.
     """
 
     result = _copy(payload, ("source_id", "source_relative_path"))
@@ -355,7 +318,7 @@ def lean_source_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_source_inclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the inclusion decision, its reason, and its effect right now."""
+    """Return the inclusion decision, its reason, and its effect."""
 
     result = _copy(payload, ("status", "source_id", "source_relative_path"))
     for key in (
@@ -424,13 +387,7 @@ def present_tool_response(
     *,
     detail: str,
 ) -> dict[str, Any]:
-    """Return one tool response in the configured detail mode.
-
-    ``lean`` is the agent-facing default; ``full`` returns the service payload
-    unchanged for debugging a retrieval or ingestion problem. An unknown tool
-    name is a programming error, not a caller error, so it fails loudly instead
-    of falling back to the verbose payload.
-    """
+    """Return one tool answer in the configured detail mode."""
 
     if detail == FULL_TOOL_DETAIL:
         return dict(payload)

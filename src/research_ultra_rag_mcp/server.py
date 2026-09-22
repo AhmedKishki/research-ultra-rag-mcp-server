@@ -151,9 +151,8 @@ DocumentIdFilter: TypeAlias = Annotated[
         description=(
             "Document IDs to include; a result may match any supplied ID. A "
             "document ID identifies one content/path version inside a "
-            "generation, and the default lean answers do not report it, so "
-            "prefer source_id; read document IDs from a server started with "
-            "--tool-detail full. Omit or pass null for no document filter."
+            "generation and is not reported in an answer, so prefer source_id. "
+            "Omit or pass null for no document filter."
         )
     ),
 ]
@@ -445,12 +444,7 @@ def create_server(
         return instance
 
     def _present(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return a tool response in this server's configured detail mode.
-
-        The default is the lean agent-facing payload in `tool_views`; a server
-        started with `--tool-detail full` passes the complete service payload
-        through for debugging.
-        """
+        """Return a tool answer in this server's configured detail mode."""
 
         try:
             return present_tool_response(
@@ -885,11 +879,9 @@ def _parser() -> argparse.ArgumentParser:
         choices=TOOL_DETAIL_MODES,
         default=os.environ.get("RESEARCH_ULTRARAG_TOOL_DETAIL", LEAN_TOOL_DETAIL),
         help=(
-            "How much of a tool response the agent receives. 'lean' (the "
-            "default) returns the evidence, stable handles, and state an agent "
-            "acts on. 'full' also returns ranking internals, extraction "
-            "diagnostics, revision fingerprints, and pipeline timings, which is "
-            "a debugging aid for a terminal client and never the agent's answer."
+            "Tool answer detail. 'lean' returns the fields an agent acts on. "
+            "'full' returns the complete payload for developer debugging of "
+            "retrieval or ingestion."
         ),
     )
     parser.add_argument(

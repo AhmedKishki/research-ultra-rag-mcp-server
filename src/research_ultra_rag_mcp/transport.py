@@ -17,12 +17,10 @@ def create_research_transport(
     log_file: str | Path,
     tool_detail: str | None = None,
 ) -> StdioTransport:
-    """Start a private server for one research project.
+    """Start a private stdio server for one research project.
 
-    ``tool_detail`` defaults to the project's setting. The diagnostic consumers
-    in this package — the browser UI, the terminal verifier, the bundle CLI, and
-    the evaluation harness — pass ``full`` because they render, verify, or
-    measure what an agent's lean answer deliberately leaves out.
+    ``tool_detail`` defaults to the project's setting; the diagnostic surfaces in
+    this package pass ``full``.
     """
 
     arguments = [

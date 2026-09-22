@@ -97,21 +97,12 @@ Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
 BM25 lexical retrieval; FastEmbed creates the semantic vectors, which dense
 search scans exactly by default and reads from an embedded index only above the
 documented corpus size; weighted reciprocal-rank fusion combines the two
-independent rankings. Every tool answer is deliberately lean: it carries the
-evidence, the stable handles, and the state you act on, not ranking internals,
-extraction diagnostics, or storage paths, which would spend your context on
-something you cannot use. Scores and candidate accounting are therefore not
-part of a normal answer; a user who needs them can start the server with
---tool-detail full. `reranked` and `rerank_fallback` still report whether the
-reranker really ran, so that fact stays visible rather than assumed. Ranking
-signals are not confidence or truth probabilities, and are not comparable
-across different queries. Never invent
-missing bibliographic fields, relevance scores, page numbers, or quotations.
-Search may return fewer than requested results, including zero, when relevance
-gates abstain.
-Corrupt extraction units are excluded whole under an English-oriented policy;
-the server records their locators and reason codes without retaining garbage
-text, and `status` reports the corpus-level counts. The same guard filters older
+independent rankings. `reranked` and `rerank_fallback` report whether the
+reranker ran rather than leaving it assumed. Never invent missing bibliographic
+fields, relevance scores, page numbers, or quotations. Search may return fewer
+than requested results, including zero, when relevance gates abstain.
+Corrupt extraction units are excluded whole under an English-oriented policy,
+and `status` reports the corpus-level counts. The same guard filters older
 generations at retrieval time. Never guess an encoding repair or fabricate
 replacement wording.
 """
