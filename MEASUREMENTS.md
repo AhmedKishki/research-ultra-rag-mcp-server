@@ -136,7 +136,7 @@ The staleness walk is an order of magnitude larger than everything else and is t
 | `list_sources` | 38,144 bytes | 72,503 bytes | 0.53 |
 | `search`, `top_k=6` | not re-measured | — | — |
 
-Two things dominate. A lean `status` is small because it reports the pending-review count, not the 59 reviewed paths the full payload lists, and it carries no retained-generation inventory for a project with none. `list_sources` is the largest lean answer and stays largest because `reviewed_metadata_sources` echoes every saved override: that is also the only place the keyword vocabulary is visible, since `status` inventories categories and projects but not keywords.
+Two things dominate. A lean `status` is small because it reports the pending-review count, not the 59 reviewed paths the full payload lists, because it counts added and modified sources instead of listing them while naming only the ones that went missing, and because it carries no retained-generation inventory for a project with none. `list_sources` is the largest lean answer and stays largest because `reviewed_metadata_sources` echoes every saved override: that is also the only place the keyword vocabulary is visible, since `status` inventories categories and projects but not keywords.
 
 `search` needs a built generation, which this measurement state did not have. The last reference measurement with a generation was 10,799 bytes lean against 19,831 bytes full at `top_k=6`, and that figure predates the removal of the per-passage `rank`, `year`, `doi`, and `metadata_warnings` fields, so it is an upper bound rather than the current answer. Re-run the script after the next build to replace it.
 

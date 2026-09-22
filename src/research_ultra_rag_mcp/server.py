@@ -383,6 +383,12 @@ def create_server(
         failing the call. Pruning is not offered; this only shows what a prune
         would consider.
 
+        When the generation is stale, changes counts the added and modified
+        sources, names the sources the generation has that the source directory
+        no longer does, and reports whether reviewed metadata or exclusions
+        moved. Available sources are counted rather than listed; list_sources
+        is the inventory.
+
         When this server was started with --ui-port, ui_url names the browser UI
         it is serving on loopback, ui_ready says whether it finished starting,
         and ui_error explains a port that was already in use. Without that

@@ -191,7 +191,23 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
         result["metadata_pending_source_count"] = len(pending_paths)
     _add(result, "ingestion_progress", payload.get("ingestion_progress"))
     if payload.get("stale"):
-        _add(result, "changes", payload.get("changes"))
+        changes = payload.get("changes") or {}
+        lean_changes: dict[str, Any] = {}
+        for key, source_key in (
+            ("added_source_count", "added"),
+            ("modified_source_count", "modified"),
+        ):
+            count = len(changes.get(source_key) or [])
+            if count:
+                lean_changes[key] = count
+        # Available sources are counted, never listed. A source the generation
+        # has and the directory does not is named, because that is what a
+        # researcher has to act on.
+        _add(lean_changes, "removed_sources", changes.get("removed"))
+        for key in ("metadata_changed", "source_exclusions_changed"):
+            _add(lean_changes, key, changes.get(key))
+        if lean_changes:
+            result["changes"] = lean_changes
     version = payload.get("version") or {}
     _add(result, "restart_required", version.get("restart_required"))
     generations = payload.get("generations")

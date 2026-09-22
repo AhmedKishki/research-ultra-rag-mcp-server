@@ -132,7 +132,7 @@ A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.exampl
 
 A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `chunk_id`, `source_id`, `source_relative_path` (the filename), `title`, `authors`, `citation`, `locator`, `text`, `direct_quote_safe: false`, and `text_notes` when there is any; the year and DOI are part of the citation. The reference view returns `reference_groups` instead, where each group names its source once and lists the passages selected from it.
 
-`status` returns readiness, `stale`, the source and generation counts, `chunk_count`, `categories`, `projects`, `available_retrieval_methods`, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `metadata_pending_source_count`, `ingestion_progress`, `retained_generation_count`, `retained_generation_bytes`, and every retained generation. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. `set_source_inclusion` returns the decision, its reason, `effective_immediately`, and whether the next ingestion should rebuild without the source.
+`status` returns readiness, `stale`, the source and generation counts, `chunk_count`, `categories`, `projects`, `available_retrieval_methods`, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `metadata_pending_source_count`, `ingestion_progress`, and, when the generation is stale, `changes` — counts of added and modified sources, `removed_sources` naming the files that disappeared, and the review and exclusion flags, `retained_generation_count`, `retained_generation_bytes`, and every retained generation. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. `set_source_inclusion` returns the decision, its reason, `effective_immediately`, and whether the next ingestion should rebuild without the source.
 
 A field that is empty, null, or false is omitted, so an absent field means there is nothing to report. `stale` (where `null` means the freshness check was skipped) and `reranked` are always present.
 
@@ -273,7 +273,7 @@ Pass `include_staleness=false` when a session has already checked `status` and o
 
 ### What makes a generation stale
 
-Adding, removing, or changing source content — or changing which sources are included — can make the selected generation stale, and `status` says so. When that happens you have two options:
+Adding, removing, or changing source content — or changing which sources are included — can make the selected generation stale, and `status` says so: it counts the sources it gained and modified, names the ones the directory no longer has, and flags a changed review or exclusion. It never lists the sources that are still available, so read `changes` as a verdict on the corpus rather than as an inventory. When the generation is stale you have two options:
 
 - **Re-ingest changes** verifies every source hash and reuses compatible documents, chunks, and vectors, then rebuilds both indexes. This is the normal path and it is much cheaper than starting over.
 - **Regenerate** uses `--force-recompute` and deliberately ignores all reuse.

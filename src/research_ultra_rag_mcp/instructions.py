@@ -19,8 +19,10 @@ For research questions:
 1. Call status first. If no generation exists, ask before calling ingest because
    ingestion writes a new persistent generation, computes embeddings, and may
    download the pinned embedding model on first use.
-2. If status reports stale=true, tell the user which sources or inclusion state
-   changed and ask whether to ingest a new generation. Existing searches remain
+2. If status reports stale=true, tell the user how many sources were added or
+   modified, name any source that is no longer in the directory, and say
+   whether inclusion state changed; then ask whether to ingest a new
+   generation. Existing searches remain
    usable. metadata_overlay_active is informational, not staleness: current
    reviewed metadata is already authoritative on every read surface and does
    not require ingestion merely to become effective.

@@ -269,7 +269,7 @@ def test_status_lean_keeps_state_and_retention_only() -> None:
     assert "version" not in restarting
 
 
-def test_status_omits_change_lists_unless_stale() -> None:
+def test_status_counts_available_source_changes_and_names_missing_ones() -> None:
     current = present_tool_response(
         "status", _status_payload(), detail=LEAN_TOOL_DETAIL
     )
@@ -278,10 +278,27 @@ def test_status_omits_change_lists_unless_stale() -> None:
 
     stale = present_tool_response(
         "status",
-        _status_payload(stale=True, changes={"added": ["new.pdf"]}),
+        _status_payload(
+            stale=True,
+            changes={
+                "added": ["new.pdf", "another.pdf", "third.pdf"],
+                "removed": ["gone.pdf"],
+                "modified": ["edited.pdf"],
+                "metadata_changed": True,
+                "source_exclusions_changed": False,
+            },
+        ),
         detail=LEAN_TOOL_DETAIL,
     )
-    assert stale["changes"] == {"added": ["new.pdf"]}
+    assert stale["changes"] == {
+        "added_source_count": 3,
+        "modified_source_count": 1,
+        "removed_sources": ["gone.pdf"],
+        "metadata_changed": True,
+    }
+    # No available source is ever named in a status answer.
+    assert "new.pdf" not in json.dumps(stale)
+    assert "edited.pdf" not in json.dumps(stale)
 
 
 def test_status_before_the_first_ingestion_states_what_is_missing() -> None:

@@ -230,6 +230,27 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert ready.data["ui_error"] is None
         assert ready.data["retained_generation_count"] >= 1
 
+        # A stale status counts what the corpus gained and reports only what a
+        # researcher has to act on; it never enumerates the available sources.
+        added_source = project / "sources" / "added-later.pdf"
+        write_pdf(added_source, ["Amber marsh evidence added after the build."])
+        added_status = await client.call_tool("status", {})
+        assert added_status.data["stale"] is True
+        assert added_status.data["changes"] == {"added_source_count": 1}
+        assert "added-later.pdf" not in json.dumps(added_status.data)
+
+        removed_source = project / "sources" / "evidence.pdf"
+        removed_bytes = removed_source.read_bytes()
+        removed_source.unlink()
+        missing_status = await client.call_tool("status", {})
+        assert missing_status.data["changes"]["removed_sources"] == ["evidence.pdf"]
+        assert "added-later.pdf" not in json.dumps(missing_status.data)
+        removed_source.write_bytes(removed_bytes)
+        added_source.unlink()
+        settled_status = await client.call_tool("status", {})
+        assert settled_status.data["stale"] is False
+        assert "changes" not in settled_status.data
+
         result = await client.call_tool(
             "search",
             {"query": "cobalt heron amber marsh", "top_k": 1},
