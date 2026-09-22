@@ -245,6 +245,23 @@ def test_status_lean_keeps_state_and_retention_only() -> None:
     assert "ingestion_progress" not in lean
     assert "generation_root" not in lean
     assert "version" not in lean
+    assert "restart_required" not in lean
+
+    # A required restart is actionable state, so it survives the projection.
+    restarting = present_tool_response(
+        "status",
+        _status_payload(
+            version={
+                "server": "0.15.0",
+                "installed": "0.16.0",
+                "ui": None,
+                "restart_required": True,
+            }
+        ),
+        detail=LEAN_TOOL_DETAIL,
+    )
+    assert restarting["restart_required"] is True
+    assert "version" not in restarting
 
 
 def test_status_omits_change_lists_unless_stale() -> None:

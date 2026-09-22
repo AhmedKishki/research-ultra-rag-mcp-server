@@ -179,6 +179,9 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
     is actually stale, because that is when an agent has to explain them. The
     retention inventory stays because it is the only answer to a question about
     disk use; pruning is a manual decision the agent must describe, not perform.
+    `restart_required` appears only when the running process is older than the
+    installed version, because that is when telling the user to restart the
+    server in their client is the action.
     """
 
     result = _copy(payload, ("ready", "stale", "project_name"))
@@ -215,6 +218,8 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
     _add(result, "ingestion_progress", payload.get("ingestion_progress"))
     if payload.get("stale"):
         _add(result, "changes", payload.get("changes"))
+    version = payload.get("version") or {}
+    _add(result, "restart_required", version.get("restart_required"))
     generations = payload.get("generations")
     if generations is not None:
         result["generations"] = [lean_generation(item) for item in generations]

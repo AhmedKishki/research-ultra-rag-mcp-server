@@ -521,7 +521,7 @@ Nine tools are exposed. All are project-scoped and none of them deletes a source
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. The full-detail payload adds the paths, versions, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
+| `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. It also reports `restart_required` when the running process is older than the installed version. The full-detail payload adds the paths, the version block, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
 | `ingest` | Creates or refreshes a generation. Resumable, with a soft per-call work budget. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. |
 | `search` | Retrieves evidence candidates. Supports BM25, dense, and hybrid retrieval; source selection (`source_ids`, `exclude_source_ids`); metadata layers (`projects`, `projects_any`, `categories`, `categories_any`, `keywords`, `document_ids`); reranking (on by default, `rerank=false` to skip); and the passage or reference view. Checks whether the generation is stale unless `include_staleness=false`. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides, filtered by the same `projects`, `projects_any`, `categories`, `categories_any`, and `keywords`. Registers discovered IDs in the project catalog. |
@@ -591,7 +591,7 @@ Things to know before you rely on a result:
 - Duplicate sources are a judgement call. The server never deletes an original; you review and exclude.
 - Large CPU ingestions and reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget. Reranking is on by default for `search`; pass `rerank=false` when you want the fastest answer.
 - Cleaned text is not a quote-verification surface — open the original.
-- A running server keeps the code it started with, because a stdio server's process belongs to your MCP client. `status.version.restart_required` reports that mismatch; restarting the server in the client clears it. The browser UI can be restarted from this side, and `scripts/update.sh <project>` does that for a named project.
+- A running server keeps the code it started with, because a stdio server's process belongs to your MCP client. `status` reports `restart_required` when the process is older than what is installed, and the full-detail payload names the running and installed versions; restarting the server in the client clears it. The browser UI can be restarted from this side, and `scripts/update.sh <project>` does that for a named project.
 - Earlier successful generations are kept. Automatic pruning is not implemented, so old generations accumulate until you remove them yourself.
 
 If something looks wrong:
