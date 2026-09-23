@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.23.0`
+- Version: `0.24.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -58,6 +58,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Retain the prominent UltraRAG acknowledgement in `README.md`, the root `NOTICE`, upstream project links, license information, and the independent project disclaimer.
 - Credit THUNLP, NEUIR, OpenBMB, AI9stars, and the upstream contributors using the wording supported by UltraRAG's own README. Do not imply endorsement.
+- Keep that credit in the project's own documents, never in the agent-facing surface: `instructions.py` and the tool descriptions say what the server does and what the caller owes the user, and carry no upstream credit, endorsement, or licensing text.
 - One server process serves exactly one configured project root.
 - MCP tools must not accept arbitrary filesystem output paths.
 - Ingestion selects only regular PDF and EPUB files beneath the configured sources directory.
@@ -140,7 +141,7 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `transport.py`: the single research stdio transport builder used by UI and terminal clients.
 - `service.py`: generation, indexing, status, filtering, and evidence workflow.
 - `tool_views.py`: the projection from service payloads to MCP tool answers.
-- `instructions.py`: guidance returned to MCP agents.
+- `instructions.py`: guidance returned to MCP agents, without upstream credit text.
 - `ui.py`: shared-UI profile, private MCP client, public-tool mapping, and safe original-source authorization.
 - `ui-ultra-rag-mcp` dependency: loopback HTTP host, constrained JSON API, and packaged dependency-free browser workspace.
 - `verify.py`: terminal MCP client for end-to-end project verification.

@@ -28,9 +28,4 @@ What the user is owed:
   reads them but never writes them.
 - If rerank_fallback appears, the order is unranked: say so rather than implying
   the results were reranked.
-
-Upstream credit: this server builds on UltraRAG, a joint project of THUNLP, NEUIR,
-OpenBMB, AI9stars, and the UltraRAG contributors
-(https://github.com/OpenBMB/UltraRAG). This extension is independent and
-unofficial.
 """
