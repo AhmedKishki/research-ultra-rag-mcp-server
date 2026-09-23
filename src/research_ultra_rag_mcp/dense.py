@@ -12,6 +12,7 @@ from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client import QdrantClient, models
 from tokenizers import Tokenizer
 
+from .rerankers import DEFAULT_RERANKER_MODEL, resolve_reranker_model
 from .storage import StorageError, atomic_write_json, read_json
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
@@ -26,8 +27,6 @@ EMBEDDING_MAXIMUM_TOKENS = 512
 # chunks/s against 6.2 at a batch of 64, and a batch of 1 returns exactly
 # the same floats as a batch of 64. See MEASUREMENTS.md.
 EMBEDDING_INFERENCE_BATCH_SIZE = 1
-RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
-RERANKER_MODEL_REVISION = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
 COLLECTION_NAME = "research_chunks"
 QDRANT_BACKEND_NAME = "embedded-qdrant"
 EXACT_BACKEND_NAME = "portable-exact-vectors"
@@ -117,6 +116,8 @@ class DenseBackend(Protocol):
         self,
         query: str,
         documents: list[str],
+        *,
+        model: str | None = None,
     ) -> list[float]: ...
 
 
@@ -144,22 +145,28 @@ def _load_embedder(
     )
 
 
-def _load_cross_encoder(cache_root: Path, *, offline: bool) -> TextCrossEncoder:
-    """Load the optional pinned CPU cross-encoder from the shared model cache.
+def _load_cross_encoder(
+    cache_root: Path,
+    *,
+    offline: bool,
+    model: str = DEFAULT_RERANKER_MODEL,
+) -> TextCrossEncoder:
+    """Load one pinned CPU cross-encoder from the shared model cache.
 
     Any load failure means the reranker cannot run — most often an offline call
     whose model is not cached yet — so it is reported as ``RerankerUnavailable``
     for the caller to degrade from rather than as an opaque model error.
     """
 
+    name, revision = resolve_reranker_model(model)
     cache_root.mkdir(parents=True, exist_ok=True)
     try:
         return TextCrossEncoder(
-            model_name=RERANKER_MODEL,
+            model_name=name,
             cache_dir=str(cache_root),
             cuda=False,
             local_files_only=offline,
-            revision=RERANKER_MODEL_REVISION,
+            revision=revision,
         )
     except Exception as exc:
         hint = (
@@ -168,7 +175,7 @@ def _load_cross_encoder(cache_root: Path, *, offline: bool) -> TextCrossEncoder:
             else " it is downloaded on first use"
         )
         raise RerankerUnavailable(
-            f"The reranker model {RERANKER_MODEL} cannot be loaded:{hint}. {exc}"
+            f"The reranker model {name} cannot be loaded:{hint}. {exc}"
         ) from exc
 
 
@@ -201,12 +208,14 @@ class LocalQdrantDenseBackend:
         *,
         offline: bool = False,
         embedding_threads: int | None = None,
+        reranker_model: str = DEFAULT_RERANKER_MODEL,
     ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
         self.embedding_threads = embedding_threads
+        self.reranker_model = reranker_model
         self._embedding_model: TextEmbedding | None = None
-        self._reranker: TextCrossEncoder | None = None
+        self._rerankers: dict[str, TextCrossEncoder] = {}
         self._audit_tokenizer: Tokenizer | None = None
 
     def _embedder(self) -> TextEmbedding:
@@ -218,13 +227,23 @@ class LocalQdrantDenseBackend:
             )
         return self._embedding_model
 
-    def _cross_encoder(self) -> TextCrossEncoder:
-        if self._reranker is None:
-            self._reranker = _load_cross_encoder(
+    def _cross_encoder(self, model: str | None = None) -> TextCrossEncoder:
+        """Return the pinned cross-encoder for one model, loading it on demand.
+
+        A run that compares rerankers needs more than one model, so each model is
+        loaded at most once and kept for the life of the backend.
+        """
+
+        name = model or self.reranker_model
+        encoder = self._rerankers.get(name)
+        if encoder is None:
+            encoder = _load_cross_encoder(
                 self.model_cache_root,
                 offline=self.offline,
+                model=name,
             )
-        return self._reranker
+            self._rerankers[name] = encoder
+        return encoder
 
     @staticmethod
     def _client(index_path: Path) -> QdrantClient:
@@ -503,11 +522,17 @@ class LocalQdrantDenseBackend:
             hits.append(DenseSearchHit(chunk_id=chunk_id, score=float(point.score)))
         return hits
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        model: str | None = None,
+    ) -> list[float]:
         if not documents:
             return []
         scores = list(
-            self._cross_encoder().rerank(
+            self._cross_encoder(model).rerank(
                 query,
                 documents,
                 batch_size=32,
@@ -560,12 +585,14 @@ class LocalVectorDenseBackend:
         *,
         offline: bool = False,
         embedding_threads: int | None = None,
+        reranker_model: str = DEFAULT_RERANKER_MODEL,
     ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
         self.embedding_threads = embedding_threads
+        self.reranker_model = reranker_model
         self._embedding_model: TextEmbedding | None = None
-        self._reranker: TextCrossEncoder | None = None
+        self._rerankers: dict[str, TextCrossEncoder] = {}
         self._audit_tokenizer: Tokenizer | None = None
         self._loaded: dict[Path, tuple[int, _ExactIndex]] = {}
         self._pending_chunk_ids: list[str] = []
@@ -580,13 +607,23 @@ class LocalVectorDenseBackend:
             )
         return self._embedding_model
 
-    def _cross_encoder(self) -> TextCrossEncoder:
-        if self._reranker is None:
-            self._reranker = _load_cross_encoder(
+    def _cross_encoder(self, model: str | None = None) -> TextCrossEncoder:
+        """Return the pinned cross-encoder for one model, loading it on demand.
+
+        A run that compares rerankers needs more than one model, so each model is
+        loaded at most once and kept for the life of the backend.
+        """
+
+        name = model or self.reranker_model
+        encoder = self._rerankers.get(name)
+        if encoder is None:
+            encoder = _load_cross_encoder(
                 self.model_cache_root,
                 offline=self.offline,
+                model=name,
             )
-        return self._reranker
+            self._rerankers[name] = encoder
+        return encoder
 
     def _audit_tokenizer_for_ingestion(self) -> Tokenizer:
         if self._audit_tokenizer is None:
@@ -632,10 +669,18 @@ class LocalVectorDenseBackend:
             raise RuntimeError("FastEmbed returned non-finite embedding values")
         return vectors
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        model: str | None = None,
+    ) -> list[float]:
         if not documents:
             return []
-        scores = list(self._cross_encoder().rerank(query, documents, batch_size=32))
+        scores = list(
+            self._cross_encoder(model).rerank(query, documents, batch_size=32)
+        )
         if len(scores) != len(documents):
             raise RuntimeError(
                 "FastEmbed reranker returned a different number of scores than passages"

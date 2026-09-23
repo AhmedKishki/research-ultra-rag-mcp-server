@@ -12,6 +12,7 @@ from typing import Any
 from fastmcp import Client
 
 from .config import FULL_TOOL_DETAIL, configured_source_directory, resolve_config
+from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
 from .transport import create_research_transport
 
 
@@ -73,6 +74,17 @@ def _parser() -> argparse.ArgumentParser:
             "an exact scan below the documented corpus threshold)."
         ),
     )
+    parser.add_argument(
+        "--reranker-model",
+        choices=RERANKER_MODEL_CHOICES,
+        default=os.environ.get(
+            "RESEARCH_ULTRARAG_RERANKER_MODEL", DEFAULT_RERANKER_MODEL
+        ),
+        help=(
+            "Reranker model the engine loads for every search; each choice is "
+            "pinned to a revision."
+        ),
+    )
     return parser
 
 
@@ -109,6 +121,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         dense_backend=args.dense_backend,
         runtime_root=args.runtime_root,
         embedding_threads=args.embedding_threads,
+        reranker_model=args.reranker_model,
     )
     log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(

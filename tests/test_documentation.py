@@ -30,6 +30,7 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "http://127.0.0.1:5051",
         "research-ultra-rag-verify",
         "--force-recompute",
+        "--reranker-model",
         'status="in_progress"',
         "metadata_overlay_active",
         "effective_immediately",

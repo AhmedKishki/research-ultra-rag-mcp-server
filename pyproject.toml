@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-ultra-rag-mcp"
-version = "0.24.0"
+version = "0.25.0"
 description = "Retrieval-augmented evidence over a research project's own PDF and EPUB corpus, built on vanilla UltraRAG"
 readme = "README.md"
 license = "Apache-2.0"

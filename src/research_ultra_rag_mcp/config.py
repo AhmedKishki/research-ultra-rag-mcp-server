@@ -13,6 +13,7 @@ from pathlib import Path
 from platformdirs import user_cache_path
 
 from .launcher import ensure_ui_launcher
+from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
 
 
 class ConfigurationError(ValueError):
@@ -74,6 +75,7 @@ class ResearchConfig:
     runtime_root: Path | None = None
     embedding_threads: int | None = None
     tool_detail: str = LEAN_TOOL_DETAIL
+    reranker_model: str = DEFAULT_RERANKER_MODEL
 
     @property
     def generations_root(self) -> Path:
@@ -402,6 +404,7 @@ def resolve_config(
     dense_backend: str = "auto",
     embedding_threads: int | str | None = None,
     tool_detail: str = LEAN_TOOL_DETAIL,
+    reranker_model: str = DEFAULT_RERANKER_MODEL,
 ) -> ResearchConfig:
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
@@ -483,6 +486,15 @@ def resolve_config(
             f"{dense_backend!r}; expected auto, exact, or qdrant"
         )
 
+    # The reranker is an engine setting: every search is reranked, and this names
+    # the model that does it. Each choice is pinned to a revision, so an unknown
+    # name is refused here rather than resolved to whatever the hub serves today.
+    if reranker_model not in RERANKER_MODEL_CHOICES:
+        raise ConfigurationError(
+            f"Unsupported reranker model: {reranker_model!r}; expected one of: "
+            + ", ".join(RERANKER_MODEL_CHOICES)
+        )
+
     portable.mkdir(parents=True, exist_ok=True)
     if not relocated:
         _migrate_legacy_runtime(project, portable, default_state)
@@ -553,6 +565,7 @@ def resolve_config(
         runtime_root=custom_state if relocated else None,
         embedding_threads=normalized_threads,
         tool_detail=normalized_tool_detail,
+        reranker_model=reranker_model,
     )
 
 

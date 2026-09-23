@@ -26,6 +26,10 @@ from research_ultra_rag_mcp.dense import (
     RerankerUnavailable,
 )
 from research_ultra_rag_mcp.extraction import ExtractionError
+from research_ultra_rag_mcp.rerankers import (
+    DEFAULT_RERANKER_MODEL,
+    RERANKER_MODELS,
+)
 from research_ultra_rag_mcp.service import (
     ResearchError,
     ResearchService,
@@ -187,6 +191,9 @@ class FakeDenseBackend:
         self.audit_unavailable = False
         self.audited_text_count = 0
         self.token_count_override: int | None = None
+        # One entry per rerank call: the model the caller named, or None when it
+        # left the choice to the engine.
+        self.rerank_models: list[str | None] = []
 
     def embedding_token_counts(self, texts: list[str]) -> list[int]:
         if self.audit_unavailable:
@@ -322,7 +329,14 @@ class FakeDenseBackend:
             for score, chunk_id in scored[:top_k]
         ]
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        model: str | None = None,
+    ) -> list[float]:
+        self.rerank_models.append(model)
         return [
             float(document.casefold().count(query.split()[0].casefold()))
             for document in documents
@@ -1319,6 +1333,22 @@ def test_dense_backend_selection_honors_the_threshold_and_config(
             vanilla_executable=sys.executable,
             dense_backend="lancedb",
         )
+
+    # Every reranker is pinned to a revision, so an unknown name is refused
+    # instead of resolving to whatever the model hub serves that day.
+    with pytest.raises(ConfigurationError, match="Unsupported reranker model"):
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            reranker_model="some-org/some-reranker",
+        )
+
+    configured = resolve_config(
+        project,
+        vanilla_executable=sys.executable,
+        reranker_model="jinaai/jina-reranker-v1-turbo-en",
+    )
+    assert configured.reranker_model == "jinaai/jina-reranker-v1-turbo-en"
 
 
 def test_generation_records_its_dense_backend_and_dispatch_follows_it(
@@ -3458,7 +3488,13 @@ def test_status_lists_retained_generations(project: Path) -> None:
 class UnavailableRerankerDenseBackend(FakeDenseBackend):
     """A dense backend whose reranker model cannot be loaded."""
 
-    def rerank(self, query: str, documents: list[str]) -> list[float]:
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        *,
+        model: str | None = None,
+    ) -> list[float]:
         raise RerankerUnavailable(
             "The reranker model is not present in the shared model cache."
         )
@@ -3512,3 +3548,80 @@ async def _assert_search_falls_back_when_reranking_is_unavailable(
 
 def test_search_falls_back_when_reranking_is_unavailable(project: Path) -> None:
     asyncio.run(_assert_search_falls_back_when_reranking_is_unavailable(project))
+
+
+async def _assert_search_reranks_with_a_named_model(project: Path) -> None:
+    write_pdf(
+        project / "sources" / "article.pdf",
+        [
+            "Cobalt evidence about labour and artificial intelligence.",
+            "Quartz material unrelated to the primary question.",
+        ],
+        title="Research Article",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    dense = FakeDenseBackend()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=dense,
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    default = await service.search("cobalt labour", top_k=3, rerank=True)
+    named = await service.search(
+        "cobalt labour",
+        top_k=3,
+        rerank=True,
+        rerank_model="jinaai/jina-reranker-v1-turbo-en",
+    )
+
+    # A tool call leaves the model to the engine, and the answer names the model
+    # and the revision that actually ran.
+    assert default["reranker_model"] == DEFAULT_RERANKER_MODEL
+    assert default["reranker_model_revision"] == RERANKER_MODELS[DEFAULT_RERANKER_MODEL]
+    assert named["reranker_model"] == "jinaai/jina-reranker-v1-turbo-en"
+    assert (
+        named["reranker_model_revision"]
+        == RERANKER_MODELS["jinaai/jina-reranker-v1-turbo-en"]
+    )
+    # Only the call that named a model switched it: a comparison run does not
+    # change what the next tool call uses.
+    assert dense.rerank_models == [None, "jinaai/jina-reranker-v1-turbo-en"]
+
+
+def test_search_reranks_with_a_named_model(project: Path) -> None:
+    asyncio.run(_assert_search_reranks_with_a_named_model(project))
+
+
+async def _assert_search_rejects_an_unsupported_reranker_model(project: Path) -> None:
+    write_pdf(
+        project / "sources" / "article.pdf",
+        ["Cobalt evidence about labour and artificial intelligence."],
+        title="Research Article",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    with pytest.raises(ResearchError, match="Unsupported reranker model"):
+        await service.search(
+            "cobalt labour",
+            top_k=3,
+            rerank=True,
+            rerank_model="some-org/some-reranker",
+        )
+    with pytest.raises(ResearchError, match="rerank_model requires rerank=True"):
+        await service.search(
+            "cobalt labour",
+            top_k=3,
+            rerank_model="jinaai/jina-reranker-v1-turbo-en",
+        )
+
+
+def test_search_rejects_an_unsupported_reranker_model(project: Path) -> None:
+    asyncio.run(_assert_search_rejects_an_unsupported_reranker_model(project))

@@ -211,6 +211,41 @@ succ@50 90.6%, MRR 0.717, nDCG@50 0.759, doc@50 100.0%. Paraphrase reach rises f
 - They come from one English-primary corpus and one generation, not from a benchmark suite.
 - Fusion weights are deliberately untouched: with 32 queries the hybrid lead at rank 1 is about two queries, which cannot separate a real weight effect from noise.
 
+### The reranker model: the default against `jinaai/jina-reranker-v1-turbo-en`
+
+Every accuracy number above was measured with the default cross-encoder. The model is an engine setting rather than a search option, so the harness can measure a second one over the same judged queries in one run:
+
+```bash
+uv run python scripts/evaluate_retrieval.py --project /mnt/data/my-project \
+    --modes hybrid,hybrid+rerank \
+    --reranker-model Xenova/ms-marco-MiniLM-L-6-v2 \
+    --reranker-model jinaai/jina-reranker-v1-turbo-en
+```
+
+Measured on the current generation (14,072 chunks, 59 documents) with 30 of the 32 judged queries at `top_k=10` and no deep pass: 90 searches in 191 s. Two queries are missing because they judge target `t12`, whose source the reviewer excluded on 2026-09-20 as superseded by the Duke reprint in "STUART HALL, SELECTED WRITINGS ON RACE AND DIFFERENCE.pdf"; the current generation no longer holds it, so the run names it (`--skip-targets t12`) and reports 30 evaluated queries rather than quietly resolving fewer targets.
+
+| Reranker | succ@1 | succ@3 | succ@10 | MRR | nDCG@10 | doc@10 | mean s | p50 s | max s |
+|---|---|---|---|---|---|---|---|---|---|
+| none (hybrid) | 66.7% | 80.0% | 86.7% | 0.728 | 0.762 | 90.0% | 0.19 | 0.19 | 0.51 |
+| `Xenova/ms-marco-MiniLM-L-6-v2` (default) | **83.3%** | **86.7%** | **90.0%** | **0.858** | **0.869** | **93.3%** | **2.34** | 2.30 | 3.07 |
+| `jinaai/jina-reranker-v1-turbo-en` | 73.3% | 86.7% | 90.0% | 0.794 | 0.821 | 93.3% | 3.47 | 3.26 | 11.69 |
+
+By query class, at rank 1:
+
+| Reranker / class | n | succ@1 | succ@3 | MRR |
+|---|---|---|---|---|
+| ms-marco / quote | 10 | 100.0% | 100.0% | 1.000 |
+| ms-marco / paraphrase | 10 | 70.0% | 70.0% | 0.700 |
+| ms-marco / entity | 10 | 80.0% | 100.0% | 0.875 |
+| jina turbo / quote | 10 | 90.0% | 90.0% | 0.917 |
+| jina turbo / paraphrase | 10 | 50.0% | 70.0% | 0.567 |
+| jina turbo / entity | 10 | 80.0% | 100.0% | 0.900 |
+
+- **The default stays, and the measurement is why.** jina turbo reaches the same depth — succ@10 90.0% and doc@10 93.3% are identical — but it puts the judged passage first 22 times out of 30 against ms-marco's 25, and it costs about half again as much per query (3.47 s against 2.34 s). It is therefore neither the better nor the cheaper default here. Its one gain is entity ordering, where MRR rises to 0.900 from 0.875.
+- **The two rerankers disagree about rank on only 4 of 30 queries**, and ms-marco is the better of the two on 3 of them: `q06` (quote, rank 1 against 6), `q16` and `q18` (paraphrase, rank 1 against 3 each). jina turbo wins `q27` (entity, rank 2 against 4). A 30-query set can support "the default is not worse", not a fine-grained model ranking; treat the split as directional.
+- **The slower model is the smaller one here**, which is an ONNX-export property rather than a parameter to tune: both models run through the same FastEmbed cross-encoder class with the runtime's default thread count, and the first jina turbo call in the run (model load included) is the 11.69 s maximum in the table.
+- **Changing the model is an operator decision, not a per-search one**: `--reranker-model` (or `RESEARCH_ULTRARAG_RERANKER_MODEL`) changes every search the server answers, and `search(rerank_model=...)` changes it for one engine call. Re-measure before trusting either on a different corpus, because the ordering above is specific to these queries.
+
 ## 5. Current limits
 
 - **Retrieval quality is measured, not settled.** The numbers above describe findability of one designated passage per query on one corpus; pooled judgments, a second annotator, and a second corpus are open work in `TODO.md`.

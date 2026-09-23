@@ -50,6 +50,10 @@ from research_ultra_rag_mcp.config import (
     configured_source_directory,
     resolve_config,
 )
+from research_ultra_rag_mcp.rerankers import (
+    DEFAULT_RERANKER_MODEL,
+    RERANKER_MODEL_CHOICES,
+)
 from research_ultra_rag_mcp.service import ResearchService
 from research_ultra_rag_mcp.transport import create_research_transport
 from research_ultra_rag_mcp.ultrarag import (
@@ -58,7 +62,12 @@ from research_ultra_rag_mcp.ultrarag import (
 )
 
 DEFAULT_JUDGMENTS = Path("evaluation/ai-and-fetishism-queries.json")
-MODES = ("bm25", "dense", "hybrid", "hybrid+rerank")
+# The reranked mode is measured once per selected reranker, because the model is
+# an engine setting: a second model is a second row over the same queries rather
+# than a second mode. The default model keeps the plain ``hybrid+rerank`` label
+# that the published numbers already use.
+RERANK_MODE = "hybrid+rerank"
+MODES = ("bm25", "dense", "hybrid", RERANK_MODE)
 QUERY_CLASSES = ("quote", "paraphrase", "entity")
 TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 WHITESPACE = re.compile(r"\s+")
@@ -281,6 +290,8 @@ def resolve_targets(
     targets: list[dict[str, Any]],
     chunks: list[dict[str, Any]],
     documents: dict[str, dict[str, Any]],
+    *,
+    skip: frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, Any]]:
     """Resolve every judged target to one chunk of the measured generation.
 
@@ -289,6 +300,11 @@ def resolve_targets(
     manifest's documents, which also keeps the judgment working when the source
     was renamed between generations. Ambiguity is an error rather than a guess:
     a snippet matching two chunks would make the judgment meaningless.
+
+    A target named in ``skip`` is deliberately left unresolved. A judged source
+    the corpus no longer holds — one the reviewer excluded, say — is a benchmark
+    decision rather than a measurement, so it is named on the command line and
+    in the report instead of silently relaxing resolution for every target.
     """
 
     by_document: dict[str, list[dict[str, Any]]] = {}
@@ -298,6 +314,8 @@ def resolve_targets(
     resolved: dict[str, dict[str, Any]] = {}
     for target in targets:
         target_id = str(target["target_id"])
+        if target_id in skip:
+            continue
         snippet = normalize(str(target["snippet"])).casefold()
         wanted = {
             str(target.get("source_path") or "").strip(),
@@ -377,7 +395,7 @@ def summarize(runs: list[dict[str, Any]], top_k: int) -> dict[str, Any]:
     """Aggregate per-query records per mode and per query class."""
 
     summary: dict[str, Any] = {}
-    for mode in MODES:
+    for mode in dict.fromkeys(run["mode"] for run in runs):
         mode_runs = [run for run in runs if run["mode"] == mode]
         if not mode_runs:
             continue
@@ -408,13 +426,18 @@ def print_summary(section: str, summary: dict[str, Any]) -> None:
 
     print()
     print(f"== {section} ==")
-    header = f"{'mode':<15}{'n':>4}{'succ@1':>8}{'succ@3':>8}{'succ@k':>8}{'MRR':>7}{'nDCG':>7}{'doc@k':>7}{'overlap':>9}{'ret':>5}"
+    width = max(15, *(len(mode) for mode in summary)) if summary else 15
+    header = (
+        f"{'mode':<{width}}{'n':>4}{'succ@1':>8}{'succ@3':>8}{'succ@k':>8}"
+        f"{'MRR':>7}{'nDCG':>7}{'doc@k':>7}{'overlap':>9}{'ret':>5}"
+    )
     print(header)
     print("-" * len(header))
     for mode, payload in summary.items():
         row = payload["overall"]
         print(
-            f"{mode:<15}{row['query_count']:>4}{_percent(row['success_at_1']):>8}"
+            f"{mode:<{width}}{row['query_count']:>4}"
+            f"{_percent(row['success_at_1']):>8}"
             f"{_percent(row['success_at_3']):>8}{_percent(row['success_at_k']):>8}"
             f"{row['mrr']:>7.3f}{row['ndcg_at_k']:>7.3f}"
             f"{_percent(row['document_success_at_k']):>7}"
@@ -480,6 +503,15 @@ def _parser() -> argparse.ArgumentParser:
         help="Where to write the JSON report (default: beside the judged set).",
     )
     parser.add_argument(
+        "--skip-targets",
+        default="",
+        help=(
+            "Comma-separated judged target IDs to leave out, for a target whose "
+            "source the corpus no longer holds. The report and the console name "
+            "every skipped target."
+        ),
+    )
+    parser.add_argument(
         "--validate-only",
         action="store_true",
         help="Resolve every judged target and stop without searching.",
@@ -499,6 +531,18 @@ def _parser() -> argparse.ArgumentParser:
         choices=("auto", "exact", "qdrant"),
         default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
     )
+    parser.add_argument(
+        "--reranker-model",
+        action="append",
+        metavar="NAME",
+        help=(
+            "Reranker model to measure for the hybrid+rerank row. Repeat it to "
+            "compare models over the same queries in one run. Default: the "
+            "server's configured model. Supported: "
+            + ", ".join(RERANKER_MODEL_CHOICES)
+            + "."
+        ),
+    )
     return parser
 
 
@@ -515,9 +559,35 @@ def _selection(value: str, allowed: tuple[str, ...], label: str) -> list[str]:
 def _mode_settings(mode: str) -> dict[str, Any]:
     """Return the engine settings that name one measured mode."""
 
-    if mode == "hybrid+rerank":
+    if mode == RERANK_MODE:
         return {"retrieval_method": "hybrid", "rerank": True}
     return {"retrieval_method": mode, "rerank": False}
+
+
+def _mode_variants(
+    modes: list[str],
+    reranker_models: list[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return every mode to measure as a labeled run plus its engine settings."""
+
+    variants: list[tuple[str, dict[str, Any]]] = []
+    for mode in modes:
+        if mode != RERANK_MODE:
+            variants.append((mode, _mode_settings(mode)))
+            continue
+        for model in reranker_models:
+            label = mode if model == DEFAULT_RERANKER_MODEL else f"{mode}[{model}]"
+            variants.append(
+                (
+                    label,
+                    {
+                        "retrieval_method": "hybrid",
+                        "rerank": True,
+                        "rerank_model": model,
+                    },
+                )
+            )
+    return variants
 
 
 async def _run_one(
@@ -527,6 +597,7 @@ async def _run_one(
     query_class: str,
     query: str,
     mode: str,
+    settings: dict[str, Any],
     top_k: int,
     target: dict[str, Any],
 ) -> dict[str, Any]:
@@ -535,7 +606,7 @@ async def _run_one(
         query,
         top_k=top_k,
         include_staleness=False,
-        **_mode_settings(mode),
+        **settings,
     )
     elapsed = time.perf_counter() - started
     if not isinstance(payload, dict) or not isinstance(payload.get("hits"), list):
@@ -564,6 +635,7 @@ async def _run_one(
         "class": query_class,
         "query": query,
         "mode": mode,
+        "reranker_model": payload.get("reranker_model"),
         "top_k": top_k,
         "target_chunk_id": str(target["chunk_id"]),
         "target_document_id": str(target["document_id"]),
@@ -602,13 +674,33 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         _selection(args.deep_modes, MODES, "deep modes") if args.deep_top_k else []
     )
     classes = _selection(args.classes, QUERY_CLASSES, "classes")
+    skip_targets = frozenset(
+        item.strip() for item in args.skip_targets.split(",") if item.strip()
+    )
 
     payload = load_judgments(judgments_path)
-    queries = [item for item in payload["queries"] if item["class"] in classes]
+    known_targets = {str(target["target_id"]) for target in payload["targets"]}
+    if unknown := sorted(skip_targets - known_targets):
+        raise EvaluationError(f"Unknown target IDs to skip: {unknown}")
+    queries = [
+        item
+        for item in payload["queries"]
+        if item["class"] in classes and item["target_id"] not in skip_targets
+    ]
     if args.limit:
         queries = queries[: args.limit]
     if not queries:
         raise EvaluationError("No queries selected")
+    if skip_targets:
+        dropped = sum(
+            1
+            for item in payload["queries"]
+            if item["class"] in classes and item["target_id"] in skip_targets
+        )
+        print(
+            f"Skipping {len(skip_targets)} judged target(s) on request: "
+            f"{', '.join(sorted(skip_targets))}; {dropped} queries will not be run."
+        )
 
     config = resolve_config(
         project,
@@ -619,6 +711,21 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         runtime_root=args.runtime_root,
         embedding_threads=args.embedding_threads,
     )
+    # Which reranker each row measures. Without the flag the run measures what
+    # this server would serve; with it, exactly the models named on the command
+    # line, each over the same queries under the same conditions.
+    reranker_models = (
+        _selection(
+            ",".join(args.reranker_model),
+            RERANKER_MODEL_CHOICES,
+            "reranker models",
+        )
+        if args.reranker_model
+        else [config.reranker_model]
+    )
+    variants = _mode_variants(modes, reranker_models)
+    deep_variants = _mode_variants(deep_modes, reranker_models)
+
     transport = create_research_transport(
         config,
         log_file=config.logs_root / "evaluate-retrieval-stderr.log",
@@ -639,6 +746,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "schema_version": payload.get("schema_version"),
             "protocol": payload.get("protocol"),
             "query_count": len(payload["queries"]),
+            "evaluated_query_count": len(queries),
             "target_count": len(payload["targets"]),
         },
         "corpus": payload.get("corpus"),
@@ -646,6 +754,8 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "selected_modes": modes,
             "selected_deep_modes": deep_modes,
             "selected_classes": classes,
+            "reranker_models": reranker_models,
+            "skipped_targets": sorted(skip_targets),
             "top_k": args.top_k,
             "deep_top_k": args.deep_top_k,
             "include_staleness": False,
@@ -678,7 +788,12 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         if not generation_root:
             raise EvaluationError("The project has no selected generation to evaluate")
         chunks, documents = load_generation(Path(str(generation_root)))
-        resolved = resolve_targets(payload["targets"], chunks, documents)
+        resolved = resolve_targets(
+            payload["targets"],
+            chunks,
+            documents,
+            skip=skip_targets,
+        )
 
         report["project"] = {
             "project_root": str(project),
@@ -704,7 +819,13 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             f"with {len(chunks)} chunks; {len(queries)} queries over {len(resolved)} targets."
         )
         if args.validate_only:
-            print("Every judged target resolved uniquely; no search was run.")
+            if skip_targets:
+                print(
+                    "Every judged target except the requested skips resolved "
+                    "uniquely; no search was run."
+                )
+            else:
+                print("Every judged target resolved uniquely; no search was run.")
             return report
 
         started = time.perf_counter()
@@ -717,6 +838,7 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             query_class=warm_query["class"],
             query=warm_query["query"],
             mode="bm25",
+            settings=_mode_settings("bm25"),
             top_k=1,
             target=warm_target,
         )
@@ -729,24 +851,25 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         for position, query in enumerate(queries, 1):
             target = resolved[query["target_id"]]
             ranks: list[str] = []
-            for mode in modes:
+            for label, settings in variants:
                 run = await _run_one(
                     service,
                     query_id=query["query_id"],
                     query_class=query["class"],
                     query=query["query"],
-                    mode=mode,
+                    mode=label,
+                    settings=settings,
                     top_k=args.top_k,
                     target=target,
                 )
                 runs.append(run)
-                ranks.append(f"{mode}={run['rank'] if run['rank'] else 'miss'}")
+                ranks.append(f"{label}={run['rank'] if run['rank'] else 'miss'}")
             print(
                 f"[{position:>3}/{len(queries)}] {query['query_id']} {' '.join(ranks)}"
             )
 
         deep_runs: list[dict[str, Any]] = []
-        for mode in deep_modes:
+        for label, settings in deep_variants:
             for query in queries:
                 deep_runs.append(
                     await _run_one(
@@ -754,7 +877,8 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                         query_id=query["query_id"],
                         query_class=query["class"],
                         query=query["query"],
-                        mode=mode,
+                        mode=label,
+                        settings=settings,
                         top_k=args.deep_top_k,
                         target=resolved[query["target_id"]],
                     )

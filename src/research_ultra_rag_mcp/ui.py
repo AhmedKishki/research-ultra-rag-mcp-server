@@ -31,6 +31,7 @@ from .config import (
     resolve_config,
     resolve_source_reference,
 )
+from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
 from .sources import SourcePolicyError, scan_sources
 from .transport import create_research_transport
 from .version import version_label
@@ -421,6 +422,17 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--reranker-model",
+        choices=RERANKER_MODEL_CHOICES,
+        default=os.environ.get(
+            "RESEARCH_ULTRARAG_RERANKER_MODEL", DEFAULT_RERANKER_MODEL
+        ),
+        help=(
+            "Reranker model the engine loads for every search; each choice is "
+            "pinned to a revision."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         choices=("debug", "info", "warn", "error"),
         default="warn",
@@ -454,6 +466,7 @@ def main() -> None:
             dense_backend=args.dense_backend,
             runtime_root=args.runtime_root,
             embedding_threads=args.embedding_threads,
+            reranker_model=args.reranker_model,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc

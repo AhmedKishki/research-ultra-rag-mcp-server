@@ -36,8 +36,6 @@ from .dense import (
     EXACT_BACKEND_CHUNK_LIMIT,
     EXACT_BACKEND_NAME,
     QDRANT_BACKEND_NAME,
-    RERANKER_MODEL,
-    RERANKER_MODEL_REVISION,
     DenseBackend,
     DenseSearchHit,
     DenseTokenAuditUnavailable,
@@ -70,6 +68,7 @@ from .generation import (
     value_fingerprint,
 )
 from .launcher import ui_launcher_state
+from .rerankers import resolve_reranker_model
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
     SourceFile,
@@ -451,6 +450,12 @@ def _public_document(document: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _reranker_revision(model: str) -> str:
+    """Return the pinned revision of one supported reranker model."""
+
+    return resolve_reranker_model(model)[1]
+
+
 def _canonical_metadata_override(value: dict[str, Any]) -> dict[str, Any]:
     """Normalize one override while preserving explicit empty reviewed values."""
 
@@ -814,11 +819,13 @@ class ResearchService:
                     config.models_root,
                     offline=config.offline,
                     embedding_threads=config.embedding_threads,
+                    reranker_model=config.reranker_model,
                 ),
                 EXACT_BACKEND_NAME: LocalVectorDenseBackend(
                     config.models_root,
                     offline=config.offline,
                     embedding_threads=config.embedding_threads,
+                    reranker_model=config.reranker_model,
                 ),
             }
         # The primary backend answers model-only calls; indexing, validation, and
@@ -3511,8 +3518,10 @@ class ResearchService:
                         "reranker": {
                             "optional": True,
                             "runtime": "FastEmbed ONNX Runtime (CPU)",
-                            "model": RERANKER_MODEL,
-                            "model_revision": RERANKER_MODEL_REVISION,
+                            "model": self.config.reranker_model,
+                            "model_revision": _reranker_revision(
+                                self.config.reranker_model
+                            ),
                             "maximum_candidates": RERANK_MAX_CANDIDATES,
                         },
                     },
@@ -4016,6 +4025,7 @@ class ResearchService:
         exclude_source_ids: list[str] | None = None,
         retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
         rerank: bool = False,
+        rerank_model: str | None = None,
         include_staleness: bool = True,
     ) -> dict[str, Any]:
         """Retrieve evidence.
@@ -4025,6 +4035,10 @@ class ResearchService:
         keeps the neutral default so internal callers and tests state what they
         want. When the reranker model cannot be loaded the search still succeeds
         with the unranked candidate order and reports ``rerank_fallback``.
+
+        ``rerank_model`` names a reranker for this call alone, so one process can
+        measure several models against the same generation. It defaults to the
+        engine's configured model, which is what every tool call uses.
         """
         query = query.strip()
         if not query:
@@ -4034,6 +4048,13 @@ class ResearchService:
         retrieval_method = retrieval_method.casefold().strip()
         if retrieval_method not in RETRIEVAL_METHODS:
             raise ResearchError("retrieval_method must be one of: bm25, dense, hybrid")
+        if rerank_model is not None and not rerank:
+            raise ResearchError("rerank_model requires rerank=True")
+        applied_reranker = rerank_model or self.config.reranker_model
+        try:
+            applied_reranker_revision = _reranker_revision(applied_reranker)
+        except ValueError as exc:
+            raise ResearchError(str(exc)) from exc
 
         async with self._operation():
             current = self._load_current_optional()
@@ -4285,11 +4306,15 @@ class ResearchService:
                 )
                 rerank_ids = ordered_ids[:rerank_count]
                 rerank_tail = ordered_ids[rerank_count:]
+                # A backend that answers tool calls keeps its configured model,
+                # so the keyword is passed only when this call names another.
+                rerank_kwargs = {"model": rerank_model} if rerank_model else {}
                 try:
                     scores = await asyncio.to_thread(
                         self.dense.rerank,
                         query,
                         [_chunk_text(chunks_by_id[item]) for item in rerank_ids],
+                        **rerank_kwargs,
                     )
                 except RerankerUnavailable as exc:
                     # Requested reranking cannot run without its model, so the
@@ -4479,9 +4504,9 @@ class ResearchService:
                 "embedding_model_revision": (
                     EMBEDDING_MODEL_REVISION if use_dense else None
                 ),
-                "reranker_model": RERANKER_MODEL if reranked_applied else None,
+                "reranker_model": applied_reranker if reranked_applied else None,
                 "reranker_model_revision": (
-                    RERANKER_MODEL_REVISION if reranked_applied else None
+                    applied_reranker_revision if reranked_applied else None
                 ),
                 "result_count": len(hits),
                 "distinct_reference_count": distinct_reference_count,

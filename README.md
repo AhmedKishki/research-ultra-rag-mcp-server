@@ -42,7 +42,7 @@ uv sync --frozen
 
 There is nothing else to install: no separate UltraRAG checkout, no external vector database service, and no per-project virtual environment. The single `.venv` in this repository serves every project.
 
-The pinned UltraRAG runtime is installed automatically. The embedding model is downloaded on first ingestion, and the optional reranker on its first use. Model binaries are shared at `~/.cache/research-ultra-rag-mcp/models`, while all document data stays inside each project.
+The pinned UltraRAG runtime is installed automatically. The embedding model is downloaded on first ingestion, and the reranker model on its first search. Model binaries are shared at `~/.cache/research-ultra-rag-mcp/models`, while all document data stays inside each project.
 
 Useful settings, all optional:
 
@@ -51,6 +51,7 @@ Useful settings, all optional:
 | `--model-cache-root` or `RESEARCH_ULTRARAG_MODEL_CACHE_ROOT` | Move the shared model cache elsewhere. |
 | `--dense-backend auto\|exact\|qdrant` or `RESEARCH_ULTRARAG_DENSE_BACKEND` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for very large ones. |
 | `--embedding-threads` or `RESEARCH_ULTRARAG_EMBEDDING_THREADS` | Set the CPU thread count for embedding. Left unset by default because the best value depends on your machine. |
+| `--reranker-model NAME` or `RESEARCH_ULTRARAG_RERANKER_MODEL` | Choose the CPU cross-encoder that reranks every search. Six are supported, each pinned to a revision, and an unknown name is refused rather than resolved to whatever the model hub serves that day. See "How a search works". |
 | `--runtime-root` or `RESEARCH_ULTRARAG_RUNTIME_ROOT` | Keep the working files (indexes, staging, logs) on a different disk. See "Where project data is stored". |
 | `--offline` | Fail instead of downloading anything. Use it once the runtime and models are cached. |
 
@@ -164,7 +165,7 @@ Then open `http://127.0.0.1:5051`. What this does and does not do:
 - Serving the UI is an explicit option with no environment default, and a server this project starts for itself refuses `--ui-port` as a managed child, so no exported variable and no inherited argument can turn one UI into a chain of servers.
 - This is the option that keeps the UI and the agent on the same state. A separately launched `research-ultra-rag-ui` has to be given the same `--runtime-root` by hand, because it never reads your MCP client's configuration.
 - An MCP client that keeps one settings file for every window gives each window's server the same `--ui-port`. Only the first server claims it; the others keep serving tools with `ui_ready: false` and `ui_error` naming the taken port, and every window still carries its own server, gateway and UI stack. With more than one window or project open, a per-project launcher that starts `research-ultra-rag-ui` with that project's `--project-root`, `--runtime-root`, and `--port` stays predictable in a way a shared `--ui-port` cannot.
-- One agent-facing note: reranking is on by default for tool calls, while the UI's **CPU rerank** checkbox starts unticked, so a UI search returns the unranked order until you tick it.
+- Reranking is not a switch anywhere. The search tool always reranks, so an agent and the browser UI return the same reranked order; which model does the reranking is a server setting, not a per-search choice.
 
 Two practical notes:
 
@@ -223,6 +224,8 @@ Prompts that work well:
 Hybrid is the engine's default and the tool's only setting. BM25 matches the words you typed; a dense vector search matches meaning; the two rankings are fused; and a CPU cross-encoder then reranks the fused candidates. The engine can also serve either signal alone, which is how `MEASUREMENTS.md` reports each mode, but the tool does not ask which one you want — the measurements say hybrid with reranking is the best of them. BM25 is strongest single-signal retrieval when a question names a person, place, or project; dense alone is the weakest, finding the judged passage within ten results for 63% of questions and worse on names, because its similarity gate returns fewer passages; hybrid beat BM25 alone at the top; and reranking is the largest measured gain of all, putting the judged passage first for 81% of questions against 66% without it, with the right document in the results for 94% against 91%.
 
 Reranking costs time — about 2.3 s per warm query against 0.17 s for unranked hybrid, plus a second model downloaded on first use — and if the pinned model cannot be loaded the search returns the unranked order and says so in `rerank_fallback` rather than failing.
+
+The reranker model is an engine setting rather than a search option, because a per-search switch would make two searches incomparable. Six FastEmbed CPU cross-encoders are supported, each pinned to a revision; the default is `Xenova/ms-marco-MiniLM-L-6-v2`, the fastest of them and the one every number above was measured with. To measure another, name it for the harness — `scripts/evaluate_retrieval.py --reranker-model Xenova/ms-marco-MiniLM-L-6-v2 --reranker-model jinaai/jina-reranker-v1-turbo-en` scores both over the same judged queries in one run, and `MEASUREMENTS.md` records what that comparison found: on the reference corpus the default stays, because `jinaai/jina-reranker-v1-turbo-en` reaches the same depth but puts the judged passage first less often (73% against 83%) at about half again the cost per query (3.47 s against 2.34 s). Naming a model is an engine decision, so it takes a launch setting, a second harness row, or a code-level caller — never an agent's search.
 
 Search can legitimately return fewer results than `top_k`, including none, when candidates fail the relevance gates — abstaining is a feature, not an error. A rank or similarity score is an ordering signal, never a truth or confidence probability. The mode comparisons above are measurements, not impressions: the judged question set and the harness that runs it are in `evaluation/` and `scripts/evaluate_retrieval.py`, and the full tables, including the fact that questions phrased in your own words are much harder for every mode than remembered phrasing, are in `MEASUREMENTS.md`.
 

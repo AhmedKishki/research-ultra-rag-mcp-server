@@ -163,6 +163,35 @@ def test_resolve_targets_matches_a_renamed_source_by_document_id(evaluation) -> 
     assert resolved["t1"]["source_path"] == "sources/a.pdf"
 
 
+def test_resolve_targets_skips_requested_targets(evaluation) -> None:
+    """A target whose source the corpus no longer holds is skipped on request."""
+
+    chunks = [_chunk("c1", "shared wording here")]
+    targets = [
+        {
+            "target_id": "t1",
+            "source_path": "sources/a.pdf",
+            "snippet": "shared wording here",
+        },
+        {
+            "target_id": "t2",
+            "source_path": "sources/excluded.pdf",
+            "snippet": "no longer in the corpus",
+        },
+    ]
+
+    resolved = evaluation.resolve_targets(
+        targets,
+        chunks,
+        DOCUMENTS,
+        skip=frozenset({"t2"}),
+    )
+
+    # The skip is explicit, so the absent target is left out rather than guessed
+    # at, and every other target still resolves strictly.
+    assert set(resolved) == {"t1"}
+
+
 def test_resolve_targets_refuses_ambiguity_and_absent_sources(evaluation) -> None:
     chunks = [
         _chunk("c1", "shared wording here"),
@@ -236,3 +265,30 @@ def test_shipped_judged_set_is_structurally_valid(evaluation) -> None:
     assert len(payload["targets"]) >= 15
     assert all(target["snippet"] for target in payload["targets"])
     assert all(target["chunk_id_at_measurement"] for target in payload["targets"])
+
+
+def test_mode_variants_expand_the_reranked_mode_per_model(evaluation) -> None:
+    variants = evaluation._mode_variants(
+        list(evaluation.MODES),
+        ["Xenova/ms-marco-MiniLM-L-6-v2", "jinaai/jina-reranker-v1-turbo-en"],
+    )
+
+    labels = [label for label, _ in variants]
+    # The default model keeps the plain label its published numbers use, and a
+    # second model is a second row over the same queries rather than a new mode.
+    assert labels == [
+        "bm25",
+        "dense",
+        "hybrid",
+        "hybrid+rerank",
+        "hybrid+rerank[jinaai/jina-reranker-v1-turbo-en]",
+    ]
+    assert variants[3][1] == {
+        "retrieval_method": "hybrid",
+        "rerank": True,
+        "rerank_model": evaluation.DEFAULT_RERANKER_MODEL,
+    }
+    assert variants[4][1]["rerank_model"] == "jinaai/jina-reranker-v1-turbo-en"
+    # Only the reranked rows carry a model, and each names its own.
+    assert all("rerank_model" not in settings for _, settings in variants[:3])
+    assert all(settings["rerank"] is False for _, settings in variants[:3])

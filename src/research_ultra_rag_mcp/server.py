@@ -22,6 +22,7 @@ from .config import (
     resolve_config,
 )
 from .instructions import SERVER_INSTRUCTIONS
+from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
 from .service import ResearchError, ResearchService
 from .tool_views import present_tool_response
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
@@ -458,6 +459,17 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--reranker-model",
+        choices=RERANKER_MODEL_CHOICES,
+        default=os.environ.get(
+            "RESEARCH_ULTRARAG_RERANKER_MODEL", DEFAULT_RERANKER_MODEL
+        ),
+        help=(
+            "Reranker model the engine loads for every search; each choice is "
+            "pinned to a revision."
+        ),
+    )
+    parser.add_argument(
         "--tool-detail",
         choices=TOOL_DETAIL_MODES,
         default=os.environ.get("RESEARCH_ULTRARAG_TOOL_DETAIL", LEAN_TOOL_DETAIL),
@@ -531,6 +543,7 @@ def main() -> None:
             runtime_root=args.runtime_root,
             embedding_threads=args.embedding_threads,
             tool_detail=args.tool_detail,
+            reranker_model=args.reranker_model,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc

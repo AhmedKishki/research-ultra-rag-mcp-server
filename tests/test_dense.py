@@ -257,3 +257,57 @@ def test_local_qdrant_batches_resume_without_skips_or_duplicates(
         dimension=384,
     )
     assert metadata["point_count"] == 130
+
+
+def test_rerank_uses_the_configured_model_and_switches_only_on_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[str] = []
+
+    class StubEncoder:
+        def rerank(
+            self,
+            query: str,
+            documents: list[str],
+            batch_size: int,
+        ) -> list[float]:
+            return [float(len(document)) for document in documents]
+
+    def fake_loader(cache_root: Path, *, offline: bool, model: str = "") -> object:
+        loaded.append(model)
+        return StubEncoder()
+
+    monkeypatch.setattr(dense_module, "_load_cross_encoder", fake_loader)
+    backend = LocalVectorDenseBackend(
+        tmp_path / "models",
+        offline=True,
+        reranker_model="jinaai/jina-reranker-v1-turbo-en",
+    )
+
+    assert backend.rerank("cobalt", ["alpha", "beta"]) == [5.0, 4.0]
+    assert backend.rerank("cobalt", ["alpha"], model="BAAI/bge-reranker-base") == [5.0]
+    # Each model is loaded once and kept, so comparing rerankers over a judged
+    # set pays for each model once rather than once per query.
+    assert backend.rerank("cobalt", ["alpha"]) == [5.0]
+    assert loaded == ["jinaai/jina-reranker-v1-turbo-en", "BAAI/bge-reranker-base"]
+
+
+def test_cross_encoder_defaults_to_the_pinned_default_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_loader(cache_root: Path, *, offline: bool, model: str = "") -> object:
+        seen["model"] = model
+        seen["cache_root"] = cache_root
+        return object()
+
+    monkeypatch.setattr(dense_module, "_load_cross_encoder", fake_loader)
+    backend = LocalQdrantDenseBackend(tmp_path / "models", offline=True)
+
+    backend._cross_encoder()
+
+    assert seen["model"] == dense_module.DEFAULT_RERANKER_MODEL
+    assert seen["cache_root"] == tmp_path / "models"
