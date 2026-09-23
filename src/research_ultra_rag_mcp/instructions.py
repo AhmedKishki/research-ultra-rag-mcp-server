@@ -44,9 +44,10 @@ For research questions:
    removes them. A project tag records which project a source was gathered for,
    and categories are the branches it belongs to.
 4. Treat returned hits as evidence candidates, not automatically true claims.
-   The text field is cleaned semantic text and direct_quote_safe=false. Never
-   present it as a direct quotation. Cite the resolved bibliography and locator,
-   then open the original source when exact wording is required.
+   The text field is cleaned semantic text, never a transcript, so never present
+   it as a direct quotation. A passage names its source by filename, gives its
+   authors and its position, and nothing else; open the original source when
+   exact wording is required.
 5. Use get_passage when surrounding context is needed. Verify important quotes
    directly against the original PDF or EPUB.
 6. Reranking always runs because it is the largest measured quality gain:
@@ -63,18 +64,19 @@ For research questions:
    deleting or modifying its PDF/EPUB. Re-ingest later to rebuild the stored
    indexes without it. Use included=true to reverse the decision.
 
-PDF hits include physical page numbers and available page labels. EPUBs have
-spine-section plus XHTML anchor or structural-block locators because reflowable
-EPUB files do not have stable page numbers. These internal locators improve
-navigation but do not make cleaned text safe for exact quotation.
-Automatic bibliography is best-effort. It carries no metadata warnings in an
-answer, so check the citation and the title against the original when a
-reference matters, and tell the user when a title, author, year, or DOI looks
-wrong. Reviewed values live in the project's .research-rag/source-metadata.json,
-where the user can correct one by hand; they are authoritative at read time, so
-a correction applies to listings, filters, citations, and neighboring passages
-without re-ingestion, while a source absent from the selected generation takes
-effect after the next ingestion. Never edit that file yourself.
+A hit locates itself by page, carrying the printed page label only where that
+differs from the physical page, or by section for an EPUB, because reflowable
+EPUB files do not have stable page numbers. A locator improves navigation but
+does not make cleaned text safe for exact quotation. Answers carry no citation
+and no title: a passage gives its source filename, its authors, its position,
+and its text, and the full-detail payload carries the citation with its
+metadata warnings. Automatic bibliography is best-effort, so open the original
+at the returned locator when a reference matters, and tell the user when an
+author, year, or DOI looks wrong. Reviewed values live in the project's
+.research-rag/source-metadata.json, where the user can correct one by hand; they
+are authoritative at read time, so a correction applies to listings, filters,
+and answers without re-ingestion, while a source absent from the selected
+generation takes effect after the next ingestion. Never edit that file yourself.
 Identify a source by the filename that list_sources or search reports
 (source_relative_path).
 

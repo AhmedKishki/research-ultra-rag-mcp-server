@@ -51,20 +51,45 @@ def _add(target: dict[str, Any], key: str, value: Any) -> None:
         target[key] = value
 
 
-def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one passage: filename, title, authors, citation, locator, and text.
+def _lean_locator(locator: Mapping[str, Any]) -> dict[str, Any]:
+    """Return where a passage sits: its page, or its section.
 
-    The year and DOI live in the citation rather than beside it.
+    The page comes with the printed label only when that label differs from the
+    physical page, because that is when the label carries information; the
+    locator's kind is dropped, since the passage is not a citation.
+    """
+
+    page = locator.get("page")
+    if page is not None:
+        result: dict[str, Any] = {"page": page}
+        label = locator.get("page_label")
+        if label is not None and str(label) != str(page):
+            result["page_label"] = label
+        return result
+    for key in ("section_title", "href", "section_index"):
+        value = locator.get(key)
+        if value is not None:
+            return {"section": value}
+    return {}
+
+
+def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
+    """Return one passage: its source, its authors, its position, and its text.
+
+    Nothing else is repeated per passage. The reference is deliberately not
+    citation-ready; the text is cleaned for retrieval and therefore never
+    quote-safe, which the tool description states once instead of every passage
+    repeating it; and the advisory script note belongs to the full-detail
+    payload.
     """
 
     result: dict[str, Any] = {}
-    for key in ("chunk_id", "source_id", "source_relative_path", "title", "authors"):
+    for key in ("chunk_id", "source_relative_path", "authors"):
         _add(result, key, passage.get(key))
-    result["locator"] = dict(passage.get("locator") or {})
-    result["citation"] = passage.get("citation")
+    locator = _lean_locator(passage.get("locator") or {})
+    if locator:
+        result["locator"] = locator
     result["text"] = passage.get("text")
-    result["direct_quote_safe"] = bool(passage.get("direct_quote_safe"))
-    _add(result, "text_notes", passage.get("text_notes"))
     return result
 
 
@@ -72,8 +97,9 @@ def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return a search answer: query, generation, freshness, reranking, evidence.
 
     `stale` and `reranked` are always present; the other optional fields appear
-    only when they carry a value. The reference view answers with
-    `reference_groups` instead of `hits`.
+    only when they carry a value. `hits` are the passages; the grouped reference
+    view belongs to the retrieval measurement and the terminal verifier, and no
+    MCP tool asks for it.
     """
 
     result: dict[str, Any] = _copy(payload, ("query", "generation_id", "stale"))
@@ -103,26 +129,14 @@ def lean_passage_context(payload: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def lean_generation(record: Mapping[str, Any]) -> dict[str, Any]:
-    """Return one retained generation's identity, content, and disk cost."""
-
-    result = _copy(
-        record,
-        (
-            "generation_id",
-            "is_current",
-            "created_at",
-            "chunk_count",
-            "document_count",
-            "size_bytes",
-        ),
-    )
-    _add(result, "manifest_error", record.get("manifest_error"))
-    return result
-
-
 def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return project state: readiness, freshness, counts, inventory, retention.
+    """Return the current generation's state: readiness, freshness, and counts.
+
+    The answer describes the selected generation and inventories nothing: the
+    retained generations, the categories, and the projects are full-detail
+    readers, and `list_sources` is the source inventory. What a prune would
+    consider is reported as `retained_generation_count` and
+    `retained_generation_bytes` rather than as a list of generations.
 
     Change lists appear only when the generation is stale, and `restart_required`
     only when the running process is older than the installed version.
@@ -140,8 +154,6 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
         "excluded_source_count",
     ):
         _add(result, key, payload.get(key))
-    _add(result, "categories", payload.get("categories"))
-    _add(result, "projects", payload.get("projects"))
     _add(
         result,
         "available_retrieval_methods",
@@ -178,11 +190,8 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
             result["changes"] = lean_changes
     version = payload.get("version") or {}
     _add(result, "restart_required", version.get("restart_required"))
-    generations = payload.get("generations")
-    if generations is not None:
-        result["generations"] = [lean_generation(item) for item in generations]
-        for key in ("retained_generation_count", "retained_generation_bytes"):
-            result[key] = payload.get(key)
+    for key in ("retained_generation_count", "retained_generation_bytes"):
+        _add(result, key, payload.get(key))
     result["message"] = payload.get("message")
     return result
 

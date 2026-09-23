@@ -15,19 +15,26 @@ from research_ultra_rag_mcp.instructions import SERVER_INSTRUCTIONS
 # Answer-level keys that only the full-detail payload carries.
 LEAN_ONLY_ABSENT = (
     "allowed_formats",
+    "categories",
     "generation_root",
+    "generations",
     "ignored_extensions",
     "last_build_metrics",
+    "projects",
     "retrieval",
     "source_exclusion_revision",
     "ui_launcher",
     "version",
 )
 
-# The same rule one level down, for a returned passage.
+# The same rule one level down, for a returned passage: a citation-ready
+# reference and the handles that identify a source a second time belong to the
+# full-detail payload alone.
 LEAN_ONLY_HIT_KEYS = (
+    "citation",
     "component_ranks",
     "component_scores",
+    "direct_quote_safe",
     "doi",
     "document_id",
     "fusion_score",
@@ -35,8 +42,11 @@ LEAN_ONLY_HIT_KEYS = (
     "metadata_warnings",
     "rank",
     "rerank_score",
+    "source_id",
     "source_path",
     "text_fidelity",
+    "text_notes",
+    "title",
     "year",
 )
 
@@ -203,6 +213,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert ready.data["ui_url"] is None
         assert ready.data["ui_ready"] is False
         assert ready.data["ui_error"] is None
+        # What a prune would consider is the count and the bytes, never a list.
         assert ready.data["retained_generation_count"] >= 1
 
         # A stale status counts what the corpus gained and reports only what a
@@ -231,15 +242,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             {"query": "cobalt heron amber marsh", "top_k": 1},
         )
         initial_hit = result.data["hits"][0]
-        source_id = initial_hit["source_id"]
-        assert source_id.startswith("src_")
-        assert initial_hit["title"] == "Citable Evidence"
         assert initial_hit["source_relative_path"] == "evidence.pdf"
-        assert initial_hit["locator"]["page"] == 1
-        assert "Citable Evidence" in initial_hit["citation"]
+        assert initial_hit["locator"] == {"page": 1}
         assert "cobalt heron" in initial_hit["text"].lower()
         assert "notes" not in initial_hit["text"].lower()
-        assert initial_hit["direct_quote_safe"] is False
         assert result.data["stale"] is False
         assert result.data["reranked"] is True
         for key in LEAN_ONLY_HIT_KEYS:
@@ -286,10 +292,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
         corrected_sources = await client.call_tool("list_sources", {})
         assert corrected_sources.data["source_count"] == 1
-        assert corrected_sources.data["sources"][0]["source_id"] == source_id
-        assert corrected_sources.data["sources"][0]["title"] == (
-            "Reviewed Marsh Evidence"
-        )
+        source_record = corrected_sources.data["sources"][0]
+        # The stable ID is the inventory's business, not a search answer's.
+        assert source_record["source_id"].startswith("src_")
+        assert source_record["title"] == "Reviewed Marsh Evidence"
 
         corrected_result = await client.call_tool(
             "search",
@@ -302,19 +308,21 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         )
         hit = corrected_result.data["hits"][0]
         assert hit["chunk_id"] == initial_hit["chunk_id"]
-        assert hit["title"] == "Reviewed Marsh Evidence"
+        # The overlay reaches a search answer, and the inventory carries the
+        # rest of the reviewed bibliography.
         assert hit["authors"] == ["Field Researcher"]
-        assert hit["citation"].startswith(
-            "Field Researcher, Reviewed Marsh Evidence (2025)"
-        )
+        assert hit["locator"] == {"page": 1}
+        for key in LEAN_ONLY_HIT_KEYS:
+            assert key not in hit
 
         corrected_context = await client.call_tool(
             "get_passage",
             {"chunk_id": hit["chunk_id"]},
         )
         corrected_passage = corrected_context.data["context"][0]
-        assert corrected_passage["title"] == "Reviewed Marsh Evidence"
+        assert corrected_passage["source_relative_path"] == "evidence.pdf"
         assert corrected_passage["authors"] == ["Field Researcher"]
+        assert corrected_passage["locator"] == {"page": 1}
         assert "categories" not in corrected_passage
         assert "notice" not in corrected_context.data
 

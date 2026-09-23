@@ -40,7 +40,7 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "corrupt-text",
         ".research-rag/project.json",
         "~/.cache/research-ultra-rag-mcp/models",
-        '"direct_quote_safe": false',
+        "not a quote-safe transcript",
         "THUNLP",
         "NEUIR",
         "OpenBMB",

@@ -226,21 +226,19 @@ def create_server(
         }
     )
     async def status() -> dict[str, Any]:
-        """Report project identity, staleness, required generation upgrades, and retained generations.
+        """Report the selected generation, readiness, and staleness.
 
-        generations lists every generation still on disk with its creation time,
-        chunk and document counts, and size, marks the one that is
-        current, and reports the retained count and total bytes; the full-detail
-        payload adds each generation's file count and schema. A generation
-        whose manifest is unreadable is reported with manifest_error instead of
-        failing the call. Pruning is not offered; this only shows what a prune
-        would consider.
+        The answer names the current generation with its creation time and chunk
+        count, reports the source counts, and reports what a prune would consider
+        as the retained-generation count and total bytes. It inventories nothing:
+        the retained generations, the categories, and the projects come back from
+        --tool-detail full, and list_sources is the source inventory. Pruning is
+        not offered; the count and the bytes only show what it would consider.
 
         When the generation is stale, changes counts the added and modified
         sources, names the sources the generation has that the source directory
         no longer does, and reports whether reviewed metadata or exclusions
-        moved. Available sources are counted rather than listed; list_sources
-        is the inventory.
+        moved. Available sources are counted rather than listed.
 
         When this server was started with --ui-port, ui_url names the browser UI
         it is serving on loopback, ui_ready says whether it finished starting,
@@ -322,9 +320,12 @@ def create_server(
         unfiltered result.
 
         Results may be fewer than top_k when relevance gates reject weak
-        candidates. The answer names the source of every passage by filename,
-        title, and authors, with a ready-to-use citation. Returned text is not
-        safe for direct quotation; open the original at the returned locator.
+        candidates. Every passage names its source by filename and its authors,
+        carries the cleaned text, and locates itself by page — or by section for
+        an EPUB. The reference is deliberately not citation-ready: the text is
+        not safe for direct quotation, so open the original at the returned
+        locator, and read a citation from the full-detail payload when you need
+        one.
         """
 
         return _present(

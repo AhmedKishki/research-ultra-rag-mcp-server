@@ -75,27 +75,32 @@ def test_lean_passage_shape() -> None:
     assert lean["hits"] == [
         {
             "chunk_id": "chk_one",
-            "source_id": "src_one",
             "source_relative_path": "evidence.pdf",
-            "title": "Citable Evidence",
             "authors": ["A. Researcher"],
-            "locator": {"page": 3, "page_label": "3", "type": "pdf_page"},
-            "citation": "A. Researcher, Citable Evidence (2025), p. 3",
+            "locator": {"page": 3},
             "text": "cleaned semantic text",
-            "direct_quote_safe": False,
         },
         {
             "chunk_id": "chk_two",
-            "source_id": "src_two",
             "source_relative_path": "anonymous.pdf",
-            "title": "anonymous",
-            "locator": {"section_index": 4, "href": "chapter.xhtml", "type": "epub"},
-            "citation": "anonymous, section chapter.xhtml",
+            "locator": {"section": "chapter.xhtml"},
             "text": "second passage",
-            "direct_quote_safe": False,
-            "text_notes": ["non_latin_dominant"],
         },
     ]
+
+    # A passage is its source, its authors, where it sits, and its text. The
+    # reference is deliberately not citation-ready, an identifier the filename
+    # already gives is not repeated, a page label that repeats the physical page
+    # is not a second way of saying the same thing, and neither the quote-safety
+    # rule nor the advisory script note is repeated on every passage.
+    for key in (
+        "citation",
+        "direct_quote_safe",
+        "source_id",
+        "text_notes",
+        "title",
+    ):
+        assert key not in json.dumps(lean)
 
 
 def test_lean_response_never_contains_a_diagnostic_key() -> None:
@@ -153,12 +158,13 @@ def test_passage_context_is_lean_and_keeps_no_rank() -> None:
 
     assert set(lean) == {"generation_id", "requested_chunk_id", "context"}
     assert "rank" not in lean["context"][0]
-    assert lean["context"][0]["direct_quote_safe"] is False
+    assert "direct_quote_safe" not in lean["context"][0]
     assert "notice" not in lean
 
 
-def test_status_lean_keeps_state_and_retention_only() -> None:
-    lean = present_tool_response("status", _status_payload(), detail=LEAN_TOOL_DETAIL)
+def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
+    payload = _status_payload()
+    lean = present_tool_response("status", payload, detail=LEAN_TOOL_DETAIL)
 
     assert set(lean) == {
         "ready",
@@ -172,25 +178,24 @@ def test_status_lean_keeps_state_and_retention_only() -> None:
         "indexed_source_count",
         "searchable_source_count",
         "excluded_source_count",
-        "categories",
-        "projects",
         "available_retrieval_methods",
-        "generations",
         "retained_generation_count",
         "retained_generation_bytes",
         "message",
     }
-    assert lean["generations"] == [
-        {
-            "generation_id": "20260101T000000Z-abcdef",
-            "is_current": True,
-            "created_at": "2026-01-01T00:00:00Z",
-            "chunk_count": 12,
-            "document_count": 2,
-            "size_bytes": 4096,
-        }
-    ]
-    assert "manifest_error" not in lean["generations"][0]
+    assert lean["generation_id"] == "20260101T000000Z-abcdef"
+    assert lean["created_at"] == "2026-01-01T00:00:00Z"
+    assert lean["chunk_count"] == 12
+    assert lean["retained_generation_count"] == 1
+    assert lean["retained_generation_bytes"] == 4096
+
+    # The retained generations, the categories, and the projects are inventories:
+    # they answer a question of their own and belong to the full-detail payload,
+    # so a status answer stays a statement about the selected generation.
+    serialized = json.dumps(lean)
+    for key in ("generations", "categories", "projects"):
+        assert key not in serialized
+        assert key in present_tool_response("status", payload, detail=FULL_TOOL_DETAIL)
     # A field whose value is the harmless default is left out entirely.
     assert "excluded_sources" not in lean
     assert "generation_upgrade_required" not in lean
@@ -275,6 +280,8 @@ def test_status_before_the_first_ingestion_states_what_is_missing() -> None:
     assert lean["discovered_source_count"] == 3
     assert "generations" not in lean
     assert "categories" not in lean
+    assert "projects" not in lean
+    assert "retained_generation_count" not in lean
     assert "excluded_source_count" not in lean
     assert "metadata_overlay_active" not in lean
     assert lean["message"] == "No knowledge-base generation exists; call ingest."
