@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 
 UI_NAME = "research-ultra-rag-ui"
 MAX_ERROR_LENGTH = 1200
+# Matches uvicorn's own default accept backlog, so a claimed socket is in the
+# state uvicorn would have created for itself.
+_CLAIM_BACKLOG = 2048
 
 RESEARCH_UI_PROFILE = UIProfile(
     application_name="Research UltraRAG",
@@ -219,15 +222,29 @@ def create_ui_app(
 UI_HOST = "127.0.0.1"
 
 
-def _port_is_available(host: str, port: int) -> bool:
-    """Whether the loopback port can still be bound."""
+def _claim_loopback_port(host: str, port: int) -> socket.socket:
+    """Bind and listen on the loopback port, and return the socket that holds it.
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind((host, port))
-        except OSError:
-            return False
-    return True
+    The claim is the bind and the listen, not a probe followed by a bind, so two
+    servers that start at the same time cannot both believe they hold the port:
+    the loser gets an ``OSError`` here, before any server exists, and reports it
+    through ``ui_error``. Listening is what makes the claim exclusive — a socket
+    that is bound but not listening can still be bound again under
+    ``SO_REUSEADDR``, which Linux uses to allow binding over a socket that is not
+    accepting. ``SO_REUSEADDR`` is set anyway, matching what uvicorn sets for
+    itself, so a port whose connections are still in ``TIME_WAIT`` after a stop is
+    not mistaken for one another process holds.
+    """
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sock.listen(_CLAIM_BACKLOG)
+    except OSError:
+        sock.close()
+        raise
+    return sock
 
 
 class EmbeddedUi:
@@ -244,6 +261,10 @@ class EmbeddedUi:
     The UI shares this process's event loop, so every blocking operation it
     triggers must keep going through ``asyncio.to_thread`` the way the service
     already does; a synchronous call on the loop would stall the UI it serves.
+
+    The port is claimed by binding it before uvicorn is created, so a UI that
+    cannot claim its port reports the reason through ``ui_error`` instead of
+    failing after a successful probe, and the claim is released with the socket.
     """
 
     def __init__(self, config: ResearchConfig, *, port: int) -> None:
@@ -255,6 +276,7 @@ class EmbeddedUi:
         self.error: str | None = None
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task[None] | None = None
+        self._socket: socket.socket | None = None
 
     @property
     def url(self) -> str:
@@ -279,12 +301,16 @@ class EmbeddedUi:
     async def start(self, *, research_client: ResearchToolClient | None = None) -> None:
         """Serve the UI for the life of the MCP server."""
 
-        if not _port_is_available(self.host, self.port):
+        try:
+            claim = _claim_loopback_port(self.host, self.port)
+        except OSError as exc:
+            reason = exc.strerror or str(exc)
             self.error = (
                 f"Port {self.port} is already in use on {self.host}, so the UI was "
-                "not started; choose another --ui-port."
+                f"not started; choose another --ui-port ({reason})."
             )
             return
+        self._socket = claim
         app = create_ui_app(self.config, research_client=research_client)
         self._server = uvicorn.Server(
             uvicorn.Config(
@@ -295,17 +321,49 @@ class EmbeddedUi:
                 access_log=False,
             )
         )
-        self._task = asyncio.create_task(self._server.serve())
+        self._task = asyncio.create_task(self._server.serve(sockets=[claim]))
+        self._task.add_done_callback(self._task_finished)
+
+    def _task_finished(self, task: asyncio.Task[None]) -> None:
+        """Record a UI task that ended on its own, and release its claim.
+
+        uvicorn can end the task by raising, which the probe-then-bind order used
+        to hide behind an empty ``ui_error``; the reason is kept here so that
+        ``status`` reports it instead of showing a dead UI with no explanation.
+        """
+
+        if not task.cancelled():
+            failure = task.exception()
+            if failure is not None:
+                self.error = (
+                    f"The UI on {self.host}:{self.port} stopped: "
+                    f"{failure.__class__.__name__}: {failure}"
+                )
+        self._release_claim()
+
+    def _release_claim(self) -> None:
+        """Close the claimed socket, which uvicorn also closes on shutdown."""
+
+        claim, self._socket = self._socket, None
+        if claim is not None:
+            with contextlib.suppress(OSError):
+                claim.close()
 
     async def stop(self) -> None:
-        """Ask the UI to stop and wait for its task to finish."""
+        """Ask the UI to stop and wait for its task to finish.
+
+        A UI that fails must never take the MCP server down with it: whatever
+        ended the task is recorded by ``_task_finished`` and reported through
+        ``ui_error``, so it is not re-raised here.
+        """
 
         if self._server is not None:
             self._server.should_exit = True
         if self._task is not None:
             task, self._task = self._task, None
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+        self._release_claim()
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-ultra-rag-mcp"
-version = "0.18.0"
+version = "0.19.0"
 description = "A project-scoped research knowledge-base MCP server built on vanilla UltraRAG"
 readme = "README.md"
 license = "Apache-2.0"

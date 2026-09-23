@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -12,9 +13,16 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
-from research_ultra_rag_mcp.config import resolve_config
-from research_ultra_rag_mcp.server import _ui_port_from
+from research_ultra_rag_mcp.config import (
+    MANAGED_CHILD_ENV,
+    TOP_LEVEL_ONLY_ENV,
+    child_process_environment,
+    resolve_config,
+)
+from research_ultra_rag_mcp.server import _parser, _ui_port_decision, _ui_port_from
+from research_ultra_rag_mcp.transport import create_research_transport
 from research_ultra_rag_mcp.ui import EmbeddedUi, create_ui_app
+from research_ultra_rag_mcp.ultrarag import create_vanilla_transport
 
 TOOL_PARAMETERS: dict[str, set[str]] = {
     "status": set(),
@@ -427,3 +435,103 @@ def test_ui_port_validation() -> None:
     for invalid in (0, 65536, -1, "not-a-port"):
         with pytest.raises(SystemExit):
             _ui_port_from(invalid)
+
+
+def test_ui_port_has_no_environment_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("RESEARCH_ULTRARAG_UI_PORT", "5151")
+
+    args = _parser().parse_args(["--project-root", str(tmp_path)])
+
+    # Serving a UI is the decision of whoever started this server, so no ambient
+    # variable may hand one to a server this project starts for itself.
+    assert args.ui_port is None
+
+
+def test_a_managed_child_refuses_to_serve_a_ui(monkeypatch) -> None:
+    monkeypatch.setenv(MANAGED_CHILD_ENV, "1")
+
+    assert _ui_port_decision(None) is None
+    with pytest.raises(SystemExit) as refusal:
+        _ui_port_decision(5051)
+    assert "started by another server" in str(refusal.value)
+
+    monkeypatch.delenv(MANAGED_CHILD_ENV)
+    assert _ui_port_decision(5051) == 5051
+
+
+def test_child_environment_is_marked_and_drops_top_level_settings(monkeypatch) -> None:
+    monkeypatch.setenv("RESEARCH_ULTRARAG_UI_PORT", "5151")
+    monkeypatch.delenv(MANAGED_CHILD_ENV, raising=False)
+
+    environment = child_process_environment()
+
+    for name in TOP_LEVEL_ONLY_ENV:
+        assert name not in environment
+    assert environment[MANAGED_CHILD_ENV] == "1"
+    assert environment["PATH"] == os.environ["PATH"]
+
+
+def test_child_transports_carry_the_marker_and_no_top_level_settings(
+    project: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("RESEARCH_ULTRARAG_UI_PORT", "5151")
+    monkeypatch.delenv(MANAGED_CHILD_ENV, raising=False)
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    research = create_research_transport(
+        config, log_file=config.logs_root / "research-ui-mcp-stderr.log"
+    )
+    gateway = create_vanilla_transport(config)
+
+    for transport in (research, gateway):
+        assert transport.env is not None
+        for name in TOP_LEVEL_ONLY_ENV:
+            assert name not in transport.env
+        assert transport.env[MANAGED_CHILD_ENV] == "1"
+        # A UI port is never an argument a child receives either.
+        assert "--ui-port" not in transport.args
+    assert research.env["PATH"] == os.environ["PATH"]
+
+
+async def _assert_ui_claim_is_exclusive_and_released(project: Path) -> None:
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    port = _free_loopback_port()
+    first = EmbeddedUi(config, port=port)
+    second = EmbeddedUi(config, port=port)
+
+    await first.start(research_client=FakeResearchClient())
+    try:
+        await _wait_until_ready(first)
+        # The claim is exclusive because it listens: a socket that is only bound
+        # can still be bound again under SO_REUSEADDR, which is the trap a plain
+        # probe-before-bind falls into.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            with pytest.raises(OSError):
+                probe.bind(("127.0.0.1", port))
+
+        await second.start(research_client=FakeResearchClient())
+
+        # The claim is the bind and the listen, so the loser of a simultaneous
+        # start fails before it serves anything and says why instead of reporting
+        # nothing: the message is the claim's, not a downstream uvicorn failure.
+        assert second.ready is False
+        assert second.error is not None
+        assert "already in use" in second.error
+        assert str(port) in second.error
+    finally:
+        await first.stop()
+
+    # The verdict is not cached: a released port is claimable again.
+    third = EmbeddedUi(config, port=port)
+    await third.start(research_client=FakeResearchClient())
+    try:
+        await _wait_until_ready(third)
+        assert third.ready is True
+        assert third.error is None
+    finally:
+        await third.stop()
+
+
+def test_embedded_ui_claim_is_exclusive_and_released(project: Path) -> None:
+    asyncio.run(_assert_ui_claim_is_exclusive_and_released(project))

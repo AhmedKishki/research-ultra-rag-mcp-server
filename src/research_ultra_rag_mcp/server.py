@@ -18,6 +18,7 @@ from .config import (
     ConfigurationError,
     ResearchConfig,
     configured_source_directory,
+    is_managed_child,
     resolve_config,
 )
 from .instructions import SERVER_INSTRUCTIONS
@@ -243,7 +244,7 @@ def create_server(
 
         When this server was started with --ui-port, ui_url names the browser UI
         it is serving on loopback, ui_ready says whether it finished starting,
-        and ui_error explains a port that was already in use. Without that
+        and ui_error explains a port it could not claim. Without that
         option all three are null, false, and null, and no UI is running.
         """
         payload = _present("status", await _tool_call(service().status))
@@ -515,11 +516,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ui-port",
-        default=os.environ.get("RESEARCH_ULTRARAG_UI_PORT"),
+        default=None,
         help=(
             "Also serve the local browser UI on this loopback port for the life "
             "of this server, reusing the resolved project, runtime, model, and "
-            "offline settings. Omit to serve no UI."
+            "offline settings. Omit to serve no UI. Give it explicitly: it is a "
+            "choice for the server you started, so a server this project starts "
+            "for itself never serves a UI."
         ),
     )
     parser.add_argument(
@@ -531,7 +534,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _ui_port_from(raw: Any) -> int | None:
-    """Normalize --ui-port, which may arrive from the environment as text."""
+    """Normalize --ui-port, which a caller may pass as text."""
 
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return None
@@ -541,6 +544,19 @@ def _ui_port_from(raw: Any) -> int | None:
         raise SystemExit("--ui-port must be an integer between 1 and 65535") from None
     if not 1 <= port <= 65535:
         raise SystemExit("--ui-port must be between 1 and 65535")
+    return port
+
+
+def _ui_port_decision(raw: Any) -> int | None:
+    """Validate --ui-port, and refuse it in a server another server started."""
+
+    port = _ui_port_from(raw)
+    if port is not None and is_managed_child():
+        raise SystemExit(
+            "This server was started by another server, so it does not serve the "
+            "browser UI: drop --ui-port from this server's command line and let "
+            "the server you started serve it."
+        )
     return port
 
 
@@ -565,7 +581,7 @@ def main() -> None:
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
-    create_server(config, ui_port=_ui_port_from(args.ui_port)).run(
+    create_server(config, ui_port=_ui_port_decision(args.ui_port)).run(
         transport="stdio", show_banner=False
     )
 

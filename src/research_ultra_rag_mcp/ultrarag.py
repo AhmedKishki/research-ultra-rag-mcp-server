@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
-from .config import ResearchConfig
+from .config import ResearchConfig, child_process_environment
 
 
 def create_vanilla_transport(config: ResearchConfig) -> StdioTransport:
+    """Start the pinned gateway as a managed child of this server.
+
+    The gateway inherits no top-level UI setting, so a variable exported for this
+    server's own UI cannot travel down the process tree.
+    """
+
     arguments = [
         "--workspace-root",
         str(config.ultrarag_workspace),
@@ -31,7 +36,7 @@ def create_vanilla_transport(config: ResearchConfig) -> StdioTransport:
     return StdioTransport(
         command=str(config.vanilla_executable),
         args=arguments,
-        env=dict(os.environ),
+        env=child_process_environment(),
         cwd=str(config.project_root),
         keep_alive=True,
         log_file=config.logs_root / "vanilla-gateway-stderr.log",

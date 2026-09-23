@@ -54,8 +54,9 @@ def test_initialisation_creates_the_launcher_and_the_root_link(
     body = script.read_text(encoding="utf-8")
     assert str(project.resolve()) in body
     assert 'setsid "$UI_COMMAND"' in body
-    assert "unset RESEARCH_ULTRARAG_UI_PORT" in body
-    assert "RESEARCH_ULTRARAG_UI_PORT=" not in body
+    # The launcher passes explicit flags only: no top-level-only variable travels
+    # through it, and the server it starts reads none from the environment.
+    assert "RESEARCH_ULTRARAG_UI_PORT" not in body
 
     state = ui_launcher_state(project, project / ".research-rag")
     assert state["script_present"] is True

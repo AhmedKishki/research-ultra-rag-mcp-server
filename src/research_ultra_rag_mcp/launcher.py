@@ -55,10 +55,6 @@ RUNTIME_ROOT="@RUNTIME_ROOT@"
 PORT=@PORT@
 UI_COMMAND="@UI_COMMAND@"
 
-# A research server that inherits this variable hosts a UI of its own and starts
-# the next client in turn, so the launcher must never pass it on.
-unset RESEARCH_ULTRARAG_UI_PORT 2>/dev/null || true
-
 PID_FILE="$STATE_ROOT/open-ui.pid"
 LOG_FILE="$STATE_ROOT/logs/open-ui.log"
 OPEN_BROWSER=0

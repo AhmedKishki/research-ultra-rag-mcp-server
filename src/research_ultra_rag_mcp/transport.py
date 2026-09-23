@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 from fastmcp.client.transports import StdioTransport
 
-from .config import ResearchConfig
+from .config import ResearchConfig, child_process_environment
 
 
 def create_research_transport(
@@ -21,6 +20,9 @@ def create_research_transport(
 
     ``tool_detail`` defaults to the project's setting; the diagnostic surfaces in
     this package pass ``full``.
+
+    The child is a managed child: it is marked as one, it inherits no top-level UI
+    setting, and it therefore cannot host a UI of its own.
     """
 
     arguments = [
@@ -52,7 +54,7 @@ def create_research_transport(
     return StdioTransport(
         command=sys.executable,
         args=arguments,
-        env=dict(os.environ),
+        env=child_process_environment(),
         cwd=str(config.project_root),
         keep_alive=True,
         log_file=Path(log_file),

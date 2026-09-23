@@ -27,6 +27,35 @@ LEAN_TOOL_DETAIL = "lean"
 FULL_TOOL_DETAIL = "full"
 TOOL_DETAIL_MODES = (LEAN_TOOL_DETAIL, FULL_TOOL_DETAIL)
 
+# A server this project starts for itself is a managed child: it may not serve
+# the browser UI, because only a server an operator started may. Every child
+# transport marks the server it starts and drops the variables that describe a
+# top-level invocation, so no exported setting can turn one server into a chain
+# of them.
+MANAGED_CHILD_ENV = "RESEARCH_ULTRARAG_MANAGED_CHILD"
+TOP_LEVEL_ONLY_ENV = ("RESEARCH_ULTRARAG_UI_PORT",)
+
+
+def child_process_environment() -> dict[str, str]:
+    """Return the environment for a server this process starts.
+
+    The child inherits this process's environment except for the variables that
+    describe a top-level invocation, and it carries the marker that makes it
+    refuse to host a UI of its own.
+    """
+
+    environment = dict(os.environ)
+    for name in TOP_LEVEL_ONLY_ENV:
+        environment.pop(name, None)
+    environment[MANAGED_CHILD_ENV] = "1"
+    return environment
+
+
+def is_managed_child() -> bool:
+    """Whether another server in this project started this process."""
+
+    return os.environ.get(MANAGED_CHILD_ENV) == "1"
+
 
 @dataclass(frozen=True, slots=True)
 class ResearchConfig:
