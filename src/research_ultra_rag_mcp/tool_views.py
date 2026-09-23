@@ -153,11 +153,12 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
         "excluded_source_count",
     ):
         _add(result, key, payload.get(key))
-    _add(
-        result,
-        "available_retrieval_methods",
-        payload.get("available_retrieval_methods"),
-    )
+    # The tool always searches hybrid, so the answer says whether this
+    # generation can serve that and never lists methods as if they were a
+    # choice. A generation that predates dense support is stated plainly,
+    # with `generation_upgrade_required` and `upgrade_reasons` beside it.
+    if payload.get("hybrid_ready") is False:
+        result["hybrid_ready"] = False
     _add(
         result,
         "generation_upgrade_required",

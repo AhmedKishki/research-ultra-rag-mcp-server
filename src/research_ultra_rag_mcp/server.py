@@ -41,9 +41,7 @@ SearchQuery: TypeAlias = Annotated[
 TopK: TypeAlias = Annotated[
     int,
     Field(
-        description=(
-            "Maximum number of ranked evidence passages to return (1-50)."
-        ),
+        description=("Maximum number of ranked evidence passages to return (1-50)."),
         ge=1,
         le=50,
     ),

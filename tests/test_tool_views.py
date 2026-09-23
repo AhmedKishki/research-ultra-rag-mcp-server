@@ -22,6 +22,7 @@ from research_ultra_rag_mcp.tool_views import present_tool_response
 # lean answer must not carry one.
 DIAGNOSTIC_KEYS = {
     "annotations",
+    "available_retrieval_methods",
     "candidate_count",
     "candidate_depth",
     "candidate_distinct_reference_count",
@@ -178,7 +179,6 @@ def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
         "indexed_source_count",
         "searchable_source_count",
         "excluded_source_count",
-        "available_retrieval_methods",
         "retained_generation_count",
         "retained_generation_bytes",
         "message",
@@ -188,6 +188,26 @@ def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
     assert lean["chunk_count"] == 12
     assert lean["retained_generation_count"] == 1
     assert lean["retained_generation_bytes"] == 4096
+    # A generation this tool can serve says nothing about methods.
+    assert "hybrid_ready" not in lean
+
+    # A generation that predates dense support is stated plainly, with the
+    # upgrade advice, rather than as a list of methods to pick from.
+    legacy = present_tool_response(
+        "status",
+        _status_payload(
+            available_retrieval_methods=["bm25"],
+            hybrid_ready=False,
+            hybrid_upgrade_required=True,
+            generation_upgrade_required=True,
+            upgrade_reasons=["bm25_only_generation"],
+        ),
+        detail=LEAN_TOOL_DETAIL,
+    )
+    assert legacy["hybrid_ready"] is False
+    assert legacy["generation_upgrade_required"] is True
+    assert legacy["upgrade_reasons"] == ["bm25_only_generation"]
+    assert "available_retrieval_methods" not in legacy
 
     # The retained generations, the categories, and the projects are inventories:
     # they answer a question of their own and belong to the full-detail payload,

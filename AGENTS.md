@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.21.0`
+- Version: `0.22.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -181,7 +181,7 @@ Changed builds use a unique directory under `staging/`, then move a verified gen
 
 Each tool answers with the projection from `tool_views.py`; the bullets below name what the service builds, which `--tool-detail full` returns unchanged.
 
-- `status`: read-only current/staleness inspection — the selected generation, the source counts, what a prune would consider as `retained_generation_count` and `retained_generation_bytes`, the generated UI launcher state (`ui_launcher`), and the URL/readiness of a UI this server hosts when it was started with `--ui-port`. The lean answer counts what it gained and modified, names the sources that went missing, and never enumerates or inventories anything: the retained generations, the categories, and the projects are `--tool-detail full` readers.
+- `status`: read-only current/staleness inspection — the selected generation, the source counts, what a prune would consider as `retained_generation_count` and `retained_generation_bytes`, the generated UI launcher state (`ui_launcher`), and the URL/readiness of a UI this server hosts when it was started with `--ui-port`. The lean answer counts what it gained and modified, names the sources that went missing, and never enumerates or inventories anything: the retained generations, the categories, the projects, and the generation's own method list are `--tool-detail full` readers. A generation this tool cannot serve is stated as `hybrid_ready: false` beside `generation_upgrade_required`, never as a list of retrieval methods a caller might choose.
 - `ingest`: return the current generation for an exact no-op, advance a checkpointed build and return `in_progress`, or select a complete new generation with verified reuse; `force_recompute` bypasses reuse but may resume its own matching checkpoint.
 - `search`: hybrid retrieval with reranking, always; source selection (`source_ids`, `exclude_source_ids`); and the reviewed-metadata layers with any-of semantics for `projects_any` and `categories_any` and all-of semantics for `keywords`. The engine can serve BM25 or dense alone for measurement, but the tool does not expose a mode, a view, or a freshness switch.
 - `list_sources`: the corpus inventory, taking no parameters: inspect indexed documents and metadata, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.

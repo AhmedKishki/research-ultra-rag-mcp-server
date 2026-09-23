@@ -22,6 +22,7 @@ The local UI uses the same public tools. Call `status` again before relying on s
 - Hybrid retrieval with CPU cross-encoder reranking, always. BM25 (weighted `1.25`) and dense (`1.0`) ranks are fused, candidates are gated (BM25 needs at least one non-stopword query token, dense needs cosine `>= 0.72`), and the reranker then reorders at most 50 candidates. On the judged set in `MEASUREMENTS.md` this is the best of the measured modes, so there is no mode to choose.
 - It is the slow path by design: about 2.3 s per warm query against 0.17 s for unranked hybrid, and it may download a second model on first use. When the response contains `rerank_fallback`, the model could not be loaded and the order you received is the plain unranked candidate order.
 - Every search re-compares the source directory with the generation to report `stale`. That comparison grows with the number of sources but is always done, so `stale` is never null through this tool. Call `status` when you need the detail behind a stale verdict.
+- `status` reports `hybrid_ready: false` when the selected generation predates dense support, which is the one case where this search cannot serve it: report it, recommend `ingest`, and do not look for a way to ask for another retrieval method, because the tool offers none.
 
 ## Reading an answer
 

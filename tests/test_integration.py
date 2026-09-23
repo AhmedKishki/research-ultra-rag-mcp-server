@@ -15,6 +15,8 @@ from research_ultra_rag_mcp.instructions import SERVER_INSTRUCTIONS
 # Answer-level keys that only the full-detail payload carries.
 LEAN_ONLY_ABSENT = (
     "allowed_formats",
+    "available_retrieval_methods",
+    "default_retrieval_method",
     "categories",
     "generation_root",
     "generations",
@@ -202,11 +204,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert (generation_root / "indexes" / "vectors" / "index.json").is_file()
 
         ready = await client.call_tool("status", {})
-        assert set(ready.data["available_retrieval_methods"]) == {
-            "bm25",
-            "dense",
-            "hybrid",
-        }
+        # This generation is hybrid-ready, so the answer says nothing about
+        # methods at all: the tool cannot be asked for a different one.
+        assert "hybrid_ready" not in ready.data
+        assert "available_retrieval_methods" not in ready.data
         # An upgrade note appears only when an upgrade is actually required.
         assert "generation_upgrade_required" not in ready.data
         # No --ui-port was passed, so this server hosts no UI and says so.
