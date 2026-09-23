@@ -138,7 +138,15 @@ The staleness walk is an order of magnitude larger than everything else and is t
 
 Two things dominate. A lean `status` is small because it reports the pending-review count, not the 59 reviewed paths the full payload lists, because it counts added and modified sources instead of listing them while naming only the ones that went missing, and because it carries no retained-generation inventory for a project with none. `list_sources` is the largest lean answer and stays largest because `reviewed_metadata_sources` echoes every saved override: that is also the only place the keyword vocabulary is visible, since `status` inventories categories and projects but not keywords.
 
-`search` needs a built generation, which this measurement state did not have. The last reference measurement with a generation was 10,799 bytes lean against 19,831 bytes full at `top_k=6`, and that figure predates the removal of the per-passage `rank`, `year`, `doi`, and `metadata_warnings` fields, so it is an upper bound rather than the current answer. Re-run the script after the next build to replace it.
+`search` needs a built generation, which the cleared measurement state did not have. Re-run on the reference project once it had one — 59 indexed sources, 14,072 chunks, 5 retained generations, hybrid retrieval with reranking, `top_k=6`, query "the multiplication of labour in the data supply chain":
+
+| Tool | Lean answer | Full-detail answer | Ratio |
+|---|---|---|---|
+| `status` | 2,664 bytes | 9,410 bytes | 0.28 |
+| `list_sources` | 54,981 bytes | 149,155 bytes | 0.37 |
+| `search`, `top_k=6` | 13,614 bytes | 23,155 bytes | 0.59 |
+
+A lean `status` is larger than the cleared-state figure above because it carries the current generation, its counts and the retained-generation inventory, and a lean `list_sources` is larger because the reviewed-metadata overlay now holds every saved override. A lean `search` at `top_k=6` is mostly the cleaned evidence itself: the accounting that used to surround it — component ranks and scores, fusion and reranker values, embedding token counts, candidate and rejection counts, withheld candidates, model identifiers and revision fingerprints, per-field provenance, and the applied-filter echo — is now returned only under `--tool-detail full`. The pre-lean reference figure of 10,799 lean bytes against 19,831 full, recorded before the per-passage `rank`, `year`, `doi`, and `metadata_warnings` fields were removed, is superseded by these numbers.
 
 The returned passage text is about 6 kB of both search answers, so a search ratio is bounded by how much evidence was requested. The two source lists grow with the number of sources and `search` grows with `top_k` and passage length, so absolute bytes track the corpus while the ratio carries over.
 
