@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.20.0`
+- Version: `0.21.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -199,7 +199,7 @@ Tool docstrings and `SERVER_INSTRUCTIONS` are part of the agent-facing contract.
 - Dense path: FastEmbed `BAAI/bge-small-en-v1.5`, ONNX Runtime CPU, 384 dimensions, cosine distance, and a project-local index the manifest records: the exact scan by default, or the embedded Qdrant collection `research_chunks` above the documented threshold. Artifact revision: `52398278842ec682c6f32300af41344b1c0b0bb2`.
 - Fusion: weighted reciprocal-rank fusion with `k=60`, BM25 weight `1.25`, and dense weight `1.0`. Do not combine raw BM25 and cosine values; their scales are unrelated.
 - Candidate depth: at least 20, normally `top_k * 4`, bounded at 200 and by the current chunk count.
-- `top_k` is always a total returned-passage budget. The optional reference view scans the complete relevance-gated candidate ordering, admits at most two passages per `source_id` by default, and groups those passages without aggregating scores or rewarding documents for producing more chunks.
+- `top_k` is the returned-passage budget, and the flat passage ranking is the only view: the grouped reference view was retired with the tool parameter that asked for it, so no surface and no tool can request one.
 - Search-level source selection resolves stable `source_id` values to document IDs in the selected generation before ranking, so `top_k` is a budget inside the selection. `source_ids` includes and `exclude_source_ids` removes; both default to empty, which means include everything and exclude nothing. An include list that resolves to no document in the selected generation is an error, never a silently unfiltered search; unresolved IDs are disclosed under `filters`; and a reviewed exclusion always wins over `source_ids`.
 - Keep review state hand-editable. `source-metadata.json` and `source-exclusions.json` are schema-versioned plain JSON that a person may edit directly, so the read path must keep honouring a hand edit and must reject an unknown field name, a wrong value type, or a non-normalized source path with a message naming the problem, never by ignoring it. `tests/test_review_state_edits.py` pins both halves.
 - Reviewed metadata carries three independent filter layers, all authoritative at read time: `project` records which project a source was gathered for, `categories` the branch or branches it belongs to, and `keywords` the terms that identify it or that it leans on. The project and category layers match any-of (`projects_any`, `categories_any`) and the keyword layer matches all of its terms. Filtering resolves the current reviewed overlay to document IDs at query time and must never bake metadata into an index. `status.categories` and `status.projects` are the inventories (value plus searchable source count) of the selected generation, with reviewed exclusions removed. Because one server serves one project, the project layer is normally a passthrough inside a server and earns its place when a corpus is bundled, imported, or shared.

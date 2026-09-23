@@ -42,8 +42,7 @@ TopK: TypeAlias = Annotated[
     int,
     Field(
         description=(
-            "Maximum total number of ranked evidence passages to return (1-50). "
-            "This remains a passage budget in both passage and reference views."
+            "Maximum number of ranked evidence passages to return (1-50)."
         ),
         ge=1,
         le=50,

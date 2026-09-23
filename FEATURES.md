@@ -186,7 +186,7 @@ Read this as two profiles rather than a scoreboard. It reflects that project's R
 | Document formats | Regular `.pdf` and `.epub` only | `.txt`, `.md`, `.json`, `.jsonl`, `.csv` |
 | Chunking | UltraRAG GPT-2 token chunking, configurable size and overlap | Character count (`CHUNK_SIZE`, default 500) |
 | Embeddings | FastEmbed CPU model pinned by revision, downloaded once, no service needed | An external embedding API (OpenAI, Ollama, Granite, or Nomic) over HTTP, Ollama by default |
-| Retrieval | BM25, dense, and hybrid, with metadata filters, optional reranking, reference-grouped results, and relevance gates that can abstain | Dense nearest-chunk retrieval, top `k` default 15 |
+| Retrieval | BM25, dense, and hybrid, with metadata filters, reranking, and relevance gates that can abstain | Dense nearest-chunk retrieval, top `k` default 15 |
 | Dense store | The generation's portable vectors scanned exactly, or an embedded index above a size threshold | Local SQLite vector store (LangChain `LibSQLVectorStore`) |
 | Metadata, citations, locators | Resolved title, authors, year, DOI with per-field provenance and warnings in the full-detail payload, plus original-file locators and a reviewed-metadata overlay | Not part of the documented feature set |
 | Index lifecycle | Immutable generations, validated before activation, resumable builds, reusable per-document and per-chunk work | Sequential indexing with progress reporting, plus per-document and whole-index removal |

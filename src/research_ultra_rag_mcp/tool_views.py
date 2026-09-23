@@ -97,9 +97,8 @@ def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return a search answer: query, generation, freshness, reranking, evidence.
 
     `stale` and `reranked` are always present; the other optional fields appear
-    only when they carry a value. `hits` are the passages; the grouped reference
-    view belongs to the retrieval measurement and the terminal verifier, and no
-    MCP tool asks for it.
+    only when they carry a value. `hits` is the flat passage ranking, which is
+    the only view a tool can ask for.
     """
 
     result: dict[str, Any] = _copy(payload, ("query", "generation_id", "stale"))

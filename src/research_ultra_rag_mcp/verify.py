@@ -28,15 +28,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument(
-        "--result-view",
-        choices=("passages", "references"),
-        default="passages",
-        help=(
-            "Return the flat passage ranking or group selected passages by source "
-            "reference (default: passages)."
-        ),
-    )
-    parser.add_argument(
         "--ingest",
         action="store_true",
         help="Create and select a new generation before searching.",
