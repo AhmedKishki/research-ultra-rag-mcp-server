@@ -223,24 +223,11 @@ def create_server(
         }
     )
     async def status() -> dict[str, Any]:
-        """Report the selected generation, readiness, and staleness.
+        """Report readiness, the selected generation, and whether it is current.
 
-        The answer names the current generation with its creation time and chunk
-        count, reports the source counts, and reports what a prune would consider
-        as the retained-generation count and total bytes. It inventories nothing:
-        the retained generations, the categories, and the projects come back from
-        --tool-detail full, and list_sources is the source inventory. Pruning is
-        not offered; the count and the bytes only show what it would consider.
-
-        When the generation is stale, changes counts the added and modified
-        sources, names the sources the generation has that the source directory
-        no longer does, and reports whether reviewed metadata or exclusions
-        moved. Available sources are counted rather than listed.
-
-        When this server was started with --ui-port, ui_url names the browser UI
-        it is serving on loopback, ui_ready says whether it finished starting,
-        and ui_error explains a port it could not claim. Without that
-        option all three are null, false, and null, and no UI is running.
+        Call this first, and before telling the user their corpus is up to date.
+        No generation means nothing can be searched yet; `stale` and
+        `generation_upgrade_required` say what moved and whether to ingest again.
         """
         payload = _present("status", await _tool_call(service().status))
         embedded = ui_holder.get("ui")
@@ -264,14 +251,11 @@ def create_server(
     async def ingest(
         force_recompute: ForceRecompute = False,
     ) -> dict[str, Any]:
-        """Create or refresh an immutable BM25 plus dense generation.
+        """Build or refresh the generation that search reads, reusing compatible work.
 
-        Markdown and all other formats are ignored. Compatible unchanged
-        documents, chunks, and vectors are reused unless force_recompute is true.
-        Chunking uses this server's fixed settings. Work is checkpointed between
-        bounded batches: if the result status is in_progress, call ingest again
-        until it returns ready or unchanged. Existing generations are retained,
-        and current changes only after both indexes pass verification.
+        Writes persistent state and may download a model, so get the user's
+        agreement first. A long build answers status=in_progress: call it again
+        until it returns ready or unchanged, then report what changed.
         """
 
         return _present(
@@ -296,33 +280,12 @@ def create_server(
         source_ids: SourceIdFilter = None,
         exclude_source_ids: ExcludeSourceIdFilter = None,
     ) -> dict[str, Any]:
-        """Search the current generation and return cleaned semantic evidence.
+        """Retrieve evidence passages for a research question.
 
-        Retrieval is hybrid with CPU reranking, which is the largest measured
-        quality gain, and every answer reports whether the reranker really ran;
-        when its model cannot be loaded the unranked candidate order is returned
-        and `rerank_fallback` explains why. A generation that predates dense
-        support must be re-ingested first, and `status` says so.
-
-        Optional filters narrow the corpus before ranking, so top_k is a budget
-        inside the selection: `projects_any` and `categories_any` keep a result
-        that carries at least one of the listed project tags or categories,
-        `keywords` requires every listed keyword, `source_ids` includes named
-        sources, and `exclude_source_ids` removes them. A source ID survives a
-        change to a file's bytes and changes when the file is renamed or moved;
-        the filename from list_sources works as well. Reviewed source exclusions
-        always win, an unresolved caller-supplied ID is reported as
-        `unresolved_source_ids` or `unresolved_exclude_source_ids`, and an
-        include list that resolves to nothing is an error rather than an
-        unfiltered result.
-
-        Results may be fewer than top_k when relevance gates reject weak
-        candidates. Every passage names its source by filename and its authors,
-        carries the cleaned text, and locates itself by page — or by section for
-        an EPUB. The reference is deliberately not citation-ready: the text is
-        not safe for direct quotation, so open the original at the returned
-        locator, and read a citation from the full-detail payload when you need
-        one.
+        Each passage gives its source filename, its authors, its position, and
+        cleaned text. Quote only from the original at that locator. Fewer
+        results than top_k, including none, means the corpus did not answer;
+        narrow the search only when the user asks for it.
         """
 
         return _present(
@@ -352,14 +315,10 @@ def create_server(
         }
     )
     async def list_sources() -> dict[str, Any]:
-        """List stable source IDs, inclusion state, and saved metadata overrides.
+        """List the project's sources: filenames, inclusion, and index state.
 
-        This is the corpus inventory and works before ingestion. It durably
-        registers each discovered source ID in the project catalog:
-        `discovered_sources` carries every live PDF/EPUB with its inclusion and
-        index state, `sources` carries the bibliography of what is searchable
-        now, `excluded_sources` carries each exclusion with its reason, and
-        `reviewed_metadata_sources` makes every saved override inspectable.
+        The corpus inventory, and the answer also works before any ingestion.
+        Use the filename it reports to name a source in set_source_inclusion.
         """
 
         return _present(
@@ -378,11 +337,10 @@ def create_server(
     async def get_passage(
         chunk_id: ChunkId,
     ) -> dict[str, Any]:
-        """Return cleaned semantic context near one retrieved passage.
+        """Return one passage with its immediate neighbors on each side.
 
-        The passage is returned with one neighboring chunk on each side. Context
-        preserves source and page/section provenance but is not safe for direct
-        quotation. Open the original PDF or EPUB for exact wording.
+        Use it to read around a hit. The text is still cleaned for retrieval, so
+        quote from the original at the passage's locator.
         """
         return _present(
             "get_passage",
@@ -402,14 +360,11 @@ def create_server(
         source_path: SourcePath,
         reason: ExclusionReason = None,
     ) -> dict[str, Any]:
-        """Include or exclude a PDF/EPUB from the project knowledge base.
+        """Exclude a source from retrieval, or restore one, without touching the file.
 
-        Use this after the agent or user has reviewed a source, including when a
-        duplicate representation was found. Exclusion immediately blocks current
-        search, source listing, and passage lookup, and future ingestion skips the
-        source. The source file is never deleted or modified. Inclusion is
-        reversible; re-ingest if the current generation does not contain it.
-        Identify the source by the filename that list_sources or search reports.
+        Act only after the agent or user has reviewed the source, and give an
+        exclusion its reason. The decision binds the current retrieval at once
+        and the next ingestion; re-ingest to drop an excluded source physically.
         """
 
         return _present(

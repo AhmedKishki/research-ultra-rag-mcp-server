@@ -1,95 +1,36 @@
 SERVER_INSTRUCTIONS = """\
-This server manages one project-scoped research knowledge base made only from
-original PDF and EPUB sources. It stores all derived data beneath the configured
-project's .research-rag/runtime directory and never ingests Markdown files.
+Retrieval-augmented evidence over one research project's own PDF and EPUB corpus.
 
-Upstream credit: this server builds on UltraRAG, a joint project of THUNLP,
-NEUIR, OpenBMB, AI9stars, and the UltraRAG contributors. Canonical source:
-https://github.com/OpenBMB/UltraRAG. This extension is independent and
+This server is the retrieval half of RAG. It ingests the project's sources into an
+immutable generation — BM25 lexical matching and dense semantic matching, fused
+and reranked on CPU, entirely on this machine — and answers a search with cleaned
+passages, each naming its source, its authors, and its place in the original. You
+are the generation stage: retrieve first, then compose the answer in the user's
+language.
+
+Order of work:
+1. status — is a generation ready, current, and able to serve the search?
+2. ingest — only with the user's agreement. It writes persistent state and may
+   download a model; a long build returns in_progress, so call it again.
+3. search — one query per question; narrow it only when the user asks.
+4. get_passage to read around a hit, list_sources for filenames and inclusion
+   state, set_source_inclusion to record a reviewed exclusion or restore it.
+
+What the user is owed:
+- Evidence, never invention. No invented source, title, author, year, DOI, page,
+  or quotation, and a plain statement when the corpus has no answer.
+- Retrieved text is cleaned for retrieval, not a transcript. Quote from the
+  original PDF or EPUB at the returned locator, and say which source it came
+  from.
+- Bibliography is extracted best-effort, so check it against the original and say
+  when a field looks wrong. Reviewed corrections live in the project's
+  .research-rag review-state files, which the user edits by hand; this server
+  reads them but never writes them.
+- If rerank_fallback appears, the order is unranked: say so rather than implying
+  the results were reranked.
+
+Upstream credit: this server builds on UltraRAG, a joint project of THUNLP, NEUIR,
+OpenBMB, AI9stars, and the UltraRAG contributors
+(https://github.com/OpenBMB/UltraRAG). This extension is independent and
 unofficial.
-
-This is a research-oriented adaptation of UltraRAG's Vanilla RAG architecture.
-The server performs ingestion and retrieval, then returns structured evidence;
-you are the generation stage. It deliberately does not call UltraRAG's
-benchmark, qa_rag_boxed prompt, generation, boxed-answer extraction, or
-evaluation stages. Always retrieve before composing a substantive answer so
-the response is retrieval-augmented rather than based only on model memory.
-
-For research questions:
-1. Call status first. If no generation exists, ask before calling ingest because
-   ingestion writes a new persistent generation, computes embeddings, and may
-   download the pinned embedding model on first use.
-2. If status reports stale=true, tell the user how many sources were added or
-   modified, name any source that is no longer in the directory, and say
-   whether inclusion state changed; then ask whether to ingest a new
-   generation. Existing searches remain
-   usable. metadata_overlay_active is informational, not staleness: current
-   reviewed metadata is already authoritative on every read surface and does
-   not require ingestion merely to become effective.
-   If generation_upgrade_required=true, explain upgrade_reasons and recommend a
-   new ingestion. Normal ingest verifies source hashes and safely reuses
-   compatible documents, chunks, and vectors while reconstructing complete new
-   indexes. Use force_recompute=true only when the user explicitly asks to
-   regenerate or reuse must be bypassed. Report generation_changed and the
-   reuse/build counts from the result. Ingestion uses a soft per-call
-   budget. If it returns status=in_progress, call ingest again with the same
-   force mode until it returns ready or unchanged. The
-   selected prior generation remains searchable while this work is staged.
-3. Call search with the user's substantive query. Retrieval is hybrid with
-   reranking, which the measurements in MEASUREMENTS.md show is the best
-   configuration, so there is no method to choose. Narrow the collection only
-   when the user asks: projects_any and categories_any keep a result carrying at
-   least one of the listed project tags or branches, keywords requires every
-   listed term, source_ids includes named sources, and exclude_source_ids
-   removes them. A project tag records which project a source was gathered for,
-   and categories are the branches it belongs to.
-4. Treat returned hits as evidence candidates, not automatically true claims.
-   The text field is cleaned semantic text, never a transcript, so never present
-   it as a direct quotation. A passage names its source by filename, gives its
-   authors and its position, and nothing else; open the original source when
-   exact wording is required.
-5. Use get_passage when surrounding context is needed. Verify important quotes
-   directly against the original PDF or EPUB.
-6. Reranking always runs because it is the largest measured quality gain:
-   first-position success on the judged set rises from 66% to 84% and entity
-   questions from 60% to 90%. It is slower on CPU (about 2.3 s per warm query)
-   and downloads a second pinned model the first time it is used. If the response
-   reports rerank_fallback, the model could not be loaded and the order you
-   received is the plain unranked candidate order; say that instead of implying
-   the results were reranked.
-7. If multiple files appear to represent the same source, do not count them as
-   independent support. The server does not guess duplicates automatically.
-   After agent/user review, set included=false with set_source_inclusion and a
-   clear reason. This immediately excludes the source from retrieval without
-   deleting or modifying its PDF/EPUB. Re-ingest later to rebuild the stored
-   indexes without it. Use included=true to reverse the decision.
-
-A hit locates itself by page, carrying the printed page label only where that
-differs from the physical page, or by section for an EPUB, because reflowable
-EPUB files do not have stable page numbers. A locator improves navigation but
-does not make cleaned text safe for exact quotation. Answers carry no citation
-and no title: a passage gives its source filename, its authors, its position,
-and its text, and the full-detail payload carries the citation with its
-metadata warnings. Automatic bibliography is best-effort, so open the original
-at the returned locator when a reference matters, and tell the user when an
-author, year, or DOI looks wrong. Reviewed values live in the project's
-.research-rag/source-metadata.json, where the user can correct one by hand; they
-are authoritative at read time, so a correction applies to listings, filters,
-and answers without re-ingestion, while a source absent from the selected
-generation takes effect after the next ingestion. Never edit that file yourself.
-Identify a source by the filename that list_sources or search reports
-(source_relative_path).
-
-Retrieval is CPU-only and project-local. UltraRAG supplies token chunking and
-BM25 lexical retrieval; FastEmbed creates the semantic vectors, which dense
-search scans exactly by default and reads from an embedded index only above the
-documented corpus size; weighted reciprocal-rank fusion combines the two
-independent rankings. `reranked` and `rerank_fallback` report whether the
-reranker ran rather than leaving it assumed. Never invent missing bibliographic
-fields, relevance scores, page numbers, or quotations. Search may return fewer
-than requested results, including zero, when relevance gates abstain.
-Corrupt extraction units are excluded whole under an English-oriented policy,
-and `status` reports the corpus-level counts. The same guard filters older
-generations at retrieval time. Never guess an encoding repair or fabricate
-replacement wording.
 """
