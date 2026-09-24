@@ -91,6 +91,7 @@ from .storage import (
     read_json,
     read_jsonl,
     write_handoff_jsonl,
+    write_metadata_overrides,
     write_source_catalog,
     write_source_exclusions,
 )
@@ -2289,6 +2290,81 @@ class ResearchService:
                 "source_file_changed": False,
                 "effective_immediately": effective_immediately,
                 "generation_rebuild_recommended": changed,
+                "message": message,
+            }
+
+    async def set_source_metadata(
+        self,
+        metadata: dict[str, Any],
+        *,
+        source_path: str | None = None,
+        source_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Save reviewed bibliographic metadata for one source.
+
+        The review is authoritative at read time, so a saved change applies to the
+        current generation without re-ingesting, and the same JSON file can be
+        edited by hand between calls. Only the named source's entry is replaced, so
+        every other entry survives, and an empty review removes the entry so
+        automatic metadata applies again.
+        """
+
+        async with self._operation():
+            try:
+                scan = scan_sources(self.config)
+                current = self._load_current_optional()
+                selected = self._resolve_source_selector(
+                    source_id=source_id,
+                    source_path=source_path,
+                    scan=scan,
+                    current=current,
+                )
+                relative = str(selected["source_relative_path"])
+                normalized = {
+                    key: value
+                    for key, value in normalize_metadata(dict(metadata)).items()
+                    if value not in ("", [], None)
+                }
+                overrides = load_metadata_overrides(self.config.metadata_path)
+                previous = overrides.get(relative)
+                if normalized:
+                    overrides[relative] = normalized
+                else:
+                    overrides.pop(relative, None)
+                changed = previous != (normalized or None)
+                if changed:
+                    write_metadata_overrides(self.config.metadata_path, overrides)
+                indexed = bool(selected["indexed_in_current_generation"])
+            except (StorageError, SourcePolicyError, ValueError) as exc:
+                raise ResearchError(str(exc)) from exc
+
+            if not changed:
+                message = "Reviewed metadata already matches what was saved."
+            elif not normalized:
+                message = (
+                    "Reviewed metadata cleared for this source; automatic "
+                    "metadata applies again."
+                )
+            elif indexed:
+                message = (
+                    "Reviewed metadata saved and applied to current retrieval. "
+                    "The next ingestion records it in a new generation."
+                )
+            else:
+                message = (
+                    "Reviewed metadata saved. Run ingest before it can appear in "
+                    "search because the source is absent from the current "
+                    "generation."
+                )
+            return {
+                "status": "changed" if changed else "unchanged",
+                "source_id": selected["source_id"],
+                "source_relative_path": relative,
+                "source_path": selected["source_path"],
+                "metadata": normalized,
+                "source_file_changed": False,
+                "effective_immediately": bool(normalized) and indexed,
+                "generation_rebuild_recommended": False,
                 "message": message,
             }
 

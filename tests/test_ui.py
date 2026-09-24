@@ -39,6 +39,7 @@ TOOL_PARAMETERS: dict[str, set[str]] = {
     "list_sources": set(),
     "get_passage": {"chunk_id"},
     "set_source_inclusion": {"included", "reason", "source_path"},
+    "set_source_metadata": {"source_path", "metadata"},
 }
 
 
@@ -160,6 +161,11 @@ class FakeResearchClient:
                 "included": arguments.get("included"),
                 "message": "Inclusion saved.",
             },
+            "set_source_metadata": {
+                "source_relative_path": arguments.get("source_path"),
+                "metadata": arguments.get("metadata"),
+                "message": "Reviewed metadata saved.",
+            },
             "ingest": {
                 "status": "ready",
                 "generation_id": "generation-2",
@@ -228,14 +234,14 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
 
     assert health.json()["project_root"] == str(project)
     assert profile.json()["application_name"] == "Research UltraRAG"
-    assert profile.json()["capabilities"]["metadata"] is False
+    assert profile.json()["capabilities"]["metadata"] is True
     assert profile.json()["capabilities"]["bundle_export"] is False
     assert profile.json()["capabilities"]["bundle_import"] is False
     assert profile.json()["capabilities"]["force_recompute"] is True
     assert profile.json()["capabilities"]["source_selection"] is True
     assert profile.json()["capabilities"]["category_partitions"] is True
     assert profile.json()["capabilities"]["project_metadata"] is True
-    assert profile.json()["capabilities"]["metadata_filters"] is False
+    assert profile.json()["capabilities"]["metadata_filters"] is True
     assert profile.json()["capabilities"]["retrieval_modes"] is False
     assert profile.json()["capabilities"]["reranking"] is False
     assert profile.json()["capabilities"]["chunk_settings"] is False
@@ -277,7 +283,7 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
             "/api/ingest",
             json={"force_recompute": True},
         )
-        retired_metadata = client.post(
+        saved_metadata = client.post(
             "/api/source-metadata",
             json={
                 "source_path": "evidence.pdf",
@@ -296,8 +302,13 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
     assert search.json()["hits"][0]["citation"].endswith("p. 1")
     assert inclusion.json()["included"] is False
     assert ingestion.json()["generation_id"] == "generation-2"
-    # The retired operations are not reachable through the UI either.
-    assert retired_metadata.status_code == 404
+    # Metadata is a capability again; the bundle operations stay retired.
+    assert saved_metadata.status_code == 200
+    assert saved_metadata.json()["message"] == "Reviewed metadata saved."
+    assert (
+        "set_source_metadata",
+        {"source_path": "evidence.pdf", "metadata": {"categories": ["theory"]}},
+    ) in fake.calls
     assert retired_export.status_code == 404
     assert retired_import.status_code == 404
     assert ("search", {"query": "research question", "top_k": 5}) in fake.calls

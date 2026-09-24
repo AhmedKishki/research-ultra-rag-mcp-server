@@ -96,6 +96,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "list_sources",
             "search",
             "set_source_inclusion",
+            "set_source_metadata",
             "status",
         }
         assert tools["set_source_inclusion"].annotations is not None

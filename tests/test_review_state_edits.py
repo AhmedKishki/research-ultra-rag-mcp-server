@@ -8,11 +8,12 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import write_pdf
+from conftest import write_pdf, write_reviewed_metadata
 from test_service import FakeDenseBackend, FakeUltraRAG
 
 from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.service import ResearchError, ResearchService
+from research_ultra_rag_mcp.storage import load_metadata_overrides
 
 
 def _write_metadata_file(project: Path, sources: dict[str, dict[str, object]]) -> Path:
@@ -123,5 +124,90 @@ def test_hand_written_metadata_rejects_a_bad_value_or_path(project: Path) -> Non
         )
         with pytest.raises(ResearchError, match="Unsupported metadata file"):
             await service.status()
+
+    asyncio.run(exercise())
+
+
+def test_a_service_write_applies_without_re_ingesting(project: Path) -> None:
+    """The review is read-time state, so saving it needs no rebuild."""
+
+    async def exercise() -> None:
+        service, relative = await _service(project)
+
+        saved = await service.set_source_metadata(
+            {"title": "Saved title", "authors": ["Saver"], "year": 2026},
+            source_path=relative,
+        )
+
+        assert saved["status"] == "changed"
+        assert saved["effective_immediately"] is True
+        assert saved["source_file_changed"] is False
+        assert saved["generation_rebuild_recommended"] is False
+        listed = await service.list_sources()
+        source = listed["sources"][0]
+        assert source["title"] == "Saved title"
+        assert source["authors"] == ["Saver"]
+        assert source["year"] == 2026
+
+    asyncio.run(exercise())
+
+
+def test_a_service_write_keeps_an_entry_edited_by_hand(project: Path) -> None:
+    """A hand edit to another source survives a service write: same file, no clobber."""
+
+    async def exercise() -> None:
+        service, relative = await _service(project)
+        write_pdf(
+            project / "sources" / "hand.pdf",
+            ["A second source, reviewed by hand."],
+        )
+        write_reviewed_metadata(
+            service.config,
+            "hand.pdf",
+            {"title": "Hand title", "keywords": ["by hand"]},
+        )
+
+        await service.set_source_metadata(
+            {"title": "Service title"}, source_path=relative
+        )
+
+        overrides = load_metadata_overrides(service.config.metadata_path)
+        assert overrides["hand.pdf"] == {"title": "Hand title", "keywords": ["by hand"]}
+        assert overrides[relative] == {"title": "Service title"}
+
+    asyncio.run(exercise())
+
+
+def test_an_empty_review_restores_automatic_metadata(project: Path) -> None:
+    """Clearing every field removes the entry, so extraction metadata applies again."""
+
+    async def exercise() -> None:
+        service, relative = await _service(project)
+        await service.set_source_metadata(
+            {"title": "Reviewed title"}, source_path=relative
+        )
+
+        cleared = await service.set_source_metadata(
+            {"title": "", "authors": [], "year": None}, source_path=relative
+        )
+
+        assert cleared["status"] == "changed"
+        assert cleared["metadata"] == {}
+        assert cleared["effective_immediately"] is False
+        assert load_metadata_overrides(service.config.metadata_path) == {}
+        listed = await service.list_sources()
+        assert listed["sources"][0]["title"] == "Test PDF"
+
+    asyncio.run(exercise())
+
+
+def test_an_unknown_metadata_field_is_refused(project: Path) -> None:
+    """The reviewed schema is closed, so a typo fails loudly instead of persisting."""
+
+    async def exercise() -> None:
+        service, relative = await _service(project)
+        with pytest.raises(ResearchError, match="Unsupported metadata fields"):
+            await service.set_source_metadata({"titel": "typo"}, source_path=relative)
+        assert load_metadata_overrides(service.config.metadata_path) == {}
 
     asyncio.run(exercise())

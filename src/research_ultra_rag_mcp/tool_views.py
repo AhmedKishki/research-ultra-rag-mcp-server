@@ -305,6 +305,21 @@ def lean_source_inclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def lean_source_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return what was saved for one source and whether it applies now."""
+
+    result = _copy(payload, ("status", "source_id", "source_relative_path"))
+    for key in (
+        "metadata",
+        "effective_immediately",
+        "generation_rebuild_recommended",
+    ):
+        if key in payload:
+            result[key] = payload[key]
+    result["message"] = payload.get("message")
+    return result
+
+
 _PROJECTORS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     "status": lean_status,
     "ingest": lean_ingest,
@@ -312,6 +327,7 @@ _PROJECTORS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
     "list_sources": lean_list_sources,
     "get_passage": lean_passage_context,
     "set_source_inclusion": lean_source_inclusion,
+    "set_source_metadata": lean_source_metadata,
 }
 
 

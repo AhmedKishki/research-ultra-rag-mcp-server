@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.36.0`
+- Version: `0.37.0`
 - `bm25s` is pinned to a fork (`AhmedKishki/bm25s` @ `20f6c02`) carrying a one-line fix for its non-ASCII stopword serialization; `settings` fails fast on a stopword list that cannot round-trip through it, so revert the pin only once upstream fixes it.
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
@@ -198,6 +198,7 @@ Each tool answers with the projection from `tool_views.py`; the bullets below na
 - `list_sources`: the corpus inventory, taking no parameters: inspect indexed documents and metadata, expose `discovered_sources` before ingestion, and idempotently register those stable IDs in the portable catalog so `known_sources` remains addressable after an original disappears. Its MCP read-only hint must remain false because this registration is a durable project-state write.
 - `get_passage`: retrieve neighboring chunks from the same document.
 - `set_source_inclusion`: immediately exclude or restore an agent/user-reviewed source without modifying the source file; rebuild later to align the indexes. It uses the same exact-one-selector rule.
+- `set_source_metadata`: save one source's reviewed metadata into the review-state JSON, rewriting only that entry so a hand edit to another entry survives. The file stays authoritative at read time, and the UI dialog is a client of this tool rather than a second writer.
 
 Reviewed metadata has no tool. `set_source_metadata`, `export_bundle`, and `import_bundle` were retired: the server exposes retrieval operations, and metadata review happens by editing the project's `.research-rag/source-metadata.json` itself.
 

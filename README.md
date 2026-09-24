@@ -217,7 +217,7 @@ A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.exampl
 
 A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `chunk_id`, `source_relative_path` (the filename), `authors`, `locator`, and `text`. The locator is the position alone: a page, with the printed page label only where that label differs from the physical page, or a section for an EPUB. A passage is deliberately not citation-ready and repeats nothing: it carries no title and no citation, because the text is cleaned for retrieval rather than quotation, and `--tool-detail full` is what returns the citation, the resolved title, the year and DOI, the per-field provenance, the quote-safety flag, the advisory script note, and the ranking accounting.
 
-`status` returns readiness, `stale`, the selected generation's `generation_id`, `created_at` and `chunk_count`, the source counts, `hybrid_ready` when the generation cannot serve the hybrid search the tool always runs, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `metadata_pending_source_count`, `ingestion_progress`, what a prune would consider as `retained_generation_count` and `retained_generation_bytes`, and, when the generation is stale, `changes` — counts of added and modified sources, `removed_sources` naming the files that disappeared, and the review and exclusion flags. It inventories nothing: the retained-generation list, the category inventory, the project inventory, and the generation's own method list come back from `--tool-detail full`. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. `set_source_inclusion` returns the decision, its reason, `effective_immediately`, and whether the next ingestion should rebuild without the source.
+`status` returns readiness, `stale`, the selected generation's `generation_id`, `created_at` and `chunk_count`, the source counts, `hybrid_ready` when the generation cannot serve the hybrid search the tool always runs, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `metadata_pending_source_count`, `ingestion_progress`, what a prune would consider as `retained_generation_count` and `retained_generation_bytes`, and, when the generation is stale, `changes` — counts of added and modified sources, `removed_sources` naming the files that disappeared, and the review and exclusion flags. It inventories nothing: the retained-generation list, the category inventory, the project inventory, and the generation's own method list come back from `--tool-detail full`. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. `set_source_inclusion` returns the decision, its reason, `effective_immediately`, and whether the next ingestion should rebuild without the source. `set_source_metadata` returns the normalized metadata that was saved, whether it applies now, and a message.
 
 A field that is empty, null, or false is omitted, so an absent field means there is nothing to report. `stale` (where `null` means the freshness check was skipped) and `reranked` are always present.
 
@@ -377,7 +377,7 @@ uv run research-ultra-rag-ui \
   --project-root /absolute/path/to/my-research-project
 ```
 
-Open [http://127.0.0.1:5051](http://127.0.0.1:5051) if a browser does not open by itself. The UI binds to loopback only and calls the same six public MCP tools against the same project state as an agent. Its header shows the project name and, underneath it, the versions of this server and of the pinned browser-UI package, so it is visible which software the page is running.
+Open [http://127.0.0.1:5051](http://127.0.0.1:5051) if a browser does not open by itself. The UI binds to loopback only and calls the same seven public MCP tools against the same project state as an agent. Its header shows the project name and, underneath it, the versions of this server and of the pinned browser-UI package, so it is visible which software the page is running.
 
 What you can do in it:
 
@@ -525,7 +525,7 @@ Mistakes fail loudly rather than doing nothing quietly, so you can trust a hand 
 - a source path that is absolute, contains `..` or a backslash, or is otherwise not normalized is rejected;
 - any `schema_version` other than 1 is rejected.
 
-Editing that file is the only route for metadata: the tool surface has no metadata writer, and the browser UI has no metadata dialog. `--tool-detail full` reports `metadata_provenance` per field in `list_sources`, so you can see which values are reviewed and which are still automatic.
+That file is plain JSON and stays authoritative: edit it by hand at any time, or save the same fields from the browser UI's metadata dialog or with `set_source_metadata`, which rewrites only the named source's entry and preserves every other entry in the file. `--tool-detail full` reports `metadata_provenance` per field in `list_sources`, so you can see which values are reviewed and which are still automatic.
 
 ### Put derived state on fast local storage
 
@@ -572,6 +572,7 @@ Six tools are exposed. All are project-scoped and none of them deletes a source 
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Takes no parameters: it is the corpus inventory. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its immediate neighbors and provenance. |
 | `set_source_inclusion` | Excludes or restores one source, named by its filename. Reversible; never deletes the file. |
+| `set_source_metadata` | Saves reviewed bibliographic metadata for one source — title, authors, year, DOI, categories, keywords, project — in the review-state file. An empty review clears the entry so automatic metadata applies again. Applies at the next read and never changes the source file. |
 
 Every one of them answers as described under [What a tool answer contains](#what-a-tool-answer-contains).
 

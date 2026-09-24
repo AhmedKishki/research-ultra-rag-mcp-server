@@ -380,6 +380,36 @@ def create_server(
             ),
         )
 
+    @app.tool(
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        }
+    )
+    async def set_source_metadata(
+        source_path: SourcePath,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Save reviewed bibliographic metadata for one source.
+
+        Fields: title, authors, year, doi, categories, keywords, and project. An
+        empty review clears the entry so automatic metadata applies again. The
+        review is authoritative at read time, so it binds current retrieval
+        without re-ingesting, and the same JSON file may be edited by hand.
+        """
+
+        return _present(
+            "set_source_metadata",
+            await _tool_call(
+                lambda: service().set_source_metadata(
+                    metadata=metadata,
+                    source_path=source_path,
+                )
+            ),
+        )
+
     return app
 
 

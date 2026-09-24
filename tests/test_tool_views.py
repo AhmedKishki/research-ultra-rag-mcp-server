@@ -399,7 +399,7 @@ def test_ingest_in_progress_keeps_resume_state() -> None:
 
 
 def test_retired_tools_have_no_projection() -> None:
-    for operation in ("set_source_metadata", "export_bundle", "import_bundle"):
+    for operation in ("export_bundle", "import_bundle"):
         with pytest.raises(ResearchError):
             present_tool_response(operation, {}, detail=LEAN_TOOL_DETAIL)
 
@@ -814,3 +814,33 @@ def _every_tool_payload() -> dict[str, dict[str, object]]:
             "message": "Source exclusion saved and enforced for current retrieval.",
         },
     }
+
+
+def test_metadata_response_is_lean() -> None:
+    metadata = present_tool_response(
+        "set_source_metadata",
+        {
+            "status": "changed",
+            "source_id": "src_one",
+            "source_relative_path": "evidence.pdf",
+            "source_path": "sources/evidence.pdf",
+            "metadata": {"title": "Reviewed", "keywords": ["theory"]},
+            "source_file_changed": False,
+            "effective_immediately": True,
+            "generation_rebuild_recommended": False,
+            "message": "Reviewed metadata saved and applied to current retrieval.",
+        },
+        detail=LEAN_TOOL_DETAIL,
+    )
+    assert set(metadata) == {
+        "status",
+        "source_id",
+        "source_relative_path",
+        "metadata",
+        "effective_immediately",
+        "generation_rebuild_recommended",
+        "message",
+    }
+    assert metadata["metadata"] == {"title": "Reviewed", "keywords": ["theory"]}
+    assert metadata["message"].startswith("Reviewed metadata saved")
+    assert "source_file_changed" not in metadata
