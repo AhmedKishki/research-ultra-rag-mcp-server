@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.30.0`
+- Version: `0.31.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -60,6 +60,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Credit THUNLP, NEUIR, OpenBMB, AI9stars, and the upstream contributors using the wording supported by UltraRAG's own README. Do not imply endorsement.
 - Keep that credit in the project's own documents, never in the agent-facing surface: `instructions.py` and the tool descriptions say what the server does and what the caller owes the user, and carry no upstream credit, endorsement, or licensing text.
 - One server process serves exactly one configured project root.
+- Every project's browser UI must be reachable and identifiable on its own: the generated launcher claims the first free loopback port at or above the one it was generated with and records the port it chose, never a fixed port two projects can collide on, and each UI names the project it serves rather than a generic label.
 - MCP tools must not accept arbitrary filesystem output paths.
 - Ingestion selects only regular PDF and EPUB files beneath the configured sources directory.
 - Reject source symlinks and path traversal.

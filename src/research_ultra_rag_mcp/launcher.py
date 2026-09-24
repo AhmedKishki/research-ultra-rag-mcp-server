@@ -56,8 +56,13 @@ PORT=@PORT@
 UI_COMMAND="@UI_COMMAND@"
 
 PID_FILE="$STATE_ROOT/open-ui.pid"
+PORT_FILE="$STATE_ROOT/open-ui.port"
 LOG_FILE="$STATE_ROOT/logs/open-ui.log"
+# The interpreter beside the UI command speaks Python; the port scan needs it.
+PYTHON="$(dirname "$UI_COMMAND")/python3"
+[ -x "$PYTHON" ] || PYTHON=python3
 OPEN_BROWSER=0
+PORT_EXPLICIT=0
 
 usage() {
   cat <<'TEXT'
@@ -68,6 +73,9 @@ Usage: open-ui.sh [--open] [--stop] [--port NUMBER] [--help]
   --stop         stop it, and the private stdio server it started
   --port NUMBER  start it on a different port
   --help         show this text
+
+Without --port the launcher starts on the first free port at or above the one it
+was generated with, so two projects never serve their UI from the same port.
 TEXT
 }
 
@@ -77,6 +85,25 @@ running_pid() {
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   printf '%s' "$pid"
+}
+
+serving_port() {
+  cat "$PORT_FILE" 2>/dev/null || printf '%s' "$PORT"
+}
+
+free_port() {
+  # The first free port at or above the requested one. A second project's
+  # launcher must never take a port another project's UI is already serving on,
+  # because opening that URL would show the wrong project.
+  "$PYTHON" -c "import socket, sys
+for candidate in range(int(sys.argv[1]), int(sys.argv[1]) + 100):
+    try:
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', candidate))
+        print(candidate)
+        break
+    except OSError:
+        continue" "$1" 2>/dev/null || printf '%s' "$1"
 }
 
 open_url() {
@@ -90,9 +117,13 @@ open_url() {
 start() {
   if pid=$(running_pid); then
     echo "The UI is already running for this project (pid $pid)."
-    echo "URL: http://127.0.0.1:$PORT"
+    echo "URL: http://127.0.0.1:$(serving_port)"
   else
+    if [ "$PORT_EXPLICIT" = "0" ]; then
+      PORT="$(free_port "$PORT")"
+    fi
     mkdir -p "$STATE_ROOT/logs"
+    printf '%s' "$PORT" > "$PORT_FILE"
     if [ -n "$RUNTIME_ROOT" ]; then
       if command -v setsid >/dev/null 2>&1; then
         setsid "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
@@ -154,6 +185,7 @@ while [ "$#" -gt 0 ]; do
     --port)
       [ "$#" -ge 2 ] || { echo "--port needs a number" >&2; exit 2; }
       PORT="$2"
+      PORT_EXPLICIT=1
       shift
       ;;
     -h|--help) usage; exit 0 ;;

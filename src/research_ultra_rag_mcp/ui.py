@@ -9,6 +9,7 @@ import os
 import socket
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import uvicorn
@@ -209,13 +210,21 @@ def create_ui_app(
     research_client: ResearchToolClient | None = None,
 ) -> Starlette:
     """Create the shared UI with the research MCP adapter."""
+
+    # More than one project can serve a UI at the same time, so each one names
+    # the project it serves instead of showing a generic label: a browser window
+    # must be able to say which knowledge base it belongs to.
+    profile = replace(
+        RESEARCH_UI_PROFILE,
+        project_fallback_name=config.project_name,
+    )
     if research_client is not None:
         return create_shared_ui_app(
-            profile=RESEARCH_UI_PROFILE,
+            profile=profile,
             adapter=ResearchUIAdapter(config, research_client),
         )
     return create_shared_ui_app(
-        profile=RESEARCH_UI_PROFILE,
+        profile=profile,
         adapter_factory=_adapter_factory(config),
     )
 
