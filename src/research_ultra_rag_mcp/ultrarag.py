@@ -120,7 +120,11 @@ class VanillaUltraRAG:
         await self.initialize_bm25(chunks_path, index_path, language=language)
         await self.call("retriever_bm25_index", {"overwrite": False})
         # UltraRAG 0.3.0.2 must reload a newly built index to attach passages.
-        await self.initialize_bm25(chunks_path, index_path)
+        # The reload names the same stopword language as the build: load_stopwords
+        # corrects the list from the saved file, but the language is what the
+        # retriever records, so omitting it records a corpus as English when it
+        # was built as German.
+        await self.initialize_bm25(chunks_path, index_path, language=language)
 
     async def search_bm25(self, query: str, top_k: int) -> list[str]:
         payload = await self.call(

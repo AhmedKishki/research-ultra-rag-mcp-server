@@ -102,7 +102,16 @@ class FakeUltraRAG:
         self.passages = [item["contents"] for item in read_jsonl(chunks_path)]
         self.initialized = (chunks_path, index_path)
 
-    async def initialize_bm25(self, chunks_path: Path, index_path: Path) -> None:
+    async def initialize_bm25(
+        self,
+        chunks_path: Path,
+        index_path: Path,
+        *,
+        language: str = "en",
+    ) -> None:
+        # The language is recorded so a test can prove the setting reaches the
+        # gateway rather than being dropped in transit, on the load path too.
+        self.bm25_language = language
         index_file = index_path / "fake-index.json"
         if (
             not index_file.is_file()

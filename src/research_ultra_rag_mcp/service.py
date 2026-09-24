@@ -1588,6 +1588,7 @@ class ResearchService:
             await self.ultrarag.initialize_bm25(
                 root / str(manifest["files"]["chunks"]),
                 root / str(manifest["files"]["bm25_index"]),
+                language=self.config.settings.bm25_stopwords_language,
             )
             chunks_path = root / str(manifest["files"]["chunks"])
             probe = next(iter_jsonl(chunks_path))["contents"]
@@ -3905,6 +3906,7 @@ class ResearchService:
         await self.ultrarag.initialize_bm25(
             generation_root / manifest["files"]["chunks"],
             generation_root / manifest["files"]["bm25_index"],
+            language=self.config.settings.bm25_stopwords_language,
         )
         self._loaded_generation = generation_id
 
