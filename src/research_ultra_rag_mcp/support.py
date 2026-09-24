@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 import re
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,6 +227,31 @@ def _content_tokens(value: str) -> set[str]:
         for match in _WORD.finditer(value.casefold())
         if (token := match.group(0)) not in _STOPWORDS
     }
+
+
+def _pseudo_relevance_terms(
+    *,
+    query: str,
+    texts: list[str],
+    maximum_terms: int,
+) -> list[str]:
+    """Mine expansion terms from the first-pass lexical leaders.
+
+    Document frequency rather than raw count, so one long passage cannot decide
+    the expansion, and ordered by frequency then term, so the same query expands
+    the same way on every run — a feedback rule that is not reproducible cannot
+    be measured. Terms the query already contains are skipped: they would change
+    nothing and would hide whether the expansion did anything at all.
+    """
+
+    if maximum_terms <= 0:
+        return []
+    query_tokens = _content_tokens(query)
+    frequency: Counter[str] = Counter()
+    for text in texts:
+        frequency.update(_content_tokens(text) - query_tokens)
+    ordered = sorted(frequency.items(), key=lambda item: (-item[1], item[0]))
+    return [term for term, _count in ordered[:maximum_terms]]
 
 
 def _normalized_filter(values: list[str] | None) -> set[str]:

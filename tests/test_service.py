@@ -3873,3 +3873,59 @@ def test_a_ranking_change_reuses_chunks_and_vectors(project: Path) -> None:
         assert second["created_vector_count"] == 0
 
     asyncio.run(exercise())
+
+
+def test_pseudo_relevance_feedback_expands_the_lexical_query(project: Path) -> None:
+    """Off by default; on, it reports the terms it took from the leaders."""
+
+    async def exercise() -> None:
+        source = project / "sources" / "article.pdf"
+        write_pdf(
+            source,
+            [
+                (
+                    "Commodity fetishism describes how relations between people "
+                    "appear as relations between things, so that value seems to "
+                    "belong to the object rather than to the labour which produced "
+                    "it, and the analysis begins from that appearance."
+                ),
+                (
+                    "The mysterious character of the commodity arises from the "
+                    "form of value rather than from its use, and the inversion is "
+                    "practical rather than merely mistaken, which is why criticism "
+                    "starts at the surface it describes."
+                ),
+            ],
+            title="Feedback Article",
+        )
+        base = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            base, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=5)
+
+        off = await service.search(
+            "commodity fetishism", top_k=3, retrieval_method="bm25"
+        )
+        assert off["prf_requested"] is False
+        assert off["prf_terms"] == []
+
+        config = resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            settings_overrides=["retrieval.prf=true", "retrieval.prf_terms=3"],
+        )
+        scoped = ResearchService(  # type: ignore[arg-type]
+            config, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        on = await scoped.search(
+            "commodity fetishism", top_k=3, retrieval_method="bm25"
+        )
+
+        assert on["prf_requested"] is True
+        assert 1 <= len(on["prf_terms"]) <= 3
+        # Terms the query already contains are never re-added: they would change
+        # nothing and would hide whether the expansion did anything.
+        assert not {"commodity", "fetishism"} & set(on["prf_terms"])
+
+    asyncio.run(exercise())

@@ -416,6 +416,39 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_RETRIEVAL_RERANK_WINDOW_FLOOR",
     ),
     Setting(
+        key="retrieval.prf",
+        field="prf",
+        kind=bool,
+        layer="identity",
+        doc=(
+            "Pseudo-relevance feedback: mine terms from the lexical leaders and "
+            "search again with them, so a question that does not use the "
+            "author's words still reaches the passages that do. Off by default "
+            "until it is measured."
+        ),
+        env="RESEARCH_ULTRARAG_RETRIEVAL_PRF",
+    ),
+    Setting(
+        key="retrieval.prf_documents",
+        field="prf_documents",
+        kind=int,
+        layer="identity",
+        doc="How many of the lexical leaders the feedback terms are mined from.",
+        minimum=1,
+        maximum=100,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_PRF_DOCUMENTS",
+    ),
+    Setting(
+        key="retrieval.prf_terms",
+        field="prf_terms",
+        kind=int,
+        layer="identity",
+        doc="Most feedback terms added to one query.",
+        minimum=1,
+        maximum=100,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_PRF_TERMS",
+    ),
+    Setting(
         key="retrieval.maximum_withheld_examples",
         field="maximum_withheld_examples",
         kind=int,
@@ -700,6 +733,9 @@ class EffectiveSettings:
     rerank_max_candidates: int
     rerank_window_multiple: int
     rerank_window_floor: int
+    prf: bool
+    prf_documents: int
+    prf_terms: int
     maximum_withheld_examples: int
     chunk_size: int
     chunk_overlap: int

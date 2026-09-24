@@ -118,6 +118,7 @@ from .support import (  # noqa: F401
     _metadata_snapshot_changed,
     _normalized_filter,
     _pdf_batch_count,
+    _pseudo_relevance_terms,
     _public_document,
     _public_passage,
     _record_embedding_token_counts,
@@ -3726,6 +3727,44 @@ class ResearchService:
             else:
                 dense_hits = await search_dense()
 
+            # Pseudo-relevance feedback: the lexical leaders of the first pass
+            # name the vocabulary the author actually used, so a question asked
+            # in other words can still reach those passages. Terms are mined from
+            # the first-pass ranking only, and the second pass replaces the
+            # lexical ranking that the fusion and the payload see.
+            prf_terms: list[str] = []
+            if use_bm25 and bm25_ranking and self.config.settings.prf:
+                prf_terms = _pseudo_relevance_terms(
+                    query=query,
+                    texts=[
+                        _chunk_text(chunks_by_id[chunk_id])
+                        for chunk_id in bm25_ranking[
+                            : self.config.settings.prf_documents
+                        ]
+                        if chunk_id in chunks_by_id
+                    ],
+                    maximum_terms=self.config.settings.prf_terms,
+                )
+                if prf_terms:
+                    (
+                        bm25_ranking,
+                        bm25_rejected,
+                        bm25_chunks,
+                    ) = await self._bm25_ranking(
+                        f"{query} {' '.join(prf_terms)}",
+                        lookup,
+                        total_chunk_count,
+                        documents_by_id,
+                        candidate_depth,
+                        categories_any=category_any_filter,
+                        keywords=keyword_filter,
+                        projects_any=project_any_filter,
+                        document_filter=document_filter,
+                        excluded_document_ids=excluded_document_ids,
+                        withheld=withheld,
+                    )
+                    chunks_by_id.update(bm25_chunks)
+
             dense_chunks = await asyncio.to_thread(
                 lookup.chunks_by_ids,
                 [hit.chunk_id for hit in dense_hits],
@@ -3947,6 +3986,8 @@ class ResearchService:
                 "rerank_requested": rerank,
                 "rerank_fallback": rerank_fallback,
                 "rerank_window": rerank_count,
+                "prf_requested": self.config.settings.prf,
+                "prf_terms": prf_terms,
                 "candidate_depth": candidate_depth,
                 "candidate_count": candidate_count,
                 "candidate_distinct_reference_count": (

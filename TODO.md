@@ -36,7 +36,8 @@ Two facts rule out a lever that looks attractive. No paraphrase miss is withheld
 
 ## Tier 3 — code, no rebuild
 
-- **Pseudo-relevance feedback on the lexical side.** Expand the BM25 query with terms taken from an initial top-ranked set. No model, no credential, roughly +0.1 s, and measured against the judged set like everything else.
+- **Weight pseudo-relevance terms by corpus rarity.** `retrieval.prf` is implemented and measured (see `MEASUREMENTS.md`): it changed no ranking decision, because selection ranks by leader frequency and the stopword filter is bm25s's 33-word English list, so terms like *about*, *between* and *have* are mined. Rank candidates by inverse document frequency over the generation instead — a document-frequency table can be built once per loaded generation and cached, which keeps the cost off the query path — then re-measure before deciding whether the default moves.
+- **A `--set` override does not reach the server a tool spawns.** `research-ultra-rag-verify --set retrieval.rrf_k=30 --ingest` reports `unchanged`: `--set` overrides the CLI process's own configuration, while ingest and search run in the spawned server, which resolves its own settings from the project, the environment and the defaults. An experiment driven that way silently measures the defaults. Environment variables (`RESEARCH_ULTRARAG_*`) propagate, which is what the measurements above used. Either forward the overrides into the child environment or say plainly in the settings documentation which channel each entry point honours.
 - **Split the resumable ingestion loop into per-phase handlers** and enable `C901` with a documented threshold. The `ingest` method in `service.py` is roughly 1,100 lines, which makes reviewing a change to it risky; no complexity check is enabled today.
 
 ## Tier 4 — the evidence base the tiers above depend on

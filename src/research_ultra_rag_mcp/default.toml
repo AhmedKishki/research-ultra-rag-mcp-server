@@ -66,6 +66,12 @@ rerank_max_candidates = 50
 # rerank_max_candidates and the fused candidate count. (identity)
 rerank_window_multiple = 2
 rerank_window_floor = 10
+# Pseudo-relevance feedback: search once, mine terms from the top lexical
+# results, search again with them. Off by default until measured. (identity)
+prf = false
+# How many leaders the terms are mined from, and how many terms are added.
+prf_documents = 5
+prf_terms = 8
 # Withheld candidates quoted per gate reason in a search answer. (identity)
 maximum_withheld_examples = 5
 
