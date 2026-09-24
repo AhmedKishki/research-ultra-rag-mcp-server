@@ -825,6 +825,7 @@ class ResearchService:
                     offline=config.offline,
                     embedding_threads=config.embedding_threads,
                     reranker_model=config.reranker_model,
+                    embedding_model=config.settings.embedding_model,
                     embedding_inference_batch_size=(
                         config.settings.embedding_inference_batch_size
                     ),
@@ -834,6 +835,7 @@ class ResearchService:
                     offline=config.offline,
                     embedding_threads=config.embedding_threads,
                     reranker_model=config.reranker_model,
+                    embedding_model=config.settings.embedding_model,
                     embedding_inference_batch_size=(
                         config.settings.embedding_inference_batch_size
                     ),

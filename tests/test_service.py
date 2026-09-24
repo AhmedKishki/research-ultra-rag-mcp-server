@@ -3680,3 +3680,29 @@ async def _assert_the_bm25_language_reaches_the_gateway(project: Path) -> None:
 
 def test_the_bm25_language_reaches_the_gateway(project: Path) -> None:
     asyncio.run(_assert_the_bm25_language_reaches_the_gateway(project))
+
+
+def test_dense_backends_embed_with_the_configured_model(tmp_path: Path) -> None:
+    """A non-default embedding model has to reach the backends, not just the record.
+
+    A generation records the dimension of the model it was built with, so a
+    backend still embedding with the shipped default fills an index of the wrong
+    width: the German model returns 768 values where the default returns 384, and
+    the width check is all that stands between that and a mismatched index.
+    """
+    project = tmp_path / "project"
+    overlay = project / ".research-rag"
+    overlay.mkdir(parents=True)
+    (overlay / "config.toml").write_text(
+        '[language]\ncorpus = "de"\n\n[dense]\n'
+        'embedding_model = "jinaai/jina-embeddings-v2-base-de"\n',
+        encoding="utf-8",
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    assert config.settings.embedding_dimension == 768
+
+    service = ResearchService(config, FakeUltraRAG())  # type: ignore[arg-type]
+    assert service._dense_backends
+    for name, backend in service._dense_backends.items():
+        dimension = backend.embedding_facts.dimension  # type: ignore[attr-defined]
+        assert dimension == config.settings.embedding_dimension, name
