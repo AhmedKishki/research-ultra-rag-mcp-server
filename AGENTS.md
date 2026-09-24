@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.27.0`
+- Version: `0.28.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
