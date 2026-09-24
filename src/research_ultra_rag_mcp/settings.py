@@ -186,6 +186,40 @@ def normalize_corpus_languages(value: Any) -> tuple[str, ...]:
     return tuple(languages)
 
 
+def _bm25_stopword_roundtrip_error(language: str) -> str | None:
+    """Return why a stopword list cannot survive bm25s's own save/load, if any.
+
+    bm25s 0.3.10 wrote its stopwords file with a non-JSON escape for non-ASCII
+    characters, so a German corpus failed in the BM25 index phase after
+    extraction and embedding had already finished. This check exercises the
+    *installed* bm25s's serializer, so it turns that failure into a settings-time
+    error and is self-healing once a fixed bm25s is pinned.
+    """
+
+    try:
+        from bm25s.tokenization import _infer_stopwords
+        from bm25s.utils import json_functions
+    except ImportError:
+        return None  # bm25s is not installed here; the build would fail anyway.
+
+    try:
+        stopwords = _infer_stopwords(language)
+    except ValueError:
+        return None  # already rejected as an unknown language earlier.
+
+    try:
+        json_functions.loads(json_functions.dumps(list(stopwords)))
+    except Exception as exc:  # noqa: BLE001 - any parse error is the same failure.
+        return (
+            f"language.bm25_stopwords {language!r} has a stopword list the "
+            f"installed bm25s cannot re-read after writing it ({exc}). This "
+            "would fail the BM25 index after extraction and embedding. Pin a "
+            "fixed bm25s, or choose a language whose list round-trips (English "
+            "does)."
+        )
+    return None
+
+
 # The registry, in the order `--print-config` prints it. Every value in
 # `default.toml` is validated against this table, and a `--set` or environment
 # name that is not here is refused.
@@ -675,6 +709,10 @@ class EffectiveSettings:
                 f"{stopwords!r}. Supported: "
                 + ", ".join(sorted(BM25_STOPWORD_LANGUAGES))
             )
+
+        roundtrip_error = _bm25_stopword_roundtrip_error(stopwords or languages[0])
+        if roundtrip_error:
+            raise SettingsError(roundtrip_error)
 
         threads = values["embedding_threads"]
         cache_root = values["model_cache_root"]

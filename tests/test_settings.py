@@ -304,3 +304,22 @@ def test_the_bm25_language_is_what_the_policy_records(tmp_path: Path) -> None:
         retrieval_policy_fingerprint(english)
     )
     assert retrieval_policy_fingerprint(german) != retrieval_policy_fingerprint(english)
+
+
+def test_the_stopword_language_roundtrips_through_the_installed_bm25s(
+    tmp_path: Path,
+) -> None:
+    """The pinned bm25s must re-read a German list it writes itself."""
+    german, _ = resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})
+    assert german.bm25_stopwords_language == "de"
+
+
+def test_a_stopword_list_that_cannot_roundtrip_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken serializer must fail at settings time, not after a long build."""
+    from bm25s.utils import json_functions
+
+    monkeypatch.setattr(json_functions, "dumps", lambda d, **kw: "not json")
+    with pytest.raises(SettingsError, match="cannot re-read"):
+        resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})

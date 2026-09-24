@@ -203,13 +203,9 @@ wheels = [
 [[package]]
 name = "bm25s"
 version = "0.3.10"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/AhmedKishki/bm25s.git?rev=20f6c02612b8114dca4662131ba09d5102c53308#20f6c02612b8114dca4662131ba09d5102c53308" }
 dependencies = [
     { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/34/ab/8fac50e2095d26dd9ccaf3c35bddb96ff45a8cca9fc3ac0e98209971828f/bm25s-0.3.10.tar.gz", hash = "sha256:fafdfc45e6c064fc117b08de8f59b47564a3879d3ca593daa0b2a40b2c05da43", size = 80762, upload-time = "2026-07-22T20:54:28.824Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/06/7ec2175c185661a976589fffde16eb7c36d69eaa43eed26fe5ad0ce3cd25/bm25s-0.3.10-py3-none-any.whl", hash = "sha256:d271d4e1ad7ffdacb224f41bc54aba55159438ecf06439ffe929f088efa96858", size = 74687, upload-time = "2026-07-22T20:54:27.447Z" },
 ]
 
 [[package]]
@@ -2144,10 +2140,11 @@ wheels = [
 
 [[package]]
 name = "research-ultra-rag-mcp"
-version = "0.34.0"
+version = "0.35.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "bm25s" },
     { name = "ebooklib" },
     { name = "fastembed" },
     { name = "fastmcp" },
@@ -2171,6 +2168,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.13,<5" },
+    { name = "bm25s", git = "https://github.com/AhmedKishki/bm25s.git?rev=20f6c02612b8114dca4662131ba09d5102c53308" },
     { name = "ebooklib", specifier = ">=0.20,<1" },
     { name = "fastembed", specifier = "==0.8.0" },
     { name = "fastmcp", specifier = "==3.4.0" },

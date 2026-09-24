@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-ultra-rag-mcp"
-version = "0.34.0"
+version = "0.35.0"
 description = "Retrieval-augmented evidence over a research project's own PDF and EPUB corpus, built on vanilla UltraRAG"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.11,<3.13"
 dependencies = [
+    "bm25s @ git+https://github.com/AhmedKishki/bm25s.git@20f6c02612b8114dca4662131ba09d5102c53308",
     "beautifulsoup4>=4.13,<5",
     "ebooklib>=0.20,<1",
     "fastembed==0.8.0",
