@@ -74,6 +74,8 @@ The settings that are commonly set, and what they do:
 | `runtime.model_cache_root` or `--model-cache-root` | Move the shared model cache elsewhere. |
 | `dense.backend auto\|exact\|qdrant` or `--dense-backend` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for very large ones. |
 | `dense.reranker_model NAME` or `--reranker-model` | Choose the CPU cross-encoder that reranks every search. Six are supported, each pinned to a revision, and an unknown name is refused rather than resolved to whatever the model hub serves that day. See "How a search works". |
+| `language.corpus` | The language of the corpus as an ISO 639-1 code (`en`, `de`, ...). It selects the BM25 stopword list and it decides whether the embedding model covers the text; a mismatch is reported by `status` rather than embedded silently. An identity setting: it is part of the ranking policy recorded with a generation. |
+| `dense.embedding_model NAME` | The embedding model for the dense half of retrieval, from the pinned table in `embeddings.py`. Each name carries its revision, vector dimension, token limit, licence, the languages it covers, and any query/passage prefix it requires. Changing it is a re-ingestion with a new index. |
 | `runtime.embedding_threads` or `--embedding-threads` | Set the CPU thread count for embedding. Left to the runtime by default because the best value depends on your machine. |
 | `retrieval.*` | Tune fusion and gating: `rrf_k`, `bm25_weight`, `dense_weight`, `minimum_candidates`, `maximum_candidates`, `dense_minimum_cosine_similarity`, `rerank_max_candidates`, `maximum_withheld_examples`. These are identity settings: the next ingestion is a new generation. |
 | `chunking.size`, `chunking.overlap` | Chunk length and overlap in tokens. Identity settings, recorded with the generation. |
@@ -98,6 +100,25 @@ reranker_model = "jinaai/jina-reranker-v1-turbo-en"
 dense_minimum_cosine_similarity = 0.65
 TOML
 ```
+
+### Working in another language
+
+Extraction is language-neutral: it repairs layout (for instance re-joining a hyphen a PDF broke across a line) and it reasons about *scripts*, not languages, so text in any Latin-script language is extracted as it stands. The two stages that do depend on language are settings:
+
+- `language.corpus` selects the BM25 stopwords, and the BM25 relevance gate uses them, so German function words stop counting as evidence.
+- `dense.embedding_model` selects the embedding model. The default is English-only; the table offers `jinaai/jina-embeddings-v2-base-de` (768-d, 0.32 GB, Apache-2.0) for German and `intfloat/multilingual-e5-large` (1024-d, 2.24 GB, MIT) for one model across languages.
+
+A German project, entirely in its own `.research-rag/config.toml`:
+
+```toml
+[language]
+corpus = "de"
+
+[dense]
+embedding_model = "jinaai/jina-embeddings-v2-base-de"
+```
+
+`status` reports the mismatch when a corpus language and an embedding model disagree, which is the case before any of this is set: the default model covers `en` only, so a German corpus starts with a warning instead of a silent quality loss. The reranker is query-time only, so a multilingual one can be chosen separately; note that the registry's multilingual reranker (`jinaai/jina-reranker-v2-base-multilingual`) is CC-BY-NC-4.0, which suits non-commercial research but is a licence decision rather than a default.
 
 ### What is worth setting on this machine
 
@@ -594,7 +615,7 @@ Things to know before you rely on a result:
 
 - Scanned PDFs need OCR first. Password-protected PDFs are rejected.
 - Locators are navigation aids, not quote offsets. PDF locators use the physical page plus a page label when available; reflowable EPUBs use a spine section plus an existing fragment or deterministic block, because EPUBs have no stable page numbers.
-- The embedding and reranking models are English-oriented, and English is the supported workload. Non-English-primary corpora, OCR or scanned sources, handwriting, and formula-heavy corpora are outside the designed scope.
+- The default embedding and reranking models are English-oriented, which is the supported default workload; both are now settings, and the pinned tables offer a German-native embedding model and a multilingual reranker. Non-English-primary corpora, OCR or scanned sources, handwriting, and formula-heavy corpora are outside the designed scope.
 - The text-health policy withholds a passage only for corruption evidence, never for mixing scripts, so a quotation in another language stays retrievable and comes back with its text unchanged.
 - A chunk longer than the embedding model's token limit is embedded from its beginning only. BM25 still matches its full text, while dense search covers the start. Ingestion counts and reports these chunks (`dense_truncated`) but does not split them.
 - Duplicate sources are a judgement call. The server never deletes an original; you review and exclude.

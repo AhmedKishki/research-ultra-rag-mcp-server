@@ -12,15 +12,14 @@ from fastembed.rerank.cross_encoder import TextCrossEncoder
 from qdrant_client import QdrantClient, models
 from tokenizers import Tokenizer
 
+from .embeddings import (
+    DEFAULT_EMBEDDING_MODEL,
+    EmbeddingModel,
+    resolve_embedding_model,
+)
 from .rerankers import DEFAULT_RERANKER_MODEL, resolve_reranker_model
 from .storage import StorageError, atomic_write_json, read_json
 
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
-EMBEDDING_MODEL_REVISION = "52398278842ec682c6f32300af41344b1c0b0bb2"
-EMBEDDING_DIMENSION = 384
-# The model's max_position_embeddings. FastEmbed truncates longer input silently,
-# so the ingestion audit exists to make that truncation visible and countable.
-EMBEDDING_MAXIMUM_TOKENS = 512
 # Sequences are padded to the longest member of their inference batch, so a
 # large batch spends most of its compute on padding: on the reference corpus
 # (mean 152 tokens, max 846) one sequence per inference measured 23.7
@@ -122,6 +121,7 @@ def _load_embedder(
     *,
     offline: bool,
     threads: int | None = None,
+    model: str = DEFAULT_EMBEDDING_MODEL,
 ) -> TextEmbedding:
     """Load the pinned CPU embedding model from the shared model cache.
 
@@ -130,13 +130,14 @@ def _load_embedder(
     of setting it on one machine.
     """
 
+    facts = resolve_embedding_model(model)
     cache_root.mkdir(parents=True, exist_ok=True)
     return TextEmbedding(
-        model_name=EMBEDDING_MODEL,
+        model_name=facts.name,
         cache_dir=str(cache_root),
         cuda=False,
         local_files_only=offline,
-        revision=EMBEDDING_MODEL_REVISION,
+        revision=facts.revision,
         threads=threads,
     )
 
@@ -206,11 +207,15 @@ class LocalQdrantDenseBackend:
         embedding_threads: int | None = None,
         reranker_model: str = DEFAULT_RERANKER_MODEL,
         embedding_inference_batch_size: int = 1,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
         self.embedding_threads = embedding_threads
         self.reranker_model = reranker_model
+        # The model's own facts — name, revision, dimension, token limit, and any
+        # required prefix — come from the pinned table rather than the caller.
+        self.embedding_facts: EmbeddingModel = resolve_embedding_model(embedding_model)
         # Throughput only: a batch of 1 returns exactly the same floats as a
         # batch of 64 (MEASUREMENTS.md).
         self.embedding_inference_batch_size = embedding_inference_batch_size
@@ -224,6 +229,7 @@ class LocalQdrantDenseBackend:
                 self.model_cache_root,
                 offline=self.offline,
                 threads=self.embedding_threads,
+                model=self.embedding_facts.name,
             )
         return self._embedding_model
 
@@ -278,7 +284,7 @@ class LocalQdrantDenseBackend:
         texts: list[str],
     ) -> np.ndarray[Any, np.dtype[np.float32]]:
         if not texts:
-            return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+            return np.empty((0, self.embedding_facts.dimension), dtype=np.float32)
         embedded = list(
             self._embedder().passage_embed(
                 texts, batch_size=self.embedding_inference_batch_size
@@ -289,9 +295,12 @@ class LocalQdrantDenseBackend:
                 "FastEmbed returned a different number of vectors than passages"
             )
         vectors = np.asarray(embedded, dtype=np.float32)
-        if vectors.ndim != 2 or vectors.shape != (len(texts), EMBEDDING_DIMENSION):
+        if vectors.ndim != 2 or vectors.shape != (
+            len(texts),
+            self.embedding_facts.dimension,
+        ):
             raise RuntimeError(
-                f"Unexpected {EMBEDDING_MODEL} vector shape: {vectors.shape}"
+                f"Unexpected {self.embedding_facts.name} vector shape: {vectors.shape}"
             )
         if not np.isfinite(vectors).all():
             raise RuntimeError("FastEmbed returned non-finite embedding values")
@@ -313,7 +322,7 @@ class LocalQdrantDenseBackend:
             raise ValueError("Portable embeddings must use float32 values")
         if vectors.ndim != 2 or vectors.shape != (
             len(chunks),
-            EMBEDDING_DIMENSION,
+            self.embedding_facts.dimension,
         ):
             raise ValueError(
                 "Portable embedding dimensions do not match the chunk collection"
@@ -372,7 +381,7 @@ class LocalQdrantDenseBackend:
         *,
         offset: int,
     ) -> None:
-        if vectors.shape != (len(chunks), EMBEDDING_DIMENSION):
+        if vectors.shape != (len(chunks), self.embedding_facts.dimension):
             raise ValueError("Dense index batch has an invalid vector shape")
         client = self._client(index_path)
         try:
@@ -417,8 +426,8 @@ class LocalQdrantDenseBackend:
             "collection": COLLECTION_NAME,
             "distance": "cosine",
             "embedding_runtime": "FastEmbed ONNX Runtime (CPU)",
-            "embedding_model": EMBEDDING_MODEL,
-            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_model": self.embedding_facts.name,
+            "embedding_model_revision": self.embedding_facts.revision,
             "embedding_dimension": dimension,
             "point_count": expected_count,
         }
@@ -587,11 +596,15 @@ class LocalVectorDenseBackend:
         embedding_threads: int | None = None,
         reranker_model: str = DEFAULT_RERANKER_MODEL,
         embedding_inference_batch_size: int = 1,
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
         self.embedding_threads = embedding_threads
         self.reranker_model = reranker_model
+        # The model's own facts — name, revision, dimension, token limit, and any
+        # required prefix — come from the pinned table rather than the caller.
+        self.embedding_facts: EmbeddingModel = resolve_embedding_model(embedding_model)
         # Throughput only: a batch of 1 returns exactly the same floats as a
         # batch of 64 (MEASUREMENTS.md).
         self.embedding_inference_batch_size = embedding_inference_batch_size
@@ -608,6 +621,7 @@ class LocalVectorDenseBackend:
                 self.model_cache_root,
                 offline=self.offline,
                 threads=self.embedding_threads,
+                model=self.embedding_facts.name,
             )
         return self._embedding_model
 
@@ -658,16 +672,19 @@ class LocalVectorDenseBackend:
         texts: list[str],
     ) -> np.ndarray[Any, np.dtype[np.float32]]:
         if not texts:
-            return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
+            return np.empty((0, self.embedding_facts.dimension), dtype=np.float32)
         embedded = list(
             self._embedder().passage_embed(
                 texts, batch_size=self.embedding_inference_batch_size
             )
         )
         vectors = np.asarray(embedded, dtype=np.float32)
-        if vectors.ndim != 2 or vectors.shape != (len(texts), EMBEDDING_DIMENSION):
+        if vectors.ndim != 2 or vectors.shape != (
+            len(texts),
+            self.embedding_facts.dimension,
+        ):
             raise RuntimeError(
-                f"Unexpected {EMBEDDING_MODEL} vector shape: {vectors.shape}"
+                f"Unexpected {self.embedding_facts.name} vector shape: {vectors.shape}"
             )
         if not np.isfinite(vectors).all():
             raise RuntimeError("FastEmbed returned non-finite embedding values")
@@ -704,6 +721,7 @@ class LocalVectorDenseBackend:
     @staticmethod
     def _load_portable_vectors(
         vectors_path: Path,
+        dimension: int,
     ) -> np.ndarray[Any, np.dtype[np.float32]]:
         try:
             vectors = np.load(vectors_path, allow_pickle=False, mmap_mode="r")
@@ -713,7 +731,7 @@ class LocalVectorDenseBackend:
             ) from exc
         if vectors.dtype != np.float32:
             raise ValueError("Portable embeddings must use float32 values")
-        if vectors.ndim != 2 or vectors.shape[1] != EMBEDDING_DIMENSION:
+        if vectors.ndim != 2 or vectors.shape[1] != dimension:
             raise ValueError("Portable embeddings have an invalid shape")
         for offset in range(0, vectors.shape[0], 4096):
             if not np.isfinite(vectors[offset : offset + 4096]).all():
@@ -721,9 +739,9 @@ class LocalVectorDenseBackend:
         return vectors
 
     def initialize_index(self, index_path: Path, dimension: int) -> None:
-        if dimension != EMBEDDING_DIMENSION:
+        if dimension != self.embedding_facts.dimension:
             raise ValueError(
-                f"An exact dense index requires {EMBEDDING_DIMENSION} dimensions, "
+                f"An exact dense index requires {self.embedding_facts.dimension} dimensions, "
                 f"not {dimension}"
             )
         if index_path.exists():
@@ -742,7 +760,7 @@ class LocalVectorDenseBackend:
     ) -> None:
         """Record per-row identity; the vectors are already the portable file."""
 
-        if vectors.shape != (len(chunks), EMBEDDING_DIMENSION):
+        if vectors.shape != (len(chunks), self.embedding_facts.dimension):
             raise ValueError("Exact dense index batch has an invalid vector shape")
         if offset != len(self._pending_chunk_ids):
             raise ValueError("Exact dense index batches must be uploaded in order")
@@ -801,8 +819,8 @@ class LocalVectorDenseBackend:
             "collection": None,
             "distance": "cosine",
             "embedding_runtime": "FastEmbed ONNX Runtime (CPU)",
-            "embedding_model": EMBEDDING_MODEL,
-            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_model": self.embedding_facts.name,
+            "embedding_model_revision": self.embedding_facts.revision,
             "embedding_dimension": dimension,
             "point_count": expected_count,
         }
@@ -819,17 +837,20 @@ class LocalVectorDenseBackend:
                 "An exact dense index expects its portable vectors at "
                 + str(expected_vectors)
             )
-        vectors = self._load_portable_vectors(vectors_path)
-        if vectors.shape != (len(chunks), EMBEDDING_DIMENSION):
+        vectors = self._load_portable_vectors(
+            vectors_path,
+            self.embedding_facts.dimension,
+        )
+        if vectors.shape != (len(chunks), self.embedding_facts.dimension):
             raise ValueError(
                 "Portable embedding dimensions do not match the chunk collection"
             )
-        self.initialize_index(index_path, EMBEDDING_DIMENSION)
+        self.initialize_index(index_path, self.embedding_facts.dimension)
         self.upload_index_batch(chunks, index_path, vectors, offset=0)
         return self.finalize_index(
             index_path,
             expected_count=len(chunks),
-            dimension=EMBEDDING_DIMENSION,
+            dimension=self.embedding_facts.dimension,
         )
 
     def _load_index(
@@ -849,9 +870,9 @@ class LocalVectorDenseBackend:
         if descriptor.get("backend") != EXACT_BACKEND_NAME:
             raise ValueError("Exact dense index descriptor names another backend")
         index_dimension = descriptor.get("dimension")
-        if index_dimension != EMBEDDING_DIMENSION:
+        if index_dimension != self.embedding_facts.dimension:
             raise ValueError(
-                f"An exact dense index requires {EMBEDDING_DIMENSION} dimensions"
+                f"An exact dense index requires {self.embedding_facts.dimension} dimensions"
             )
         if dimension is not None and index_dimension != dimension:
             raise ValueError(
@@ -886,8 +907,11 @@ class LocalVectorDenseBackend:
         cached = self._loaded.get(key)
         if cached is not None and cached[0] == modified_ns:
             return cached[1]
-        vectors = self._load_portable_vectors(vectors_path)
-        if vectors.shape != (len(chunk_ids), EMBEDDING_DIMENSION):
+        vectors = self._load_portable_vectors(
+            vectors_path,
+            self.embedding_facts.dimension,
+        )
+        if vectors.shape != (len(chunk_ids), self.embedding_facts.dimension):
             raise ValueError("Exact dense index vectors do not match its identity")
         norms = np.linalg.norm(vectors, axis=1).astype(np.float32)
         # A zero vector scores zero instead of dividing by zero.
@@ -932,9 +956,9 @@ class LocalVectorDenseBackend:
         if len(query_vectors) != 1:
             raise RuntimeError("FastEmbed did not return exactly one query vector")
         query_vector = np.asarray(query_vectors[0], dtype=np.float32)
-        if query_vector.shape != (EMBEDDING_DIMENSION,):
+        if query_vector.shape != (self.embedding_facts.dimension,):
             raise RuntimeError(
-                f"Unexpected {EMBEDDING_MODEL} query vector shape: {query_vector.shape}"
+                f"Unexpected {self.embedding_facts.name} query vector shape: {query_vector.shape}"
             )
         query_norm = float(np.linalg.norm(query_vector))
         if not np.isfinite(query_norm) or query_norm == 0.0:

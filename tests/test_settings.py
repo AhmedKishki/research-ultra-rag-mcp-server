@@ -166,3 +166,41 @@ def test_resolve_config_exposes_the_merged_settings(project: Path) -> None:
             vanilla_executable=sys.executable,
             dense_backend="lancedb",
         )
+
+
+def test_the_corpus_language_must_be_a_code(tmp_path: Path) -> None:
+    with pytest.raises(SettingsError, match="ISO 639-1"):
+        resolve_settings(tmp_path, overrides=["language.corpus=german"], environ={})
+
+    settings, _ = resolve_settings(
+        tmp_path, overrides=["language.corpus= DE "], environ={}
+    )
+    assert settings.language_corpus == "de"
+
+
+def test_a_corpus_language_the_model_cannot_embed_is_reported(tmp_path: Path) -> None:
+    mismatched, _ = resolve_settings(
+        tmp_path, overrides=["language.corpus=de"], environ={}
+    )
+    warning = mismatched.embedding_language_warning
+    assert warning is not None and "covers en, not 'de'" in warning
+
+    german, _ = resolve_settings(
+        tmp_path,
+        overrides=[
+            "language.corpus=de",
+            "dense.embedding_model=jinaai/jina-embeddings-v2-base-de",
+        ],
+        environ={},
+    )
+    assert german.embedding_language_warning is None
+    assert german.embedding_dimension == 768
+
+
+def test_the_language_is_part_of_the_ranking_policy(tmp_path: Path) -> None:
+    english, _ = resolve_settings(tmp_path, environ={})
+    german, _ = resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})
+
+    # A generation built against English stopwords is not the same policy as one
+    # built against German ones, and the fingerprint says so.
+    assert retrieval_policy_fingerprint(german) != retrieval_policy_fingerprint(english)

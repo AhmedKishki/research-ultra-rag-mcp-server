@@ -29,10 +29,6 @@ from .artifact_lookup import (
 )
 from .config import ResearchConfig, resolve_source_reference
 from .dense import (
-    EMBEDDING_DIMENSION,
-    EMBEDDING_MAXIMUM_TOKENS,
-    EMBEDDING_MODEL,
-    EMBEDDING_MODEL_REVISION,
     EXACT_BACKEND_NAME,
     QDRANT_BACKEND_NAME,
     DenseBackend,
@@ -42,6 +38,7 @@ from .dense import (
     LocalVectorDenseBackend,
     RerankerUnavailable,
 )
+from .embeddings import EmbeddingModel
 from .extraction import (
     CHUNK_FLAG_CORRUPT_TEXT,
     CHUNK_FLAG_EXTRACTION_ARTIFACT,
@@ -133,7 +130,7 @@ def retrieval_policy_fingerprint(settings: EffectiveSettings) -> str:
         {
             "default_method": DEFAULT_RETRIEVAL_METHOD,
             "available_methods": sorted(RETRIEVAL_METHODS),
-            "bm25": {"language": "en", "tokenizer": "default"},
+            "bm25": {"language": settings.language_corpus, "tokenizer": "default"},
             "fusion": {
                 "method": "weighted_reciprocal_rank_fusion",
                 "rrf_k": settings.rrf_k,
@@ -271,6 +268,7 @@ def _checkpoint_identity(
     chunk_overlap: int,
     force_recompute: bool,
     retrieval_policy: str,
+    embedding: EmbeddingModel,
 ) -> str:
     return value_fingerprint(
         {
@@ -286,9 +284,9 @@ def _checkpoint_identity(
             "cleaning_policy_version": CLEANING_POLICY_VERSION,
             "artifact_policy_version": ARTIFACT_POLICY_VERSION,
             "retrieval_policy_fingerprint": retrieval_policy,
-            "embedding_model": EMBEDDING_MODEL,
-            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
-            "embedding_dimension": EMBEDDING_DIMENSION,
+            "embedding_model": embedding.name,
+            "embedding_model_revision": embedding.revision,
+            "embedding_dimension": embedding.dimension,
             "ingestion_identity_policy_version": (INGESTION_IDENTITY_POLICY_VERSION),
             "metadata_storage_policy": METADATA_STORAGE_POLICY,
         }
@@ -774,6 +772,8 @@ def _record_withheld(
 def _record_embedding_token_counts(
     chunks: list[dict[str, Any]],
     count_tokens: Any,
+    *,
+    maximum_tokens: int,
 ) -> bool:
     """Record each built chunk's embedding token count and truncation flag.
 
@@ -797,7 +797,7 @@ def _record_embedding_token_counts(
         )
     for chunk, count in zip(chunks, counts, strict=True):
         chunk["embedding_token_count"] = int(count)
-        chunk["dense_truncated"] = int(count) > EMBEDDING_MAXIMUM_TOKENS
+        chunk["dense_truncated"] = int(count) > maximum_tokens
     return True
 
 
@@ -1575,6 +1575,7 @@ class ResearchService:
             generation_artifacts_are_valid,
             root,
             manifest,
+            embedding=self.config.settings.embedding_facts,
         ):
             raise ResearchError("Generation portable artifacts failed validation")
         self._loaded_generation = None
@@ -1597,7 +1598,7 @@ class ResearchService:
                 self._dense_for(manifest).validate_index,
                 root / str(manifest["files"]["dense_index"]),
                 expected_count=int(manifest["chunk_count"]),
-                dimension=EMBEDDING_DIMENSION,
+                dimension=self.config.settings.embedding_dimension,
             )
         except Exception as exc:
             raise ResearchError(
@@ -1778,6 +1779,7 @@ class ResearchService:
             chunk_overlap=chunk_overlap,
             force_recompute=force_recompute,
             retrieval_policy=self.retrieval_policy_fingerprint,
+            embedding=self.config.settings.embedding_facts,
         )
         now = _utc_now()
         checkpoint: dict[str, Any] = {
@@ -1847,9 +1849,11 @@ class ResearchService:
         if manifest.get("project_id") != self.config.project_id:
             reasons.append("project_identity")
         if (
-            dense_policy.get("embedding_model") != EMBEDDING_MODEL
-            or dense_policy.get("embedding_model_revision") != EMBEDDING_MODEL_REVISION
-            or dense_policy.get("embedding_dimension") != EMBEDDING_DIMENSION
+            dense_policy.get("embedding_model") != self.config.settings.embedding_model
+            or dense_policy.get("embedding_model_revision")
+            != self.config.settings.embedding_model_revision
+            or dense_policy.get("embedding_dimension")
+            != self.config.settings.embedding_dimension
         ):
             reasons.append("embedding_model")
         if (
@@ -2297,6 +2301,7 @@ class ResearchService:
         batches_root: Path,
         total: int,
         embedding_batch_size: int,
+        dimension: int,
     ) -> None:
         """Assemble portable vectors without allocating a second full matrix."""
 
@@ -2308,7 +2313,7 @@ class ResearchService:
                 temporary,
                 mode="w+",
                 dtype=np.float32,
-                shape=(total, EMBEDDING_DIMENSION),
+                shape=(total, dimension),
             )
             for offset in range(0, total, embedding_batch_size):
                 batch = np.load(
@@ -2386,6 +2391,7 @@ class ResearchService:
                 load_units=False,
                 load_chunks=False,
                 load_vectors=False,
+                embedding=self.config.settings.embedding_facts,
             )
         units_cache: dict[str, list[dict[str, Any]]] = {}
         portable_vectors: np.ndarray[Any, np.dtype[np.float32]] | None = None
@@ -2516,6 +2522,7 @@ class ResearchService:
                         load_units=True,
                         load_chunks=True,
                         load_vectors=False,
+                        embedding=self.config.settings.embedding_facts,
                     )
                 completed = set(checkpoint["extracted_source_paths"])
                 relative = next(
@@ -2874,6 +2881,7 @@ class ResearchService:
                         load_units=True,
                         load_chunks=True,
                         load_vectors=False,
+                        embedding=self.config.settings.embedding_facts,
                     )
                 completed = set(checkpoint["chunked_source_paths"])
                 relative = next(
@@ -3003,6 +3011,7 @@ class ResearchService:
                         _record_embedding_token_counts,
                         chunks,
                         self.dense.embedding_token_counts,
+                        maximum_tokens=(self.config.settings.embedding_maximum_tokens),
                     )
                     checkpoint["dense_token_audit"] = (
                         "counted" if audited else "unavailable"
@@ -3140,6 +3149,7 @@ class ResearchService:
                         load_units=False,
                         load_chunks=True,
                         load_vectors=True,
+                        embedding=self.config.settings.embedding_facts,
                     )
                 offset = int(checkpoint.get("embedded_chunk_count") or 0)
                 total = int(checkpoint["chunk_count"])
@@ -3150,7 +3160,10 @@ class ResearchService:
                 batch = read_jsonl(
                     staging_root / "work" / "chunk-batches" / f"{offset:012d}.jsonl"
                 )
-                vectors = np.empty((len(batch), EMBEDDING_DIMENSION), dtype=np.float32)
+                vectors = np.empty(
+                    (len(batch), self.config.settings.embedding_dimension),
+                    dtype=np.float32,
+                )
                 missing_positions: list[int] = []
                 missing_texts: list[str] = []
                 batch_texts = [_chunk_text(chunk) for chunk in batch]
@@ -3179,7 +3192,7 @@ class ResearchService:
                     )
                     if created.shape != (
                         len(missing_positions),
-                        EMBEDDING_DIMENSION,
+                        self.config.settings.embedding_dimension,
                     ):
                         raise ResearchError(
                             "Dense backend returned an invalid embedding matrix"
@@ -3221,6 +3234,7 @@ class ResearchService:
                     staging_root / "work" / "vector-batches",
                     total,
                     self.config.settings.embedding_batch_size,
+                    self.config.settings.embedding_dimension,
                 )
                 self._add_phase_time(
                     checkpoint,
@@ -3241,6 +3255,7 @@ class ResearchService:
                 await self.ultrarag.build_bm25(
                     staging_root / "chunks" / "chunks.jsonl",
                     bm25_index_path,
+                    language=self.config.settings.language_corpus,
                 )
                 self._add_phase_time(
                     checkpoint,
@@ -3279,7 +3294,7 @@ class ResearchService:
                     await _atomic_to_thread(
                         backend.initialize_index,
                         dense_index_path,
-                        EMBEDDING_DIMENSION,
+                        self.config.settings.embedding_dimension,
                     )
                 if offset < total:
                     batch = read_jsonl(
@@ -3307,7 +3322,7 @@ class ResearchService:
                     backend.finalize_index,
                     dense_index_path,
                     expected_count=total,
-                    dimension=EMBEDDING_DIMENSION,
+                    dimension=self.config.settings.embedding_dimension,
                 )
                 checkpoint["dense_metadata"] = dense_metadata
                 checkpoint["phase"] = "source_revalidation"
@@ -3461,7 +3476,7 @@ class ResearchService:
                     ),
                     "dense_audited_chunk_count": audited_chunk_count,
                     "dense_truncated_chunk_count": dense_truncated_chunk_count,
-                    "embedding_maximum_tokens": EMBEDDING_MAXIMUM_TOKENS,
+                    "embedding_maximum_tokens": self.config.settings.embedding_maximum_tokens,
                     "maximum_embedding_token_count": maximum_embedding_token_count,
                     "phase_timings_seconds": phase_timings,
                 }
@@ -3660,8 +3675,8 @@ class ResearchService:
                     "empty_units": sum(int(item["empty_units"]) for item in documents),
                     "default_retrieval_method": DEFAULT_RETRIEVAL_METHOD,
                     "available_retrieval_methods": sorted(RETRIEVAL_METHODS),
-                    "embedding_model": EMBEDDING_MODEL,
-                    "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+                    "embedding_model": self.config.settings.embedding_model,
+                    "embedding_model_revision": self.config.settings.embedding_model_revision,
                     **build_metrics,
                 }
 
@@ -3749,6 +3764,7 @@ class ResearchService:
                 chunk_overlap=chunk_overlap,
                 force_recompute=force_recompute,
                 retrieval_policy=self.retrieval_policy_fingerprint,
+                embedding=self.config.settings.embedding_facts,
             )
             recovered = await self._recover_pending_activation(
                 expected_identity=identity,
@@ -4542,7 +4558,7 @@ class ResearchService:
                     ),
                 },
                 "dense_fidelity": {
-                    "embedding_maximum_tokens": EMBEDDING_MAXIMUM_TOKENS,
+                    "embedding_maximum_tokens": self.config.settings.embedding_maximum_tokens,
                     "audited_passages_returned": sum(
                         1
                         for hit in hits
@@ -4558,9 +4574,11 @@ class ResearchService:
                         "the generation predates the ingestion audit."
                     ),
                 },
-                "embedding_model": EMBEDDING_MODEL if use_dense else None,
+                "embedding_model": self.config.settings.embedding_model
+                if use_dense
+                else None,
                 "embedding_model_revision": (
-                    EMBEDDING_MODEL_REVISION if use_dense else None
+                    self.config.settings.embedding_model_revision if use_dense else None
                 ),
                 "reranker_model": applied_reranker if reranked_applied else None,
                 "reranker_model_revision": (

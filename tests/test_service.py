@@ -19,11 +19,13 @@ from research_ultra_rag_mcp.config import (
     resolve_config,
 )
 from research_ultra_rag_mcp.dense import (
-    EMBEDDING_MODEL,
-    EMBEDDING_MODEL_REVISION,
     DenseSearchHit,
     DenseTokenAuditUnavailable,
     RerankerUnavailable,
+)
+from research_ultra_rag_mcp.embeddings import (
+    DEFAULT_EMBEDDING_MODEL,
+    resolve_embedding_model,
 )
 from research_ultra_rag_mcp.extraction import ExtractionError
 from research_ultra_rag_mcp.rerankers import (
@@ -39,6 +41,9 @@ from research_ultra_rag_mcp.service import (
     _public_document,
 )
 from research_ultra_rag_mcp.storage import read_jsonl, write_jsonl
+
+# The default model's own facts, resolved rather than hard-coded.
+DEFAULT_EMBEDDING_FACTS = resolve_embedding_model(DEFAULT_EMBEDDING_MODEL)
 
 CORRUPT_TEXT = (
     "��ѪҶޜഝǄ䘉Ӌਁ ⧠ᢃ⹤Ҷἅ ൠ؞༽൷㜭ᡀ࣏ "
@@ -81,7 +86,16 @@ class FakeUltraRAG:
             ),
         )
 
-    async def build_bm25(self, chunks_path: Path, index_path: Path) -> None:
+    async def build_bm25(
+        self,
+        chunks_path: Path,
+        index_path: Path,
+        *,
+        language: str = "en",
+    ) -> None:
+        # The language is recorded so a test can prove the setting reaches the
+        # gateway rather than being dropped in transit.
+        self.bm25_language = language
         self.bm25_build_calls += 1
         index_path.mkdir(parents=True)
         (index_path / "fake-index.json").write_text("{}\n", encoding="utf-8")
@@ -227,8 +241,8 @@ class FakeDenseBackend:
         self.chunks = chunks
         return {
             "backend": "fake Qdrant",
-            "embedding_model": EMBEDDING_MODEL,
-            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_model": DEFAULT_EMBEDDING_FACTS.name,
+            "embedding_model_revision": DEFAULT_EMBEDDING_FACTS.revision,
             "embedding_dimension": 384,
             "point_count": len(chunks),
         }
@@ -272,8 +286,8 @@ class FakeDenseBackend:
         return {
             "backend": "fake Qdrant",
             "dense_backend": self.dense_backend,
-            "embedding_model": EMBEDDING_MODEL,
-            "embedding_model_revision": EMBEDDING_MODEL_REVISION,
+            "embedding_model": DEFAULT_EMBEDDING_FACTS.name,
+            "embedding_model_revision": DEFAULT_EMBEDDING_FACTS.revision,
             "embedding_dimension": 384,
             "point_count": expected_count,
         }
@@ -2482,7 +2496,7 @@ def test_vector_outputs_are_fsynced_before_atomic_replace(
         lambda path: directory_syncs.append(path),
     )
     vectors = np.ones(
-        (2, service_module.EMBEDDING_DIMENSION),
+        (2, DEFAULT_EMBEDDING_FACTS.dimension),
         dtype=np.float32,
     )
     batches_root = tmp_path / "batches"
@@ -2494,6 +2508,7 @@ def test_vector_outputs_are_fsynced_before_atomic_replace(
         batches_root,
         len(vectors),
         2,
+        DEFAULT_EMBEDDING_FACTS.dimension,
     )
 
     assert file_syncs == 2
@@ -3637,3 +3652,31 @@ async def _assert_search_rejects_an_unsupported_reranker_model(project: Path) ->
 
 def test_search_rejects_an_unsupported_reranker_model(project: Path) -> None:
     asyncio.run(_assert_search_rejects_an_unsupported_reranker_model(project))
+
+
+async def _assert_the_bm25_language_reaches_the_gateway(project: Path) -> None:
+    write_pdf(
+        project / "sources" / "artikel.pdf",
+        ["Ein deutscher Absatz ueber Arbeit und Technik."],
+        title="Aufsatz",
+    )
+    config = resolve_config(
+        project,
+        vanilla_executable=sys.executable,
+        settings_overrides=["language.corpus=de"],
+    )
+    gateway = FakeUltraRAG()
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        gateway,
+        dense=FakeDenseBackend(),
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    # The corpus language is not decoration: the lexical index is built with it.
+    assert gateway.bm25_language == "de"
+    assert config.settings.language_corpus == "de"
+
+
+def test_the_bm25_language_reaches_the_gateway(project: Path) -> None:
+    asyncio.run(_assert_the_bm25_language_reaches_the_gateway(project))

@@ -79,14 +79,20 @@ class VanillaUltraRAG:
             },
         )
 
-    async def initialize_bm25(self, chunks_path: Path, index_path: Path) -> None:
+    async def initialize_bm25(
+        self,
+        chunks_path: Path,
+        index_path: Path,
+        *,
+        language: str = "en",
+    ) -> None:
         await self.call(
             "retriever_retriever_init",
             {
                 "model_name_or_path": "",
                 "backend_configs": {
                     "bm25": {
-                        "lang": "en",
+                        "lang": language,
                         "tokenizer": "default",
                         "save_path": str(index_path),
                     }
@@ -104,8 +110,14 @@ class VanillaUltraRAG:
             },
         )
 
-    async def build_bm25(self, chunks_path: Path, index_path: Path) -> None:
-        await self.initialize_bm25(chunks_path, index_path)
+    async def build_bm25(
+        self,
+        chunks_path: Path,
+        index_path: Path,
+        *,
+        language: str = "en",
+    ) -> None:
+        await self.initialize_bm25(chunks_path, index_path, language=language)
         await self.call("retriever_bm25_index", {"overwrite": False})
         # UltraRAG 0.3.0.2 must reload a newly built index to attach passages.
         await self.initialize_bm25(chunks_path, index_path)

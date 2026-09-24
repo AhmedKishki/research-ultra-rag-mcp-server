@@ -26,6 +26,7 @@ generation's identity and the security boundary must not be configurable.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -34,6 +35,11 @@ from typing import Any, Literal
 
 import platformdirs
 
+from .embeddings import (
+    EMBEDDING_MODEL_CHOICES,
+    EmbeddingModel,
+    resolve_embedding_model,
+)
 from .rerankers import RERANKER_MODELS
 
 Layer = Literal["identity", "engine", "runtime"]
@@ -130,12 +136,25 @@ FULL_TOOL_DETAIL = "full"
 TOOL_DETAIL_MODES = (LEAN_TOOL_DETAIL, FULL_TOOL_DETAIL)
 LOG_LEVELS = ("debug", "info", "warn", "error")
 DENSE_BACKENDS = ("auto", "exact", "qdrant")
+DEFAULT_LANGUAGE = "en"
+LANGUAGE_PATTERN = r"^[a-z]{2,3}$"
 
 
 # The registry, in the order `--print-config` prints it. Every value in
 # `default.toml` is validated against this table, and a `--set` or environment
 # name that is not here is refused.
 SETTINGS: tuple[Setting, ...] = (
+    Setting(
+        key="language.corpus",
+        field="language_corpus",
+        kind=str,
+        layer="identity",
+        doc=(
+            "Language of the corpus, as an ISO 639-1 code: it selects the BM25 "
+            "stopwords and decides whether the embedding model covers the text."
+        ),
+        env="RESEARCH_ULTRARAG_LANGUAGE_CORPUS",
+    ),
     Setting(
         key="runtime.offline",
         field="offline",
@@ -367,6 +386,19 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_DENSE_BACKEND",
     ),
     Setting(
+        key="dense.embedding_model",
+        field="embedding_model",
+        kind=str,
+        layer="engine",
+        doc=(
+            "Embedding model for the dense half of retrieval. Every supported "
+            "name is pinned to a revision in embeddings.py, and each declares "
+            "the languages it covers."
+        ),
+        choices=EMBEDDING_MODEL_CHOICES,
+        env="RESEARCH_ULTRARAG_EMBEDDING_MODEL",
+    ),
+    Setting(
         key="dense.reranker_model",
         field="reranker_model",
         kind=str,
@@ -552,7 +584,9 @@ class EffectiveSettings:
     embedding_batch_size: int
     pdf_page_batch_size: int
     dense_backend: str
+    embedding_model: str
     reranker_model: str
+    language_corpus: str
     embedding_inference_batch_size: int
     exact_backend_chunk_limit: int
 
@@ -570,11 +604,19 @@ class EffectiveSettings:
         if unknown:
             raise SettingsError("Unknown settings: " + ", ".join(unknown))
 
+        language = str(values["language_corpus"]).strip().casefold()
+        if not re.fullmatch(LANGUAGE_PATTERN, language):
+            raise SettingsError(
+                "language.corpus must be a two- or three-letter ISO 639-1 code: "
+                f"{values['language_corpus']!r}"
+            )
+
         threads = values["embedding_threads"]
         cache_root = values["model_cache_root"]
         settings = cls(
             **{
                 **values,
+                "language_corpus": language,
                 "embedding_threads": None if not threads else int(threads),
                 "model_cache_root": (
                     None if not cache_root else Path(str(cache_root)).expanduser()
@@ -593,6 +635,42 @@ class EffectiveSettings:
                 f"{settings.minimum_candidates} > {settings.maximum_candidates}"
             )
         return settings
+
+    # The embedding model carries facts that must not be configured twice: its
+    # vector dimension, its token limit, its revision, and the languages it covers.
+
+    @property
+    def embedding_facts(self) -> EmbeddingModel:
+        """Return the pinned facts of the configured embedding model."""
+
+        return resolve_embedding_model(self.embedding_model)
+
+    @property
+    def embedding_dimension(self) -> int:
+        return self.embedding_facts.dimension
+
+    @property
+    def embedding_model_revision(self) -> str:
+        return self.embedding_facts.revision
+
+    @property
+    def embedding_maximum_tokens(self) -> int:
+        return self.embedding_facts.maximum_tokens
+
+    @property
+    def embedding_language_warning(self) -> str | None:
+        """Explain a corpus language the embedding model cannot serve."""
+
+        facts = self.embedding_facts
+        if facts.covers(self.language_corpus):
+            return None
+        return (
+            f"The embedding model {facts.name} covers "
+            + ", ".join(facts.languages)
+            + f", not '{self.language_corpus}': the dense half of retrieval will "
+            "be weak for this corpus. Set dense.embedding_model to a model that "
+            "covers the corpus language."
+        )
 
     def value(self, key: str) -> Any:
         """Return one setting by its dotted key."""

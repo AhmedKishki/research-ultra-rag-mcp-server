@@ -8,11 +8,17 @@ import pytest
 
 import research_ultra_rag_mcp.dense as dense_module
 from research_ultra_rag_mcp.dense import (
-    EMBEDDING_DIMENSION,
     DenseTokenAuditUnavailable,
     LocalQdrantDenseBackend,
     LocalVectorDenseBackend,
 )
+from research_ultra_rag_mcp.embeddings import (
+    DEFAULT_EMBEDDING_MODEL,
+    resolve_embedding_model,
+)
+
+# The default model's own dimension, resolved rather than hard-coded.
+EMBEDDING_DIMENSION = resolve_embedding_model(DEFAULT_EMBEDDING_MODEL).dimension
 
 
 def _chunks(count: int) -> list[dict[str, object]]:
@@ -64,10 +70,15 @@ def test_embedding_threads_reach_the_model_loader(
     seen: dict[str, object] = {}
 
     def fake_loader(
-        cache_root: Path, *, offline: bool, threads: int | None = None
+        cache_root: Path,
+        *,
+        offline: bool,
+        threads: int | None = None,
+        model: str = "",
     ) -> object:
         seen["cache_root"] = cache_root
         seen["offline"] = offline
+        seen["model"] = model
         seen["threads"] = threads
         return object()
 

@@ -20,6 +20,13 @@
 # the constants that deliberately stay in code: schema and policy versions, and
 # the names and paths that make up the project boundary.
 
+[language]
+# The language of the corpus, as an ISO 639-1 code (en, de, fr, ...). It selects
+# the BM25 stopword list and decides whether the embedding model below covers the
+# text; a mismatch is reported by `status` instead of being silently embedded.
+# (identity: it is part of the ranking policy recorded with a generation.)
+corpus = "en"
+
 [runtime]
 # Require an installed vanilla runtime and already-cached models.
 offline = false
@@ -67,6 +74,11 @@ embedding_batch_size = 64
 pdf_page_batch_size = 8
 
 [dense]
+# Embedding model for the dense half of retrieval. Every supported name is pinned to
+# a revision in embeddings.py, which also declares its dimension, its token limit,
+# the languages it covers, and any query/passage prefix it requires. (engine choice,
+# recorded in every generation it builds.)
+embedding_model = "BAAI/bge-small-en-v1.5"
 # Dense index backend for new generations: auto, exact, or qdrant. (engine choice,
 # recorded in every generation it builds.)
 backend = "auto"

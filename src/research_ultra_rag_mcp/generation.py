@@ -19,7 +19,7 @@ from .artifact_lookup import (
     ensure_artifact_lookup,
     validate_artifact_lookup,
 )
-from .dense import EMBEDDING_DIMENSION, EMBEDDING_MODEL, EMBEDDING_MODEL_REVISION
+from .embeddings import EmbeddingModel
 from .storage import StorageError, iter_jsonl
 
 
@@ -45,6 +45,7 @@ def generation_is_reusable(
     project_id: str,
     chunk_size: int,
     chunk_overlap: int,
+    embedding: EmbeddingModel,
 ) -> bool:
     """Require exact processing and model compatibility before any reuse."""
 
@@ -60,9 +61,9 @@ def generation_is_reusable(
         and chunking.get("tokenizer") == "gpt2"
         and chunking.get("chunk_size") == chunk_size
         and chunking.get("chunk_overlap") == chunk_overlap
-        and dense.get("embedding_model") == EMBEDDING_MODEL
-        and dense.get("embedding_model_revision") == EMBEDDING_MODEL_REVISION
-        and dense.get("embedding_dimension") == EMBEDDING_DIMENSION
+        and dense.get("embedding_model") == embedding.name
+        and dense.get("embedding_model_revision") == embedding.revision
+        and dense.get("embedding_dimension") == embedding.dimension
     )
 
 
@@ -110,6 +111,7 @@ def load_reuse_snapshot(
     project_id: str,
     chunk_size: int,
     chunk_overlap: int,
+    embedding: EmbeddingModel,
     load_units: bool = True,
     load_chunks: bool = True,
     load_vectors: bool = True,
@@ -128,6 +130,7 @@ def load_reuse_snapshot(
         project_id=project_id,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        embedding=embedding,
     ):
         return None
     try:
@@ -165,7 +168,7 @@ def load_reuse_snapshot(
     if load_vectors and (
         vectors is None
         or vectors.dtype != np.float32
-        or vectors.shape != (chunk_count, EMBEDDING_DIMENSION)
+        or vectors.shape != (chunk_count, embedding.dimension)
     ):
         return None
 
@@ -256,6 +259,8 @@ def source_set_matches(
 def generation_artifacts_are_valid(
     root: Path,
     manifest: dict[str, Any],
+    *,
+    embedding: EmbeddingModel,
 ) -> bool:
     """Validate immutable portable artifacts without retaining passage text."""
 
@@ -371,7 +376,7 @@ def generation_artifacts_are_valid(
         vectors = np.load(vectors_path, allow_pickle=False, mmap_mode="r")
         if vectors.dtype != np.float32 or vectors.shape != (
             chunk_count,
-            EMBEDDING_DIMENSION,
+            embedding.dimension,
         ):
             return False
         for offset in range(0, chunk_count, 4096):
