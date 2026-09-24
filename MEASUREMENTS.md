@@ -246,6 +246,24 @@ By query class, at rank 1:
 - **The slower model is the smaller one here**, which is an ONNX-export property rather than a parameter to tune: both models run through the same FastEmbed cross-encoder class with the runtime's default thread count, and the first jina turbo call in the run (model load included) is the 11.69 s maximum in the table.
 - **Changing the model is an operator decision, not a per-search one**: `--reranker-model` (or `RESEARCH_ULTRARAG_RERANKER_MODEL`) changes every search the server answers, and `search(rerank_model=...)` changes it for one engine call. Re-measure before trusting either on a different corpus, because the ordering above is specific to these queries.
 
+### Reply depth: what the caller's top_k buys
+
+The reranker reorders `min(candidates, rerank_max_candidates, max(top_k * 2, 10))` passages, so the depth a caller asks for is also the depth the ranking reaches: at `top_k=8` only sixteen candidates are ever reranked, and the cap of fifty never binds at any depth measured here. That makes `top_k` the cheapest quality lever this server has.
+
+Measured on the current generation with reranked hybrid, 30 of the 32 judged queries and no deep pass, with the lean answer size of one search at the same depth:
+
+| `top_k` | succ@1 | succ@3 | succ@k | MRR | nDCG@k | doc@k | lean answer | full detail |
+|---|---|---|---|---|---|---|---|
+| 8 | 80.0% | 83.3% | 86.7% | 0.825 | 0.835 | 90.0% | 7,448 B | 22,151 B |
+| 10 | **83.3%** | 86.7% | 90.0% | **0.858** | 0.869 | 93.3% | 8,050 B | 25,808 B |
+| 12 | **83.3%** | 86.7% | 90.0% | **0.858** | 0.869 | 93.3% | 10,448 B | — |
+| 15 | **83.3%** | 86.7% | **93.3%** | **0.861** | **0.877** | **96.7%** | 13,523 B | 38,532 B |
+
+- **The plateau starts at ten, and eight is the only depth measured below it.** One query out of thirty separates 8 from the rest, so the difference is directional rather than decisive on this set; it is consistent across every metric and the mechanism is visible in the window arithmetic above, since 8 reranks sixteen candidates and 10 reranks twenty.
+- **The tool default moved from 8 to the smallest depth that keeps the measured quality, which is 10.** That costs 602 bytes of lean answer for the gain, and it aligns the default with the depth every published number was taken at. Asking for 15 costs 5,473 bytes more than 10 and buys reach (`doc@k` 93.3% to 96.7%), which is worth it when a first answer is thin and the caller can afford the context.
+- **Payload grows by roughly 750 to 870 bytes per passage** in a lean answer, and by about 1.6 kB per passage with `--tool-detail full`, so depth is cheap in lean mode and more expensive when a developer debugging session asks for everything.
+- **`rerank_max_candidates` and the candidate window are not levers at this corpus size.** Raising the cap to 100 or 150, and the window to 50 minimum and 600 maximum, changed no ranking decision at all, because the window formula never reaches them. They stay settings because a larger corpus could reach them, not because they moved anything here.
+
 ## 5. Current limits
 
 - **Retrieval quality is measured, not settled.** The numbers above describe findability of one designated passage per query on one corpus; pooled judgments, a second annotator, and a second corpus are open work in `TODO.md`.

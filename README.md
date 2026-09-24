@@ -99,6 +99,15 @@ dense_minimum_cosine_similarity = 0.65
 TOML
 ```
 
+### What is worth setting on this machine
+
+Two things have a measured payoff; everything else is worth leaving at its shipped default until a measurement says otherwise.
+
+- `runtime.embedding_threads = 8` shortens every rebuild. On the reference machine it measured 31.66 chunks/s against the runtime's default 23.65, so the embedding phase of a 17-minute build drops by about a third. The optimum is machine-specific, so it is the one setting worth re-measuring on your own hardware.
+- A larger `top_k` is free accuracy. The reranker reorders about twice as many candidates as the caller asks for, so the depth of the request sets both how many passages come back and how deep the ranking goes. Measured on the judged set: 8 passages answers 80.0% of questions at rank 1 with MRR 0.825, while 10 and above answers 83.3% with MRR 0.858. The default is 10 for that reason, and asking for 15 is the first move when an answer looks thin.
+
+Everything under `retrieval.*` and `chunking.*` is a measurement waiting to happen rather than a knob to turn: `TODO.md` lists which values are worth trying and what would have to be true before a change to the shipped default is justified.
+
 ## Update an existing installation
 
 An editable install reads this checkout when a process starts, so updating is a pull plus a sync:
@@ -526,7 +535,7 @@ Six tools are exposed. All are project-scoped and none of them deletes a source 
 |---|---|
 | `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. It also reports `restart_required` when the running process is older than the installed version. The full-detail payload adds the paths, the version block, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
 | `ingest` | Creates or refreshes a generation with the server's own chunking settings. Resumable, with a soft per-call work budget; `force_recompute` bypasses reuse. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. |
-| `search` | Retrieves evidence candidates with hybrid retrieval and reranking. Optional narrowing by source (`source_ids`, `exclude_source_ids`) and by reviewed metadata (`projects_any` and `categories_any` keep a result carrying at least one listed value; `keywords` requires every listed term). Always reports whether the generation is stale. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
+| `search` | Retrieves evidence candidates with hybrid retrieval and reranking. Optional narrowing by source (`source_ids`, `exclude_source_ids`) and by reviewed metadata (`projects_any` and `categories_any` keep a result carrying at least one listed value; `keywords` requires every listed term). Always reports whether the generation is stale. Returns 10 passages by default; when an answer is thin, ask the question again in different words and raise `top_k`, which also widens the window the reranker reorders. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Takes no parameters: it is the corpus inventory. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its immediate neighbors and provenance. |
 | `set_source_inclusion` | Excludes or restores one source, named by its filename. Reversible; never deletes the file. |

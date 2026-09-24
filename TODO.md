@@ -1,6 +1,6 @@
 # TODO
 
-The open work on this server, in the order it is intended to be attempted: one tier at a time, each measured before the next starts. Everything listed here is unimplemented. Current behaviour is in `README.md`, current facts and limits are in `MEASUREMENTS.md`, capabilities are in `FEATURES.md`, and product ideas that are not in scope yet are in `ROADMAP.md`. Finished work lives in git history, not in this file.
+The open work on this server, in the order it is intended to be attempted: one tier at a time, each measured before the next starts. Tier 0 is applied; Tier 1 is next. Everything listed here is unimplemented. Current behaviour is in `README.md`, current facts and limits are in `MEASUREMENTS.md`, capabilities are in `FEATURES.md`, and product ideas that are not in scope yet are in `ROADMAP.md`. Finished work lives in git history, not in this file.
 
 ## The measurement this plan rests on
 
@@ -14,17 +14,11 @@ Every tier below is judged against one baseline, taken on the reference project 
 | `dense_weight=1.5` | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% |
 | `top_k=15` | 83.3% | 86.7% | **93.3%** | **0.861** | **0.877** | **96.7%** |
 
-Four of those variants changed no ranking decision at all, and the reason is in the engine: the reranked window is `min(candidates, rerank_max_candidates, max(top_k * 2, 10))`, so at `top_k=10` only twenty candidates are ever reranked and the cap of fifty never binds. Raising `top_k` widened that window and recovered part of the paraphrase loss, which makes the caller's own depth request the cheapest lever measured so far.
+Four of those variants changed no ranking decision at all, and the reason is in the engine: the reranked window is `min(candidates, rerank_max_candidates, max(top_k * 2, 10))`, so at `top_k=10` only twenty candidates are ever reranked and the cap of fifty never binds. Raising `top_k` widened that window and recovered part of the paraphrase loss; the depth ladder built on that observation is in `MEASUREMENTS.md`, and the tool default moved from 8 to 10 as the smallest depth that keeps the plateau.
 
 Two costs frame the tiers. A full rebuild of the reference corpus is about 1,007 s (17 minutes), of which embedding is 668 s, and `runtime.embedding_threads=8` measured 31.66 chunks/s against the runtime's default 23.65. A reranked search costs 2.34 s mean and 3.07 s maximum, so the 10 s budget has roughly four times the current cost available for accuracy.
 
 Two facts rule out a lever that looks attractive. No paraphrase miss is withheld by a relevance gate — `withheld_total` is zero for every judged query that is not answered at rank 1 — so the cosine gate is not the paraphrase bottleneck. And three of ten paraphrase queries return the judged passage nowhere in the top ten while depth at fifty recovers class reach to 72.7%, so those failures are ordering or semantic match rather than recall.
-
-## Tier 0 — free accuracy: no rebuild, no added latency
-
-- **Say what to do after a weak first search.** A search that misses is almost always one that asked too little of the engine. State the pattern in the `search` description and in `SERVER_INSTRUCTIONS`: ask for more passages (`top_k` up to 15-20), and ask the question again in different words rather than accepting a thin answer. Measured: `top_k=15` alone lifted `succ@k` from 90.0% to 93.3% and `doc@k` from 93.3% to 96.7%.
-- **Decide the tool default for `top_k`.** It is 8 today, which makes the reranked window 16. Re-measure the answer size with `scripts/measure_tool_payloads.py` at 8 against 15 before changing it: the gain above may be worth the extra payload, and the lean-answer rule means the default should be the smallest depth that keeps the measured quality.
-- **Publish the settings worth copying.** `README.md`'s Settings section should name the values that measurably pay — the thread count above for rebuilds, and whichever retrieval values win in Tier 1 — so a new project does not rediscover them.
 
 ## Tier 1 — ordering and reranking: query-time only, no rebuild
 

@@ -273,7 +273,7 @@ def create_server(
     )
     async def search(
         query: SearchQuery,
-        top_k: TopK = 8,
+        top_k: TopK = 10,
         categories_any: CategoriesAnyFilter = None,
         projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
@@ -283,9 +283,11 @@ def create_server(
         """Retrieve evidence passages for a research question.
 
         Each passage gives its source filename, its authors, its position, and
-        cleaned text. Quote only from the original at that locator. Fewer
-        results than top_k, including none, means the corpus did not answer;
-        narrow the search only when the user asks for it.
+        cleaned text. Quote only from the original at that locator. Ask for more
+        passages before concluding that the corpus has nothing: the reranker
+        reorders about twice as many candidates as top_k, so a low top_k hides
+        candidates from it, and a question asked in different words is a
+        different search rather than a narrower one.
         """
 
         return _present(
