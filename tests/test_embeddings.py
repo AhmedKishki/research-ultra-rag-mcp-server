@@ -8,6 +8,7 @@ from research_ultra_rag_mcp.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_MODEL_CHOICES,
     EMBEDDING_MODELS,
+    models_covering,
     resolve_embedding_model,
 )
 
@@ -61,3 +62,16 @@ def test_resolve_rejects_an_unknown_model_and_lists_the_choices() -> None:
 
     with pytest.raises(ValueError, match="jinaai/jina-embeddings-v2-base-de"):
         resolve_embedding_model(f"{DEFAULT_EMBEDDING_MODEL} ")
+
+
+def test_models_covering_lists_the_cheapest_model_that_serves_a_corpus() -> None:
+    """A corpus in several languages needs a model that covers all of them."""
+    assert [model.name for model in models_covering(("de",))] == [
+        "jinaai/jina-embeddings-v2-base-de",
+        "intfloat/multilingual-e5-large",
+    ]
+    mixed = models_covering(("de", "en"))
+    assert [model.name for model in mixed] == ["intfloat/multilingual-e5-large"]
+    # The English corpus is served by the smallest English model first.
+    assert models_covering(("en",))[0].name == DEFAULT_EMBEDDING_MODEL
+    assert models_covering(("ar",))[0].name == "intfloat/multilingual-e5-large"

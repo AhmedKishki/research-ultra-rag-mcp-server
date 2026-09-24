@@ -218,3 +218,89 @@ def test_the_language_is_part_of_the_ranking_policy(tmp_path: Path) -> None:
     # A generation built against English stopwords is not the same policy as one
     # built against German ones, and the fingerprint says so.
     assert retrieval_policy_fingerprint(german) != retrieval_policy_fingerprint(english)
+
+
+def test_a_corpus_can_name_several_languages(tmp_path: Path) -> None:
+    """A corpus written in more than one language says so, in one setting."""
+    mixed, _ = resolve_settings(
+        tmp_path,
+        overrides=[
+            "language.corpus=de,en",
+            "dense.embedding_model=intfloat/multilingual-e5-large",
+        ],
+        environ={},
+    )
+    assert mixed.corpus_languages == ("de", "en")
+    assert mixed.language_corpus == "de,en"
+    assert mixed.bm25_stopwords_language == "de"
+    assert mixed.embedding_language_warning is None
+
+
+def test_a_mixed_corpus_filters_the_first_language_named(tmp_path: Path) -> None:
+    """BM25 filters one language: the first named, unless another is chosen."""
+    first, _ = resolve_settings(
+        tmp_path, overrides=["language.corpus=de,en"], environ={}
+    )
+    assert first.bm25_stopwords_language == "de"
+
+    chosen, _ = resolve_settings(
+        tmp_path,
+        overrides=["language.corpus=de,en", "language.bm25_stopwords=en"],
+        environ={},
+    )
+    assert chosen.bm25_stopwords_language == "en"
+
+    # The default model covers English only, so the German half is reported, and
+    # the warning names the model that would cover both languages.
+    warning = chosen.embedding_language_warning
+    assert warning is not None and "not 'de'" in warning
+    assert "intfloat/multilingual-e5-large" in warning
+    assert "not 'en'" not in warning
+
+
+def test_a_language_list_is_kept_as_written(tmp_path: Path) -> None:
+    """Order is meaningful and duplicates are not."""
+    settings, _ = resolve_settings(
+        tmp_path,
+        overrides=[
+            "language.corpus= DE , en , de ",
+            "language.bm25_stopwords=DE",
+        ],
+        environ={},
+    )
+    assert settings.language_corpus == "de,en"
+    assert settings.bm25_stopwords == "de"
+
+    other, _ = resolve_settings(
+        tmp_path,
+        overrides=["language.corpus=en,de", "language.bm25_stopwords=en"],
+        environ={},
+    )
+    assert other.language_corpus == "en,de"
+
+    with pytest.raises(SettingsError, match="empty language"):
+        resolve_settings(tmp_path, overrides=["language.corpus=de,"], environ={})
+    with pytest.raises(SettingsError, match="no BM25 stopword list"):
+        resolve_settings(tmp_path, overrides=["language.bm25_stopwords=ja"], environ={})
+
+
+def test_the_bm25_language_is_what_the_policy_records(tmp_path: Path) -> None:
+    english, _ = resolve_settings(tmp_path, environ={})
+    german, _ = resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})
+    german_first, _ = resolve_settings(
+        tmp_path, overrides=["language.corpus=de,en"], environ={}
+    )
+    english_first, _ = resolve_settings(
+        tmp_path, overrides=["language.corpus=en,de"], environ={}
+    )
+
+    # BM25 filters one list, so a mixed corpus that points it at German ranks like
+    # a German corpus: a different stopword language is what makes it a different
+    # policy, and the order a corpus names its languages in writes that choice.
+    assert retrieval_policy_fingerprint(german_first) == retrieval_policy_fingerprint(
+        german
+    )
+    assert retrieval_policy_fingerprint(english_first) == (
+        retrieval_policy_fingerprint(english)
+    )
+    assert retrieval_policy_fingerprint(german) != retrieval_policy_fingerprint(english)

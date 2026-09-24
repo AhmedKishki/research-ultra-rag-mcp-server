@@ -38,6 +38,7 @@ import platformdirs
 from .embeddings import (
     EMBEDDING_MODEL_CHOICES,
     EmbeddingModel,
+    models_covering,
     resolve_embedding_model,
 )
 from .rerankers import RERANKER_MODELS
@@ -148,6 +149,43 @@ BM25_STOPWORD_LANGUAGES = frozenset(
 )
 
 
+def normalize_corpus_languages(value: Any) -> tuple[str, ...]:
+    """Parse `language.corpus` into the languages a corpus is written in.
+
+    One code is the common case and stays exactly what it was, so a corpus in a
+    single language spells its setting the way it always did. Several codes
+    describe a corpus in more than one language. The order is kept as written
+    rather than sorted, because the value is part of the ranking policy and
+    `de,en` and `en,de` are the same corpus only if nothing reads the order.
+    """
+
+    if isinstance(value, (list, tuple)):
+        raw = [str(item) for item in value]
+    else:
+        raw = str(value).split(",")
+    languages: list[str] = []
+    for item in raw:
+        code = item.strip().casefold()
+        if not code:
+            raise SettingsError(f"language.corpus has an empty language: {value!r}")
+        if not re.fullmatch(LANGUAGE_PATTERN, code):
+            raise SettingsError(
+                "language.corpus must be one or more two- or three-letter "
+                f"ISO 639-1 codes separated by commas: {value!r}"
+            )
+        if code not in BM25_STOPWORD_LANGUAGES:
+            raise SettingsError(
+                f"language.corpus has no BM25 stopword list: {code!r}. "
+                "Supported: "
+                + ", ".join(sorted(BM25_STOPWORD_LANGUAGES))
+                + ". BM25 needs one of those, or it fails after the corpus has "
+                "already been extracted and embedded."
+            )
+        if code not in languages:
+            languages.append(code)
+    return tuple(languages)
+
+
 # The registry, in the order `--print-config` prints it. Every value in
 # `default.toml` is validated against this table, and a `--set` or environment
 # name that is not here is refused.
@@ -158,11 +196,25 @@ SETTINGS: tuple[Setting, ...] = (
         kind=str,
         layer="identity",
         doc=(
-            "Language of the corpus, as an ISO 639-1 code: it selects the BM25 "
-            "stopwords, which is why only a language BM25 can tokenize is "
-            "accepted, and it decides whether the embedding model covers the text."
+            "The languages the corpus is written in, as ISO 639-1 codes: one "
+            "code, or several separated by commas for a corpus in more than one "
+            "language. A language BM25 cannot tokenize is refused, because the "
+            "stopword list comes from it, and every language named has to be "
+            "covered by the embedding model."
         ),
         env="RESEARCH_ULTRARAG_LANGUAGE_CORPUS",
+    ),
+    Setting(
+        key="language.bm25_stopwords",
+        field="bm25_stopwords",
+        kind=str,
+        layer="identity",
+        doc=(
+            "Which language's stopword list BM25 filters with. Empty means the "
+            "first language in language.corpus, because BM25 takes a single list "
+            "and a corpus in several languages has to point it at one of them."
+        ),
+        env="RESEARCH_ULTRARAG_LANGUAGE_BM25_STOPWORDS",
     ),
     Setting(
         key="runtime.offline",
@@ -596,6 +648,7 @@ class EffectiveSettings:
     embedding_model: str
     reranker_model: str
     language_corpus: str
+    bm25_stopwords: str
     embedding_inference_batch_size: int
     exact_backend_chunk_limit: int
 
@@ -613,20 +666,14 @@ class EffectiveSettings:
         if unknown:
             raise SettingsError("Unknown settings: " + ", ".join(unknown))
 
-        language = str(values["language_corpus"]).strip().casefold()
-        if not re.fullmatch(LANGUAGE_PATTERN, language):
+        languages = normalize_corpus_languages(values["language_corpus"])
+        language = ",".join(languages)
+        stopwords = str(values["bm25_stopwords"]).strip().casefold()
+        if stopwords and stopwords not in BM25_STOPWORD_LANGUAGES:
             raise SettingsError(
-                "language.corpus must be a two- or three-letter ISO 639-1 code: "
-                f"{values['language_corpus']!r}"
-            )
-
-        if language not in BM25_STOPWORD_LANGUAGES:
-            raise SettingsError(
-                f"language.corpus has no BM25 stopword list: {language!r}. "
-                "Supported: "
+                "language.bm25_stopwords has no BM25 stopword list: "
+                f"{stopwords!r}. Supported: "
                 + ", ".join(sorted(BM25_STOPWORD_LANGUAGES))
-                + ". BM25 needs one of those, or it fails after the corpus has "
-                "already been extracted and embedded."
             )
 
         threads = values["embedding_threads"]
@@ -635,6 +682,7 @@ class EffectiveSettings:
             **{
                 **values,
                 "language_corpus": language,
+                "bm25_stopwords": stopwords,
                 "embedding_threads": None if not threads else int(threads),
                 "model_cache_root": (
                     None if not cache_root else Path(str(cache_root)).expanduser()
@@ -676,18 +724,50 @@ class EffectiveSettings:
         return self.embedding_facts.maximum_tokens
 
     @property
+    def corpus_languages(self) -> tuple[str, ...]:
+        """The languages this corpus is written in, as named."""
+
+        return tuple(self.language_corpus.split(","))
+
+    @property
+    def bm25_stopwords_language(self) -> str:
+        """The one language whose stopword list BM25 filters with.
+
+        BM25 takes a single list, so a corpus in several languages filters the
+        function words of the first language it names unless another is chosen.
+        """
+
+        return self.bm25_stopwords or self.corpus_languages[0]
+
+    @property
     def embedding_language_warning(self) -> str | None:
-        """Explain a corpus language the embedding model cannot serve."""
+        """Explain corpus languages the embedding model cannot serve."""
 
         facts = self.embedding_facts
-        if facts.covers(self.language_corpus):
+        missing = [code for code in self.corpus_languages if not facts.covers(code)]
+        if not missing:
             return None
+        covered = ", ".join(facts.languages) if facts.languages else "any language"
+        message = (
+            f"The embedding model {facts.name} covers {covered}, not "
+            + " or ".join(f"'{code}'" for code in missing)
+            + ": the dense half of retrieval will be weak for this corpus."
+        )
+        alternatives = models_covering(self.corpus_languages)
+        if alternatives:
+            return (
+                message
+                + " Set dense.embedding_model to one that covers it: "
+                + ", ".join(
+                    f"{model.name} ({model.size_gb:g} GB)" for model in alternatives
+                )
+                + "."
+            )
         return (
-            f"The embedding model {facts.name} covers "
-            + ", ".join(facts.languages)
-            + f", not '{self.language_corpus}': the dense half of retrieval will "
-            "be weak for this corpus. Set dense.embedding_model to a model that "
-            "covers the corpus language."
+            message
+            + " No model in the pinned table covers "
+            + " and ".join(f"'{code}'" for code in missing)
+            + ", so this corpus needs a model added to embeddings.py."
         )
 
     def value(self, key: str) -> Any:

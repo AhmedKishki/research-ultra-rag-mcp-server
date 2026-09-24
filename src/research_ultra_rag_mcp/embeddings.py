@@ -18,6 +18,7 @@ backends add them.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -107,6 +108,25 @@ EMBEDDING_MODELS: tuple[EmbeddingModel, ...] = (
         passage_prefix="passage: ",
     ),
 )
+
+
+def models_covering(languages: Sequence[str]) -> tuple[EmbeddingModel, ...]:
+    """Return the pinned models that cover every one of these languages.
+
+    Ordered smallest first, because the useful suggestion is the cheapest model
+    that can serve the corpus.
+    """
+
+    wanted = tuple(code.strip().casefold() for code in languages if code.strip())
+    return tuple(
+        model
+        for model in sorted(
+            EMBEDDING_MODELS, key=lambda item: (item.size_gb, item.name)
+        )
+        if all(model.covers(code) for code in wanted)
+    )
+
+
 EMBEDDING_MODELS_BY_NAME = {model.name: model for model in EMBEDDING_MODELS}
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_MODEL_CHOICES = tuple(EMBEDDING_MODELS_BY_NAME)

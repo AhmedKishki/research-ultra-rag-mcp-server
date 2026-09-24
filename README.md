@@ -74,7 +74,8 @@ The settings that are commonly set, and what they do:
 | `runtime.model_cache_root` or `--model-cache-root` | Move the shared model cache elsewhere. |
 | `dense.backend auto\|exact\|qdrant` or `--dense-backend` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for very large ones. |
 | `dense.reranker_model NAME` or `--reranker-model` | Choose the CPU cross-encoder that reranks every search. Six are supported, each pinned to a revision, and an unknown name is refused rather than resolved to whatever the model hub serves that day. See "How a search works". |
-| `language.corpus` | The language of the corpus as an ISO 639-1 code (`en`, `de`, ...). It selects the BM25 stopword list and it decides whether the embedding model covers the text; a mismatch is reported by `status` rather than embedded silently. An identity setting: it is part of the ranking policy recorded with a generation. |
+| `language.corpus` | The languages the corpus is written in, as ISO 639-1 codes: one code, or several separated by commas for a corpus in more than one language, most-used-first (`de,en`). Only a language BM25 can tokenize is accepted, because the stopword list comes from it, and every language named decides whether the embedding model covers the text; a mismatch is reported by `status` rather than embedded silently. An identity setting: it is part of the ranking policy recorded with a generation. |
+| `language.bm25_stopwords` | Which language's stopword list BM25 filters with. Empty means the first language in `language.corpus`, because BM25 takes a single list and a corpus in several languages has to point it at one of them. Also part of the ranking policy. |
 | `dense.embedding_model NAME` | The embedding model for the dense half of retrieval, from the pinned table in `embeddings.py`. Each name carries its revision, vector dimension, token limit, licence, the languages it covers, and any query/passage prefix it requires. Changing it is a re-ingestion with a new index. |
 | `runtime.embedding_threads` or `--embedding-threads` | Set the CPU thread count for embedding. Left to the runtime by default because the best value depends on your machine. |
 | `retrieval.*` | Tune fusion and gating: `rrf_k`, `bm25_weight`, `dense_weight`, `minimum_candidates`, `maximum_candidates`, `dense_minimum_cosine_similarity`, `rerank_max_candidates`, `maximum_withheld_examples`. These are identity settings: the next ingestion is a new generation. |
@@ -105,7 +106,7 @@ TOML
 
 Extraction is language-neutral: it repairs layout (for instance re-joining a hyphen a PDF broke across a line) and it reasons about *scripts*, not languages, so text in any Latin-script language is extracted as it stands. The two stages that do depend on language are settings:
 
-- `language.corpus` selects the BM25 stopwords, and the BM25 relevance gate uses them, so German function words stop counting as evidence. Only a language BM25 can tokenize is accepted — English, German, Dutch, French, Spanish, Portuguese, Italian, Russian, Swedish, Norwegian, Chinese, Turkish, Korean — because that list is where the stopwords come from. A language outside that set is refused while settings are read, instead of after a build has already extracted and embedded the corpus.
+- `language.corpus` selects the BM25 stopwords, and the BM25 relevance gate uses them, so German function words stop counting as evidence. A corpus in more than one language names them in order, and BM25 filters the first one named: `language.bm25_stopwords` points it at another, because BM25 takes a single list. Only a language BM25 can tokenize is accepted — English, German, Dutch, French, Spanish, Portuguese, Italian, Russian, Swedish, Norwegian, Chinese, Turkish, Korean — because that list is where the stopwords come from. A language outside that set is refused while settings are read, instead of after a build has already extracted and embedded the corpus.
 - `dense.embedding_model` selects the embedding model. The default is English-only; the table offers `jinaai/jina-embeddings-v2-base-de` (768-d, 0.32 GB, Apache-2.0) for German and `intfloat/multilingual-e5-large` (1024-d, 2.24 GB, MIT) for one model across languages.
 
 A German project, entirely in its own `.research-rag/config.toml`:
@@ -116,6 +117,16 @@ corpus = "de"
 
 [dense]
 embedding_model = "jinaai/jina-embeddings-v2-base-de"
+```
+
+A corpus that is genuinely both languages, which is what the multilingual model is for:
+
+```toml
+[language]
+corpus = "de,en"
+
+[dense]
+embedding_model = "intfloat/multilingual-e5-large"
 ```
 
 `status` reports the mismatch when a corpus language and an embedding model disagree, which is the case before any of this is set: the default model covers `en` only, so a German corpus starts with a warning instead of a silent quality loss. The reranker is query-time only, so a multilingual one can be chosen separately; note that the registry's multilingual reranker (`jinaai/jina-reranker-v2-base-multilingual`) is CC-BY-NC-4.0, which suits non-commercial research but is a licence decision rather than a default.

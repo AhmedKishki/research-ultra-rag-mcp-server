@@ -130,7 +130,10 @@ def retrieval_policy_fingerprint(settings: EffectiveSettings) -> str:
         {
             "default_method": DEFAULT_RETRIEVAL_METHOD,
             "available_methods": sorted(RETRIEVAL_METHODS),
-            "bm25": {"language": settings.language_corpus, "tokenizer": "default"},
+            "bm25": {
+                "language": settings.bm25_stopwords_language,
+                "tokenizer": "default",
+            },
             "fusion": {
                 "method": "weighted_reciprocal_rank_fusion",
                 "rrf_k": settings.rrf_k,
@@ -1942,6 +1945,12 @@ class ResearchService:
                 "excluded_sources": self._exclusion_records(scan, exclusions),
                 "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
                 "ignored_extensions": scan.ignored_extensions,
+                "language": {
+                    "corpus": self.config.settings.language_corpus,
+                    "languages": list(self.config.settings.corpus_languages),
+                    "bm25_stopwords": self.config.settings.bm25_stopwords_language,
+                    "warning": self.config.settings.embedding_language_warning,
+                },
                 "source_exclusion_revision": exclusion_revision,
                 "metadata_revision": metadata_revision,
                 "generation_metadata_revision": None,
@@ -2083,6 +2092,12 @@ class ResearchService:
             ),
             "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
             "ignored_extensions": scan.ignored_extensions,
+            "language": {
+                "corpus": self.config.settings.language_corpus,
+                "languages": list(self.config.settings.corpus_languages),
+                "bm25_stopwords": self.config.settings.bm25_stopwords_language,
+                "warning": self.config.settings.embedding_language_warning,
+            },
             "default_retrieval_method": (
                 retrieval.get("default_method", "bm25") if hybrid_ready else "bm25"
             ),
@@ -3255,7 +3270,7 @@ class ResearchService:
                 await self.ultrarag.build_bm25(
                     staging_root / "chunks" / "chunks.jsonl",
                     bm25_index_path,
-                    language=self.config.settings.language_corpus,
+                    language=self.config.settings.bm25_stopwords_language,
                 )
                 self._add_phase_time(
                     checkpoint,

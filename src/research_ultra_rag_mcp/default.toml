@@ -21,11 +21,18 @@
 # the names and paths that make up the project boundary.
 
 [language]
-# The language of the corpus, as an ISO 639-1 code (en, de, fr, ...). It selects
-# the BM25 stopword list and decides whether the embedding model below covers the
-# text; a mismatch is reported by `status` instead of being silently embedded.
-# (identity: it is part of the ranking policy recorded with a generation.)
+# The languages the corpus is written in, as ISO 639-1 codes (en, de, fr, ...):
+# one code, or several separated by commas for a corpus in more than one
+# language, most-used-first. Every language named decides whether the embedding
+# model below covers the text, and a mismatch is reported by `status` instead of
+# being silently embedded. Only a language BM25 can tokenize is accepted, because
+# the stopword list comes from it. (identity: part of the ranking policy.)
 corpus = "en"
+# Which language's stopword list BM25 filters with. Empty means the first
+# language named above, because BM25 takes a single list and a corpus in several
+# languages has to point it at one of them; set it to choose another.
+# (identity: part of the ranking policy.)
+bm25_stopwords = ""
 
 [runtime]
 # Require an installed vanilla runtime and already-cached models.

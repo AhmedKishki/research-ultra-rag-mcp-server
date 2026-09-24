@@ -66,6 +66,9 @@ Two facts rule out a lever that looks attractive. No paraphrase miss is withheld
 - **Surface the retained-generation inventory in the UI.** `status` reports `generations` and `retained_generation_bytes`; the pinned status view renders none of them.
 - **Warn about a runtime-root mismatch in the standalone UI launcher,** which starts its own server and does not read an MCP client configuration, so it can silently show a different generation than the agent. The server-hosted UI (`--ui-port`) is unaffected.
 
+- **Merge the stopword lists of a mixed corpus.** `language.corpus` can name several languages, but BM25 still filters one list, chosen by `language.bm25_stopwords`. bm25s itself accepts a list of stopwords, so the union of two lists is expressible; it needs a check that the pinned runtime passes a list through `bm25.lang` unchanged, and then a measurement showing the union beats a single list on a corpus that really is mixed.
+- **Arabic needs a stopword source before it can be indexed.** bm25s ships no Arabic list, so `language.corpus = "ar"` is refused while settings are read instead of at the end of a build. Adding it means either an explicit stopword list in an option, or an empty-list setting that tells BM25 to filter nothing, plus an Arabic-capable model in the pinned embedding table.
+
 ## Verification
 
 ```bash
