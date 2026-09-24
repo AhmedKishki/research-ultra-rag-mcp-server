@@ -13,6 +13,7 @@ import pytest
 from conftest import write_epub, write_pdf, write_reviewed_metadata
 
 import research_ultra_rag_mcp.service as service_module
+import research_ultra_rag_mcp.support as support_module
 from research_ultra_rag_mcp.config import (
     ConfigurationError,
     ResearchConfig,
@@ -2429,7 +2430,7 @@ def test_query_gate_uses_the_stored_chunk_verdict(
 
         # Only the retrieval fallback is intercepted; the document-title health
         # check reaches text_corruption_reasons through a different caller.
-        monkeypatch.setattr(service_module, "chunk_health_flags", explode)
+        monkeypatch.setattr(support_module, "chunk_health_flags", explode)
         result = await service.search("cobalt heron", top_k=1)
 
         assert result["hits"]
@@ -2456,16 +2457,16 @@ def test_query_gate_falls_back_without_a_stored_verdict(
         first = await service.search("cobalt heron", top_k=1)
 
         calls: list[str] = []
-        real_flags = service_module.chunk_health_flags
+        real_flags = support_module.chunk_health_flags
 
         def counting_flags(_text: str, *, quality_flags: object = None) -> int:
             calls.append(_text)
             return real_flags(_text, quality_flags=quality_flags)
 
-        monkeypatch.setattr(service_module, "chunk_health_flags", counting_flags)
+        monkeypatch.setattr(support_module, "chunk_health_flags", counting_flags)
         # Model a lookup that predates the stored verdict: the query path has to
         # recompute the same flags from the text, with identical results.
-        monkeypatch.setattr(service_module, "LOOKUP_HEALTH_FLAGS_KEY", "_absent_key")
+        monkeypatch.setattr(support_module, "LOOKUP_HEALTH_FLAGS_KEY", "_absent_key")
         second = await service.search("cobalt heron", top_k=1)
 
         assert calls, "the guard must recompute the verdict when none is stored"
