@@ -60,6 +60,12 @@ dense_minimum_cosine_similarity = 0.72
 # Most candidates the cross-encoder reorders by score; the unranked tail of the
 # fused order is appended after them, so a reference group stays reachable. (identity)
 rerank_max_candidates = 50
+# Depth of the reranked window as a multiple of the requested top_k, and the
+# fewest candidates reordered whatever top_k asks for: the window is
+# max(top_k * rerank_window_multiple, rerank_window_floor), capped by
+# rerank_max_candidates and the fused candidate count. (identity)
+rerank_window_multiple = 2
+rerank_window_floor = 10
 # Withheld candidates quoted per gate reason in a search answer. (identity)
 maximum_withheld_examples = 5
 

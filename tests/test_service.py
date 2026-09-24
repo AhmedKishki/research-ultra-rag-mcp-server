@@ -3715,3 +3715,111 @@ def test_dense_backends_embed_with_the_configured_model(tmp_path: Path) -> None:
     for name, backend in service._dense_backends.items():
         dimension = backend.embedding_facts.dimension  # type: ignore[attr-defined]
         assert dimension == config.settings.embedding_dimension, name
+
+
+def test_the_reranked_window_follows_its_settings(project: Path) -> None:
+    """The window is a setting, which is what makes a deeper one measurable."""
+
+    paragraphs = [
+        (
+            "Commodity fetishism describes how relations between people appear as "
+            "relations between things, so that value seems to belong to the object "
+            "rather than to the labour that produced it, and the analysis has to "
+            "begin from that appearance."
+        ),
+        (
+            "The mysterious character of the commodity arises from the form of "
+            "value rather than from its use, and the inversion is practical rather "
+            "than merely mistaken, which is why criticism starts at the surface."
+        ),
+        (
+            "Later writers extend the argument to attention, data, and platforms, "
+            "where the same inversion reappears between users and the systems that "
+            "measure them and turn their activity into a resource."
+        ),
+        (
+            "The study of labour under digital conditions asks how work is made "
+            "visible to capital, and which forms of effort remain unmeasured and "
+            "therefore unpaid in the accounts that firms keep."
+        ),
+        (
+            "Colonial histories of extraction connect the factory to the mine, and "
+            "the mine to the plantation, across a single circuit of accumulation "
+            "that reorganised labour on several continents."
+        ),
+        (
+            "Waste studies follow what is discarded, showing that the remainder of "
+            "production is not outside the economy but one of its conditions, and "
+            "a source of value in its own right."
+        ),
+        (
+            "Fetishism is not only an error of perception: it is a form of social "
+            "organisation that the analysis has to describe from the inside, in "
+            "the language its participants already use."
+        ),
+        (
+            "An account of appearance begins with the surface, because the surface "
+            "is where the inversion is lived, and where any criticism that wants "
+            "to be more than moralising has to start."
+        ),
+    ]
+
+    async def exercise() -> None:
+        source = project / "sources" / "article.pdf"
+        write_pdf(source, paragraphs, title="Window Article")
+
+        base = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            base, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        built = await service.ingest(chunk_size=50, chunk_overlap=5)
+        count = built["chunk_count"]
+        assert count >= 6, count
+
+        async def window(overrides: list[str], *, top_k: int) -> int:
+            config = resolve_config(
+                project,
+                vanilla_executable=sys.executable,
+                settings_overrides=overrides,
+            )
+            scoped = ResearchService(  # type: ignore[arg-type]
+                config, FakeUltraRAG(), dense=FakeDenseBackend()
+            )
+            result = await scoped.search(
+                "commodity fetishism labour", top_k=top_k, rerank=True
+            )
+            return result["rerank_window"]
+
+        # The corpus and the relevance gates cap the window, so the observed
+        # default is the budget these settings are tested against. Each one is
+        # exercised below that default, which is what proves it is read rather
+        # than assumed: with the setting ignored every value here would stay at
+        # the default.
+        default = await window([], top_k=1)
+        assert 3 <= default, default
+        assert (
+            await window(
+                [
+                    "retrieval.rerank_window_multiple=1",
+                    "retrieval.rerank_window_floor=1",
+                ],
+                top_k=1,
+            )
+            == 1
+        )
+        assert await window(["retrieval.rerank_window_floor=3"], top_k=1) == 3
+        assert await window(["retrieval.rerank_max_candidates=2"], top_k=1) == 2
+        # top_k=3 with a multiple of 1 gives 3, where the shipped default gives
+        # the floor of 10 and would therefore be capped by the corpus instead.
+        assert (
+            await window(
+                [
+                    "retrieval.rerank_window_multiple=1",
+                    "retrieval.rerank_window_floor=1",
+                ],
+                top_k=3,
+            )
+            == 3
+        )
+
+    asyncio.run(exercise())

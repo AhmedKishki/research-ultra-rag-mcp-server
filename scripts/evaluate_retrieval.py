@@ -650,6 +650,7 @@ async def _run_one(
         "lexical_overlap": lexical_overlap(query, str(target["chunk_text"])),
         "result_count": int(payload.get("result_count") or 0),
         "candidate_count": int(payload.get("candidate_count") or 0),
+        "rerank_window": int(payload.get("rerank_window") or 0),
         "withheld_total": int(withheld.get("total") or 0),
         "target_listed_as_withheld": str(target["chunk_id"]) in set(withheld_ids),
         "returned_chunk_ids": ranked_chunk_ids,

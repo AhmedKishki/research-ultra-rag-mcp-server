@@ -389,6 +389,33 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_RETRIEVAL_RERANK_MAX_CANDIDATES",
     ),
     Setting(
+        key="retrieval.rerank_window_multiple",
+        field="rerank_window_multiple",
+        kind=int,
+        layer="identity",
+        doc=(
+            "Depth of the reranked window as a multiple of the requested top_k. "
+            "The window is max(top_k * this, rerank_window_floor), capped by "
+            "rerank_max_candidates and the fused candidate count."
+        ),
+        minimum=1,
+        maximum=1000,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_RERANK_WINDOW_MULTIPLE",
+    ),
+    Setting(
+        key="retrieval.rerank_window_floor",
+        field="rerank_window_floor",
+        kind=int,
+        layer="identity",
+        doc=(
+            "Fewest candidates the cross-encoder reorders, whatever top_k asks "
+            "for, so a shallow request still ranks a useful group."
+        ),
+        minimum=1,
+        maximum=5000,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_RERANK_WINDOW_FLOOR",
+    ),
+    Setting(
         key="retrieval.maximum_withheld_examples",
         field="maximum_withheld_examples",
         kind=int,
@@ -671,6 +698,8 @@ class EffectiveSettings:
     maximum_candidates: int
     dense_minimum_cosine_similarity: float
     rerank_max_candidates: int
+    rerank_window_multiple: int
+    rerank_window_floor: int
     maximum_withheld_examples: int
     chunk_size: int
     chunk_overlap: int

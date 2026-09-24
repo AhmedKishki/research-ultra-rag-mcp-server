@@ -4467,11 +4467,15 @@ class ResearchService:
             }
             rerank_scores: dict[str, float] = {}
             rerank_fallback: dict[str, Any] | None = None
+            rerank_count = 0
             if rerank and ordered_ids:
                 rerank_count = min(
                     len(ordered_ids),
                     self.config.settings.rerank_max_candidates,
-                    max(top_k * 2, 10),
+                    max(
+                        top_k * self.config.settings.rerank_window_multiple,
+                        self.config.settings.rerank_window_floor,
+                    ),
                 )
                 rerank_ids = ordered_ids[:rerank_count]
                 rerank_tail = ordered_ids[rerank_count:]
@@ -4600,6 +4604,7 @@ class ResearchService:
                 "reranked": reranked_applied,
                 "rerank_requested": rerank,
                 "rerank_fallback": rerank_fallback,
+                "rerank_window": rerank_count,
                 "candidate_depth": candidate_depth,
                 "candidate_count": candidate_count,
                 "candidate_distinct_reference_count": (
