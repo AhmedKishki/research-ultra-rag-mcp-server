@@ -105,7 +105,7 @@ TOML
 
 Extraction is language-neutral: it repairs layout (for instance re-joining a hyphen a PDF broke across a line) and it reasons about *scripts*, not languages, so text in any Latin-script language is extracted as it stands. The two stages that do depend on language are settings:
 
-- `language.corpus` selects the BM25 stopwords, and the BM25 relevance gate uses them, so German function words stop counting as evidence.
+- `language.corpus` selects the BM25 stopwords, and the BM25 relevance gate uses them, so German function words stop counting as evidence. Only a language BM25 can tokenize is accepted — English, German, Dutch, French, Spanish, Portuguese, Italian, Russian, Swedish, Norwegian, Chinese, Turkish, Korean — because that list is where the stopwords come from. A language outside that set is refused while settings are read, instead of after a build has already extracted and embedded the corpus.
 - `dense.embedding_model` selects the embedding model. The default is English-only; the table offers `jinaai/jina-embeddings-v2-base-de` (768-d, 0.32 GB, Apache-2.0) for German and `intfloat/multilingual-e5-large` (1024-d, 2.24 GB, MIT) for one model across languages.
 
 A German project, entirely in its own `.research-rag/config.toml`:

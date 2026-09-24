@@ -197,6 +197,20 @@ def test_a_corpus_language_the_model_cannot_embed_is_reported(tmp_path: Path) ->
     assert german.embedding_dimension == 768
 
 
+def test_the_corpus_language_must_have_bm25_stopwords(tmp_path: Path) -> None:
+    """A language BM25 cannot tokenize must fail before a build, not during one."""
+    with pytest.raises(SettingsError, match="no BM25 stopword list"):
+        resolve_settings(tmp_path, overrides=["language.corpus=ja"], environ={})
+
+    for supported in ("en", "de", "fr", "zh"):
+        settings, _ = resolve_settings(
+            tmp_path,
+            overrides=[f"language.corpus={supported}"],
+            environ={},
+        )
+        assert settings.language_corpus == supported
+
+
 def test_the_language_is_part_of_the_ranking_policy(tmp_path: Path) -> None:
     english, _ = resolve_settings(tmp_path, environ={})
     german, _ = resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})

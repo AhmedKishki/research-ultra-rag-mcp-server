@@ -139,6 +139,14 @@ DENSE_BACKENDS = ("auto", "exact", "qdrant")
 DEFAULT_LANGUAGE = "en"
 LANGUAGE_PATTERN = r"^[a-z]{2,3}$"
 
+# bm25s ships a stopword list for exactly these languages and rejects every other
+# name, so a corpus language outside this set has to fail here: the BM25 index is
+# built after extraction and embedding, and a build that dies there has already
+# spent an hour on work it cannot keep.
+BM25_STOPWORD_LANGUAGES = frozenset(
+    {"en", "de", "nl", "fr", "es", "pt", "it", "ru", "sv", "no", "zh", "tr", "ko"}
+)
+
 
 # The registry, in the order `--print-config` prints it. Every value in
 # `default.toml` is validated against this table, and a `--set` or environment
@@ -151,7 +159,8 @@ SETTINGS: tuple[Setting, ...] = (
         layer="identity",
         doc=(
             "Language of the corpus, as an ISO 639-1 code: it selects the BM25 "
-            "stopwords and decides whether the embedding model covers the text."
+            "stopwords, which is why only a language BM25 can tokenize is "
+            "accepted, and it decides whether the embedding model covers the text."
         ),
         env="RESEARCH_ULTRARAG_LANGUAGE_CORPUS",
     ),
@@ -609,6 +618,15 @@ class EffectiveSettings:
             raise SettingsError(
                 "language.corpus must be a two- or three-letter ISO 639-1 code: "
                 f"{values['language_corpus']!r}"
+            )
+
+        if language not in BM25_STOPWORD_LANGUAGES:
+            raise SettingsError(
+                f"language.corpus has no BM25 stopword list: {language!r}. "
+                "Supported: "
+                + ", ".join(sorted(BM25_STOPWORD_LANGUAGES))
+                + ". BM25 needs one of those, or it fails after the corpus has "
+                "already been extracted and embedded."
             )
 
         threads = values["embedding_threads"]
