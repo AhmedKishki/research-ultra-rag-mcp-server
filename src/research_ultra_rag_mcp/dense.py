@@ -26,13 +26,9 @@ EMBEDDING_MAXIMUM_TOKENS = 512
 # (mean 152 tokens, max 846) one sequence per inference measured 23.7
 # chunks/s against 6.2 at a batch of 64, and a batch of 1 returns exactly
 # the same floats as a batch of 64. See MEASUREMENTS.md.
-EMBEDDING_INFERENCE_BATCH_SIZE = 1
 COLLECTION_NAME = "research_chunks"
 QDRANT_BACKEND_NAME = "embedded-qdrant"
 EXACT_BACKEND_NAME = "portable-exact-vectors"
-# Above this many chunks the exact scan stops being the right default and an ANN
-# backend earns its build cost. See MEASUREMENTS.md for the measurements.
-EXACT_BACKEND_CHUNK_LIMIT = 200_000
 EXACT_INDEX_FILENAME = "index.json"
 EXACT_DOCUMENTS_FILENAME = "documents.json"
 _EXACT_VECTORS_RELATIVE = Path("portable") / "embeddings.npy"
@@ -209,11 +205,15 @@ class LocalQdrantDenseBackend:
         offline: bool = False,
         embedding_threads: int | None = None,
         reranker_model: str = DEFAULT_RERANKER_MODEL,
+        embedding_inference_batch_size: int = 1,
     ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
         self.embedding_threads = embedding_threads
         self.reranker_model = reranker_model
+        # Throughput only: a batch of 1 returns exactly the same floats as a
+        # batch of 64 (MEASUREMENTS.md).
+        self.embedding_inference_batch_size = embedding_inference_batch_size
         self._embedding_model: TextEmbedding | None = None
         self._rerankers: dict[str, TextCrossEncoder] = {}
         self._audit_tokenizer: Tokenizer | None = None
@@ -281,7 +281,7 @@ class LocalQdrantDenseBackend:
             return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
         embedded = list(
             self._embedder().passage_embed(
-                texts, batch_size=EMBEDDING_INFERENCE_BATCH_SIZE
+                texts, batch_size=self.embedding_inference_batch_size
             )
         )
         if len(embedded) != len(texts):
@@ -586,11 +586,15 @@ class LocalVectorDenseBackend:
         offline: bool = False,
         embedding_threads: int | None = None,
         reranker_model: str = DEFAULT_RERANKER_MODEL,
+        embedding_inference_batch_size: int = 1,
     ) -> None:
         self.model_cache_root = model_cache_root
         self.offline = offline
         self.embedding_threads = embedding_threads
         self.reranker_model = reranker_model
+        # Throughput only: a batch of 1 returns exactly the same floats as a
+        # batch of 64 (MEASUREMENTS.md).
+        self.embedding_inference_batch_size = embedding_inference_batch_size
         self._embedding_model: TextEmbedding | None = None
         self._rerankers: dict[str, TextCrossEncoder] = {}
         self._audit_tokenizer: Tokenizer | None = None
@@ -657,7 +661,7 @@ class LocalVectorDenseBackend:
             return np.empty((0, EMBEDDING_DIMENSION), dtype=np.float32)
         embedded = list(
             self._embedder().passage_embed(
-                texts, batch_size=EMBEDDING_INFERENCE_BATCH_SIZE
+                texts, batch_size=self.embedding_inference_batch_size
             )
         )
         vectors = np.asarray(embedded, dtype=np.float32)

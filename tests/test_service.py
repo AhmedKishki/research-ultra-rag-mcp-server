@@ -761,9 +761,12 @@ async def _assert_search_can_skip_the_staleness_walk(
     assert no_walk["hits"]
     assert no_walk["stale"] is None
 
+    # The policy fingerprint is an instance attribute now, computed from the
+    # settings this service resolved; patching it stands in for a generation that
+    # recorded a different policy.
     monkeypatch.setattr(
-        service_module,
-        "RETRIEVAL_POLICY_FINGERPRINT",
+        service,
+        "retrieval_policy_fingerprint",
         "patched-retrieval-policy",
     )
     upgraded = await service.search("cobalt labour", top_k=1, include_staleness=False)
@@ -1305,21 +1308,27 @@ def test_dense_backend_selection_honors_the_threshold_and_config(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    limit = service_module.EXACT_BACKEND_CHUNK_LIMIT
+    limit = config.settings.exact_backend_chunk_limit
 
     assert service._select_build_dense_backend(0) == "portable-exact-vectors"
     assert service._select_build_dense_backend(limit) == "portable-exact-vectors"
     assert service._select_build_dense_backend(limit + 1) == "embedded-qdrant"
 
     forced_qdrant = ResearchService(  # type: ignore[arg-type]
-        replace(config, dense_backend="qdrant"),
+        replace(
+            config,
+            settings=replace(config.settings, dense_backend="qdrant"),
+        ),
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
     assert forced_qdrant._select_build_dense_backend(1) == "embedded-qdrant"
 
     forced_exact = ResearchService(  # type: ignore[arg-type]
-        replace(config, dense_backend="exact"),
+        replace(
+            config,
+            settings=replace(config.settings, dense_backend="exact"),
+        ),
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
@@ -1327,7 +1336,7 @@ def test_dense_backend_selection_honors_the_threshold_and_config(
         "portable-exact-vectors"
     )
 
-    with pytest.raises(ConfigurationError, match="Unsupported dense backend"):
+    with pytest.raises(ConfigurationError, match="dense.backend"):
         resolve_config(
             project,
             vanilla_executable=sys.executable,
@@ -1336,7 +1345,7 @@ def test_dense_backend_selection_honors_the_threshold_and_config(
 
     # Every reranker is pinned to a revision, so an unknown name is refused
     # instead of resolving to whatever the model hub serves that day.
-    with pytest.raises(ConfigurationError, match="Unsupported reranker model"):
+    with pytest.raises(ConfigurationError, match="dense.reranker_model"):
         resolve_config(
             project,
             vanilla_executable=sys.executable,
@@ -1631,6 +1640,10 @@ def test_reciprocal_rank_fusion_rewards_agreement() -> None:
     ordered, scores = ResearchService._fuse_rankings(
         ["bm25-only", "shared"],
         ["shared", "dense-only"],
+        rrf_k=60,
+        bm25_weight=1.25,
+        dense_weight=1.0,
+        maximum_candidates=200,
     )
     assert ordered[0] == "shared"
     assert scores["shared"] > scores["bm25-only"]
@@ -2120,7 +2133,6 @@ async def _assert_pdf_ingestion_checkpoints_fixed_page_batches(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     first = await service.ingest(
         chunk_size=50,
@@ -2153,7 +2165,7 @@ async def _assert_pdf_ingestion_checkpoints_fixed_page_batches(
     staging_root = next(config.staging_root.iterdir())
     state_path = next((staging_root / "work" / "sources").glob("*/state.json"))
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["page_batch_size"] == service_module.PDF_PAGE_BATCH_SIZE == 8
+    assert state["page_batch_size"] == config.settings.pdf_page_batch_size == 8
     assert state["next_index"] == 8
 
     ready = await service.ingest(
@@ -2266,8 +2278,11 @@ def test_hard_crash_mid_chunking_redoes_at_most_one_batch(
         )
         # Two units share a call, so the first batch commits and the second one
         # dies mid-flight.
-        monkeypatch.setattr(service_module, "CHUNK_BATCH_UNITS", 2)
-        config = resolve_config(project, vanilla_executable=sys.executable)
+        config = resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            settings_overrides=["chunking.batch_units=2"],
+        )
         crashing = CrashDuringChunkUltraRAG(fail_on_call=2)
         service = ResearchService(  # type: ignore[arg-type]
             config,
@@ -2334,12 +2349,15 @@ def test_chunker_batching_does_not_change_chunk_identity(
                 )
             ],
         )
-        config = resolve_config(project, vanilla_executable=sys.executable)
 
         async def build(units_per_call: int) -> Path:
-            monkeypatch.setattr(service_module, "CHUNK_BATCH_UNITS", units_per_call)
+            batch_config = resolve_config(
+                project,
+                vanilla_executable=sys.executable,
+                settings_overrides=[f"chunking.batch_units={units_per_call}"],
+            )
             service = ResearchService(  # type: ignore[arg-type]
-                config,
+                batch_config,
                 FakeUltraRAG(),
                 dense=FakeDenseBackend(),
             )
@@ -2475,6 +2493,7 @@ def test_vector_outputs_are_fsynced_before_atomic_replace(
         assembled_path,
         batches_root,
         len(vectors),
+        2,
     )
 
     assert file_syncs == 2
@@ -2524,7 +2543,6 @@ async def _assert_bounded_ingestion_resumes_after_service_restart(
     config = resolve_config(project, vanilla_executable=sys.executable)
     ultrarag = FakeUltraRAG()
     dense = FakeDenseBackend()
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     first_service = ResearchService(  # type: ignore[arg-type]
         config,
@@ -2591,7 +2609,6 @@ async def _assert_metadata_edit_preserves_ingestion_checkpoint(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     pending = await service.ingest(
         chunk_size=50,
@@ -2653,7 +2670,6 @@ async def _assert_selected_generation_remains_searchable_during_build(
     )
     selected = await service.ingest(chunk_size=50, chunk_overlap=10)
     write_pdf(project / "sources" / "new.pdf", ["New amber evidence."])
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     pending = await service.ingest(
         chunk_size=50,
@@ -2799,7 +2815,6 @@ async def _assert_incompatible_force_mode_supersedes_checkpoint(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     normal = await service.ingest(
         chunk_size=50,
@@ -2851,7 +2866,6 @@ async def _assert_final_revalidation_catches_same_stat_mutation(
         FakeUltraRAG(),
         dense=FakeDenseBackend(),
     )
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     for _ in range(30):
         result = await service.ingest(
@@ -2930,7 +2944,6 @@ async def _assert_bounded_and_single_call_builds_are_equivalent(
         dense=FakeDenseBackend(),
     )
     single_result = await single.ingest(chunk_size=50, chunk_overlap=10)
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
     for _ in range(40):
         bounded_result = await bounded.ingest(
             chunk_size=50,
@@ -3117,7 +3130,6 @@ async def _assert_resumed_dense_batches_are_exactly_once(
     config = resolve_config(project, vanilla_executable=sys.executable)
     ultrarag = ManyChunkUltraRAG()
     dense = FakeDenseBackend()
-    monkeypatch.setattr(service_module, "MINIMUM_WORK_BUDGET_SECONDS", 0)
 
     for _ in range(60):
         service = ResearchService(  # type: ignore[arg-type]

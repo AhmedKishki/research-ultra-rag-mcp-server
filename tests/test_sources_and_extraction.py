@@ -1213,9 +1213,17 @@ def test_embedding_threads_option_is_validated(project: Path) -> None:
         is None
     )
 
-    with pytest.raises(ConfigurationError, match="at least 1"):
-        resolve_config(project, vanilla_executable=sys.executable, embedding_threads=0)
-    with pytest.raises(ConfigurationError, match="Invalid embedding thread count"):
+    # 0 is how a file says "leave the thread count to the runtime", and a value
+    # that is not a number is refused by name.
+    assert (
+        resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            embedding_threads=0,
+        ).embedding_threads
+        is None
+    )
+    with pytest.raises(ConfigurationError, match="runtime.embedding_threads"):
         resolve_config(
             project,
             vanilla_executable=sys.executable,

@@ -46,7 +46,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.26.0`
+- Version: `0.27.0`
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
@@ -74,6 +74,8 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Keep dense vectors and any dense index project-local; do not introduce a required external database service.
 - Record the dense backend in each generation manifest and dispatch retrieval from that record. Never rebuild an existing generation with a different backend, and never assume a fixed dense index directory name.
 - Search results present `text` as cleaned semantic text and never as a transcript, and direct quotations must come from the original. The rule is stated once, in the tool description and in `SERVER_INSTRUCTIONS`, instead of every passage repeating a quote-safety flag; the flag itself stays in the full-detail payload.
+- Keep every tunable in the registry in `settings.py`, and every default value in the packaged `default.toml`. Code reads a value from the resolved settings; it never keeps a second copy of a default. A layer names only the keys it changes, an undeclared key is refused in every layer, and `--print-config` reports each effective value with the layer that supplied it.
+- Keep schema versions, policy versions, the retrieval-method set, and the boundary names in code. Those define what a generation is, or where the server may write, and a settings file must not be able to forge either. The test for a tunable is the identity rule: if its value decides what a generation contains, it enters the retrieval-policy fingerprint or the recorded chunk settings; if it cannot change an artifact, it is a runtime setting.
 - Every MCP tool answers with the lean projection in `tool_views.py`. `--tool-detail full` is the developer debugging mode and returns the service payload unchanged. Never widen the lean projection for a diagnostic need and never add a tool surface that bypasses it.
 - Every tool takes only the parameters a caller must decide: no retrieval modes, no output views, no quality or latency switches, and no chunk tuning. A capability that the measurements already answer (hybrid retrieval, reranking, the freshness check, chunking) stays an engine setting that the tool fixes, and the engine keeps it for the harness and tests.
 - Every search reranks. The tool never exposes a rerank switch, and the UI shows none; the model that reranks comes from the pinned table in `rerankers.py`, may be selected by an operator (`--reranker-model`) or per call by the engine (`search(rerank_model=...)`), and is named with its revision in every answer that used it. Adding a model to that table means pinning its revision, and never resolving a model name at run time.
@@ -138,6 +140,8 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `version.py`: the version this process started with, the installed version, the shared-UI version, and the `status.version` block and browser header label they feed.
 - `dense.py`: pinned FastEmbed models, both local dense backends (exact scan and embedded ANN) with document filtering, and the CPU cross-encoder that reranks every search.
 - `rerankers.py`: the pinned reranker-model table and its revision resolver, so a model choice is a lookup rather than a download by name.
+- `settings.py`: the tunable registry, the five-layer merge, and the effective settings it validates.
+- `default.toml`: the packaged default for every tunable, one commented entry per setting.
 - `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
 - `transport.py`: the single research stdio transport builder used by UI and terminal clients.

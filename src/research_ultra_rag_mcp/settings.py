@@ -1,0 +1,690 @@
+"""Layered, file-backed settings: one registry, five precedence layers.
+
+No tunable is hard-coded here. `default.toml`, which ships inside this package,
+holds the values the server uses when nobody says otherwise, and every layer
+above it names only what it changes. Later layers win **per key**:
+
+    default.toml  <  user config  <  project config  <  environment  <  command line
+
+A layer may therefore define a handful of keys, and the rest are still inherited
+from the layer below. A layer may equally define a whole section and replace it.
+
+`SETTINGS` is the registry. Each entry declares the key, the type and bounds the
+value must satisfy, which layer class it belongs to, and the name it takes in the
+environment and on the command line. Two rules follow from it:
+
+* a key that is not in the registry is an error, in every layer, so a typo is
+  refused instead of being ignored;
+* a setting whose class is ``identity`` changes what a generation *is*, so its
+  value enters the retrieval-policy fingerprint and changing it means the next
+  ingestion is a new generation rather than a silent mix of two.
+
+`AGENTS.md` records the constants that deliberately stay in code, because a
+generation's identity and the security boundary must not be configurable.
+"""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields
+from pathlib import Path
+from typing import Any, Literal
+
+import platformdirs
+
+from .rerankers import RERANKER_MODELS
+
+Layer = Literal["identity", "engine", "runtime"]
+
+# The layer names, lowest first. `provenance` reports these strings, so
+# `--print-config` says where each effective value came from.
+LAYER_DEFAULT = "default"
+LAYER_USER = "user config"
+LAYER_PROJECT = "project config"
+LAYER_FILE = "--config"
+LAYER_ENVIRONMENT = "environment"
+LAYER_COMMAND_LINE = "command line"
+
+DEFAULT_CONFIG_FILENAME = "default.toml"
+USER_CONFIG_DIRECTORY = "research-ultra-rag-mcp"
+PROJECT_CONFIG_RELATIVE = Path(".research-rag") / "config.toml"
+SETTINGS_ENVIRONMENT_PREFIX = "RESEARCH_ULTRARAG_"
+
+
+class SettingsError(ValueError):
+    """Raised when a settings layer is unreadable, unknown, or out of bounds."""
+
+
+@dataclass(frozen=True, slots=True)
+class Setting:
+    """One tunable: where it lives, what it accepts, and how it is named.
+
+    ``layer`` is the contract that keeps configurability honest:
+
+    * ``identity`` — the value decides what a generation contains, so it enters
+      the retrieval-policy fingerprint and a change invalidates reuse.
+    * ``engine`` — the value chooses an engine component (a backend, a model)
+      whose identity is recorded in the generation manifest and in answers.
+    * ``runtime`` — the value shapes this process only (threads, budgets, logging,
+      where the shared model cache lives) and cannot affect an artifact.
+    """
+
+    key: str
+    field: str
+    kind: type
+    layer: Layer
+    doc: str
+    minimum: float | None = None
+    maximum: float | None = None
+    choices: tuple[str, ...] = ()
+    env: str = ""
+    flag: str = ""
+    section: str = ""
+    # A setting that names one of a fixed set of modes also accepts any spelling
+    # of them. A setting that names a model, a path, or a revision does not: those
+    # are case-sensitive identifiers, not mode words.
+    normalize_case: bool = False
+
+    def coerce(self, raw: Any, *, source: str) -> Any:
+        """Return ``raw`` as this setting's type, or refuse it by name."""
+
+        where = f"{self.key} ({source})"
+        if isinstance(raw, bool) and self.kind is not bool:
+            raise SettingsError(f"{where} must be {self.kind.__name__}, not a boolean")
+        if self.kind is bool:
+            if isinstance(raw, bool):
+                return raw
+            if isinstance(raw, str) and raw.strip().casefold() in {"true", "false"}:
+                return raw.strip().casefold() == "true"
+            raise SettingsError(f"{where} must be true or false")
+        if self.kind is int and isinstance(raw, bool):
+            raise SettingsError(f"{where} must be an integer, not a boolean")
+        try:
+            value = self.kind(raw)
+        except (TypeError, ValueError) as exc:
+            if isinstance(raw, str) and not raw.strip() and self.kind is not str:
+                # An empty string in a file means "leave this to the runtime",
+                # which only the settings that accept it can express.
+                raise SettingsError(f"{where} must be {self.kind.__name__}") from exc
+            raise SettingsError(f"{where} must be {self.kind.__name__}") from exc
+        if self.kind is str:
+            # Surrounding whitespace is never meaningful in a settings value.
+            value = value.strip()
+            if self.normalize_case:
+                value = value.casefold()
+        if self.choices and value not in self.choices:
+            raise SettingsError(f"{where} must be one of: " + ", ".join(self.choices))
+        if self.minimum is not None and value < self.minimum:
+            raise SettingsError(f"{where} must be at least {self.minimum:g}")
+        if self.maximum is not None and value > self.maximum:
+            raise SettingsError(f"{where} must be at most {self.maximum:g}")
+        return value
+
+
+# Tool answer detail. `lean` is what the MCP tools return; `full` is the
+# developer debugging mode and returns the service payload unchanged.
+LEAN_TOOL_DETAIL = "lean"
+FULL_TOOL_DETAIL = "full"
+TOOL_DETAIL_MODES = (LEAN_TOOL_DETAIL, FULL_TOOL_DETAIL)
+LOG_LEVELS = ("debug", "info", "warn", "error")
+DENSE_BACKENDS = ("auto", "exact", "qdrant")
+
+
+# The registry, in the order `--print-config` prints it. Every value in
+# `default.toml` is validated against this table, and a `--set` or environment
+# name that is not here is refused.
+SETTINGS: tuple[Setting, ...] = (
+    Setting(
+        key="runtime.offline",
+        field="offline",
+        kind=bool,
+        layer="runtime",
+        doc=(
+            "Require an installed vanilla runtime and already-cached models "
+            "instead of downloading anything."
+        ),
+        env="RESEARCH_ULTRARAG_OFFLINE",
+    ),
+    Setting(
+        key="runtime.log_level",
+        field="log_level",
+        kind=str,
+        layer="runtime",
+        normalize_case=True,
+        doc="Verbosity of this process's own logging.",
+        choices=LOG_LEVELS,
+        env="RESEARCH_ULTRARAG_LOG_LEVEL",
+    ),
+    Setting(
+        key="runtime.tool_detail",
+        field="tool_detail",
+        kind=str,
+        layer="runtime",
+        normalize_case=True,
+        doc=(
+            "Tool answer detail: 'lean' is what an agent gets, 'full' is the "
+            "developer debugging payload."
+        ),
+        choices=TOOL_DETAIL_MODES,
+        env="RESEARCH_ULTRARAG_TOOL_DETAIL",
+    ),
+    Setting(
+        key="runtime.embedding_threads",
+        field="embedding_threads",
+        kind=int,
+        layer="runtime",
+        doc=(
+            "ONNX Runtime threads for the embedding model; 0 leaves the choice "
+            "to the runtime."
+        ),
+        minimum=0,
+        maximum=1024,
+        env="RESEARCH_ULTRARAG_EMBEDDING_THREADS",
+    ),
+    Setting(
+        key="runtime.model_cache_root",
+        field="model_cache_root",
+        kind=str,
+        layer="runtime",
+        doc=(
+            "Shared FastEmbed model cache; empty means the per-user cache "
+            "directory for this application."
+        ),
+        env="RESEARCH_ULTRARAG_MODEL_CACHE_ROOT",
+    ),
+    # --- Retrieval: what the fused ranking is, and what it will not accept. ---
+    Setting(
+        key="retrieval.rrf_k",
+        field="rrf_k",
+        kind=int,
+        layer="identity",
+        doc="Reciprocal-rank-fusion constant: higher flattens the rank curve.",
+        minimum=1,
+        maximum=1000,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_RRF_K",
+    ),
+    Setting(
+        key="retrieval.bm25_weight",
+        field="bm25_weight",
+        kind=float,
+        layer="identity",
+        doc="Weight of the BM25 rank in the fusion.",
+        minimum=0.0,
+        maximum=10.0,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_BM25_WEIGHT",
+    ),
+    Setting(
+        key="retrieval.dense_weight",
+        field="dense_weight",
+        kind=float,
+        layer="identity",
+        doc="Weight of the dense rank in the fusion.",
+        minimum=0.0,
+        maximum=10.0,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_DENSE_WEIGHT",
+    ),
+    Setting(
+        key="retrieval.minimum_candidates",
+        field="minimum_candidates",
+        kind=int,
+        layer="identity",
+        doc=(
+            "Fewest fused candidates a search considers, before relevance gates "
+            "and reranking."
+        ),
+        minimum=1,
+        maximum=1000,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_MINIMUM_CANDIDATES",
+    ),
+    Setting(
+        key="retrieval.maximum_candidates",
+        field="maximum_candidates",
+        kind=int,
+        layer="identity",
+        doc="Most fused candidates a search considers.",
+        minimum=1,
+        maximum=5000,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_MAXIMUM_CANDIDATES",
+    ),
+    Setting(
+        key="retrieval.dense_minimum_cosine_similarity",
+        field="dense_minimum_cosine_similarity",
+        kind=float,
+        layer="identity",
+        doc=(
+            "Dense relevance gate: a candidate below this cosine similarity is "
+            "withheld rather than ranked."
+        ),
+        minimum=-1.0,
+        maximum=1.0,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_DENSE_MINIMUM_COSINE_SIMILARITY",
+    ),
+    Setting(
+        key="retrieval.rerank_max_candidates",
+        field="rerank_max_candidates",
+        kind=int,
+        layer="identity",
+        doc=(
+            "Most candidates the cross-encoder reorders by score; the unranked "
+            "tail is appended after them so a reference group is still reachable."
+        ),
+        minimum=1,
+        maximum=5000,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_RERANK_MAX_CANDIDATES",
+    ),
+    Setting(
+        key="retrieval.maximum_withheld_examples",
+        field="maximum_withheld_examples",
+        kind=int,
+        layer="identity",
+        doc="Withheld candidates quoted per gate reason in a search answer.",
+        minimum=0,
+        maximum=100,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_MAXIMUM_WITHHELD_EXAMPLES",
+    ),
+    # --- Chunking: what a chunk is. Recorded per generation. ---
+    Setting(
+        key="chunking.size",
+        field="chunk_size",
+        kind=int,
+        layer="identity",
+        doc="Target chunk length in GPT-2 tokens.",
+        minimum=50,
+        maximum=384,
+        env="RESEARCH_ULTRARAG_CHUNKING_SIZE",
+    ),
+    Setting(
+        key="chunking.overlap",
+        field="chunk_overlap",
+        kind=int,
+        layer="identity",
+        doc="Tokens consecutive chunks share; must be below the chunk size.",
+        minimum=0,
+        maximum=383,
+        env="RESEARCH_ULTRARAG_CHUNKING_OVERLAP",
+    ),
+    Setting(
+        key="chunking.batch_units",
+        field="chunk_batch_units",
+        kind=int,
+        layer="runtime",
+        doc=(
+            "Extraction units sent to one chunker call. Throughput only: each "
+            "unit keeps its own durable output and redo boundary."
+        ),
+        minimum=1,
+        maximum=256,
+        env="RESEARCH_ULTRARAG_CHUNKING_BATCH_UNITS",
+    ),
+    # --- Ingestion: how much work one call does, and in what batches. ---
+    Setting(
+        key="ingestion.work_budget_seconds",
+        field="work_budget_seconds",
+        kind=int,
+        layer="runtime",
+        doc=(
+            "Soft time budget for one ingest call; exhausting it returns a "
+            "checkpointed in_progress result instead of losing work."
+        ),
+        minimum=10,
+        maximum=300,
+        env="RESEARCH_ULTRARAG_INGESTION_WORK_BUDGET_SECONDS",
+    ),
+    Setting(
+        key="ingestion.embedding_batch_size",
+        field="embedding_batch_size",
+        kind=int,
+        layer="runtime",
+        doc="Chunks embedded per gateway call during ingestion.",
+        minimum=1,
+        maximum=1024,
+        env="RESEARCH_ULTRARAG_INGESTION_EMBEDDING_BATCH_SIZE",
+    ),
+    Setting(
+        key="ingestion.pdf_page_batch_size",
+        field="pdf_page_batch_size",
+        kind=int,
+        layer="runtime",
+        doc="PDF pages extracted per gateway call.",
+        minimum=1,
+        maximum=64,
+        env="RESEARCH_ULTRARAG_INGESTION_PDF_PAGE_BATCH_SIZE",
+    ),
+    # --- Dense engine and models. ---
+    Setting(
+        key="dense.backend",
+        field="dense_backend",
+        kind=str,
+        layer="engine",
+        normalize_case=True,
+        doc=(
+            "Dense index backend for new generations: 'auto' scans the portable "
+            "vectors below the documented corpus threshold."
+        ),
+        choices=DENSE_BACKENDS,
+        env="RESEARCH_ULTRARAG_DENSE_BACKEND",
+    ),
+    Setting(
+        key="dense.reranker_model",
+        field="reranker_model",
+        kind=str,
+        layer="engine",
+        doc=(
+            "CPU cross-encoder that reranks every search. Every supported name "
+            "is pinned to a revision in rerankers.py."
+        ),
+        choices=tuple(RERANKER_MODELS),
+        env="RESEARCH_ULTRARAG_RERANKER_MODEL",
+    ),
+    Setting(
+        key="dense.embedding_inference_batch_size",
+        field="embedding_inference_batch_size",
+        kind=int,
+        layer="runtime",
+        doc=(
+            "Sequences per embedding inference. Throughput only: a batch of 1 "
+            "returns exactly the same floats as a batch of 64 (MEASUREMENTS.md)."
+        ),
+        minimum=1,
+        maximum=1024,
+        env="RESEARCH_ULTRARAG_EMBEDDING_INFERENCE_BATCH_SIZE",
+    ),
+    Setting(
+        key="dense.exact_backend_chunk_limit",
+        field="exact_backend_chunk_limit",
+        kind=int,
+        layer="engine",
+        doc=(
+            "Corpus size above which 'auto' selects the embedded ANN index "
+            "instead of the exact scan; recorded in each generation."
+        ),
+        minimum=1,
+        maximum=100_000_000,
+        env="RESEARCH_ULTRARAG_EXACT_BACKEND_CHUNK_LIMIT",
+    ),
+)
+
+
+SETTINGS_BY_KEY: dict[str, Setting] = {}
+for _setting in SETTINGS:
+    if _setting.key in SETTINGS_BY_KEY:
+        raise SettingsError(f"Duplicate setting key: {_setting.key}")
+    SETTINGS_BY_KEY[_setting.key] = _setting
+SETTINGS_BY_FIELD = {setting.field: setting for setting in SETTINGS}
+SETTINGS_SECTIONS = tuple(
+    dict.fromkeys(setting.key.split(".")[0] for setting in SETTINGS)
+)
+
+
+def default_config_path() -> Path:
+    """Return the packaged default config file."""
+
+    return Path(__file__).with_name(DEFAULT_CONFIG_FILENAME)
+
+
+def user_config_path() -> Path:
+    """Return the per-user overlay path for this platform."""
+
+    return platformdirs.user_config_path(USER_CONFIG_DIRECTORY) / "config.toml"
+
+
+def project_config_path(project_root: str | Path) -> Path:
+    """Return the per-project overlay path, inside the project's own state."""
+
+    return Path(project_root) / PROJECT_CONFIG_RELATIVE
+
+
+def read_config_document(path: Path, *, source: str) -> dict[str, Any]:
+    """Read one TOML layer, refusing anything that is not a plain document."""
+
+    if path.is_symlink():
+        raise SettingsError(f"{source} must not be a symlink: {path}")
+    if not path.is_file():
+        raise SettingsError(f"{source} is not a readable file: {path}")
+    try:
+        with path.open("rb") as handle:
+            document = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as exc:
+        raise SettingsError(f"{source} is not valid TOML ({path}): {exc}") from exc
+    except OSError as exc:
+        raise SettingsError(f"{source} cannot be read ({path}): {exc}") from exc
+    if not isinstance(document, dict):
+        raise SettingsError(f"{source} must contain a TOML table: {path}")
+    return document
+
+
+def merge_settings(
+    base: dict[str, Any],
+    overlay: Mapping[str, Any],
+    *,
+    source: str,
+    prefix: str = "",
+) -> set[str]:
+    """Merge one layer into ``base`` per key and return the keys it set.
+
+    Tables merge recursively, so a layer names only what it changes. A scalar, an
+    array, or a table the overlay supplies in full replaces whatever the layer
+    below had. A key the registry does not declare is an error, which is what
+    makes a typo loud instead of silent.
+    """
+
+    written: set[str] = set()
+    for key, value in overlay.items():
+        if not isinstance(key, str):
+            raise SettingsError(f"{source} has a non-string key: {key!r}")
+        dotted = f"{prefix}{key}"
+        if isinstance(value, Mapping):
+            if dotted in SETTINGS_BY_KEY:
+                raise SettingsError(
+                    f"{source} gives a table for the single setting {dotted}"
+                )
+            written |= merge_settings(
+                base,
+                value,
+                source=source,
+                prefix=f"{dotted}.",
+            )
+            continue
+        if dotted not in SETTINGS_BY_KEY:
+            raise SettingsError(f"{source} sets an unknown setting: {dotted}")
+        base[dotted] = value
+        written.add(dotted)
+    return written
+
+
+def environment_settings(
+    environ: Mapping[str, str],
+) -> dict[str, tuple[str, str]]:
+    """Return the environment layer as ``key -> (raw value, variable name)``."""
+
+    values: dict[str, tuple[str, str]] = {}
+    for setting in SETTINGS:
+        if not setting.env:
+            continue
+        raw = environ.get(setting.env)
+        if raw is None or not raw.strip():
+            continue
+        values[setting.key] = (raw, setting.env)
+    return values
+
+
+def override_settings(overrides: Sequence[str]) -> dict[str, str]:
+    """Return the command-line layer from repeated ``--set key=value`` pairs."""
+
+    values: dict[str, str] = {}
+    for item in overrides:
+        key, separator, raw = item.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise SettingsError(f"--set expects key=value, got: {item!r}")
+        if key not in SETTINGS_BY_KEY:
+            raise SettingsError(
+                f"--set names an unknown setting: {key}; run --print-config "
+                "to see every key"
+            )
+        values[key] = raw.strip()
+    return values
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveSettings:
+    """Every tunable after the layers have been merged, typed and checked."""
+
+    offline: bool
+    log_level: str
+    tool_detail: str
+    embedding_threads: int | None
+    model_cache_root: Path | None
+    rrf_k: int
+    bm25_weight: float
+    dense_weight: float
+    minimum_candidates: int
+    maximum_candidates: int
+    dense_minimum_cosine_similarity: float
+    rerank_max_candidates: int
+    maximum_withheld_examples: int
+    chunk_size: int
+    chunk_overlap: int
+    chunk_batch_units: int
+    work_budget_seconds: int
+    embedding_batch_size: int
+    pdf_page_batch_size: int
+    dense_backend: str
+    reranker_model: str
+    embedding_inference_batch_size: int
+    exact_backend_chunk_limit: int
+
+    @classmethod
+    def from_values(cls, values: Mapping[str, Any]) -> EffectiveSettings:
+        """Build the settings from a field-keyed mapping, checking every rule."""
+
+        known = {item.name for item in fields(cls)}
+        missing = sorted(known - set(values))
+        if missing:
+            raise SettingsError(
+                "The default config is incomplete; missing: " + ", ".join(missing)
+            )
+        unknown = sorted(set(values) - known)
+        if unknown:
+            raise SettingsError("Unknown settings: " + ", ".join(unknown))
+
+        threads = values["embedding_threads"]
+        cache_root = values["model_cache_root"]
+        settings = cls(
+            **{
+                **values,
+                "embedding_threads": None if not threads else int(threads),
+                "model_cache_root": (
+                    None if not cache_root else Path(str(cache_root)).expanduser()
+                ),
+            }
+        )
+        if settings.chunk_overlap >= settings.chunk_size:
+            raise SettingsError(
+                "chunking.overlap must be below chunking.size: "
+                f"{settings.chunk_overlap} >= {settings.chunk_size}"
+            )
+        if settings.minimum_candidates > settings.maximum_candidates:
+            raise SettingsError(
+                "retrieval.minimum_candidates must not exceed "
+                "retrieval.maximum_candidates: "
+                f"{settings.minimum_candidates} > {settings.maximum_candidates}"
+            )
+        return settings
+
+    def value(self, key: str) -> Any:
+        """Return one setting by its dotted key."""
+
+        setting = SETTINGS_BY_KEY.get(key)
+        if setting is None:
+            raise SettingsError(f"Unknown setting: {key}")
+        return getattr(self, setting.field)
+
+
+def resolve_settings(
+    project_root: str | Path,
+    *,
+    config_path: str | Path | None = None,
+    overrides: Sequence[str] = (),
+    environ: Mapping[str, str] | None = None,
+    override_source: str = LAYER_COMMAND_LINE,
+) -> tuple[EffectiveSettings, dict[str, str]]:
+    """Merge every layer, lowest precedence first, and report where each value came from.
+
+    The layers are the packaged default, the per-user config, the project's own
+    config, an explicitly named file, the environment, and finally the command
+    line. Each later layer names only the keys it changes. Nothing is read
+    relative to the working directory: a client may start this server anywhere.
+    """
+
+    environment = os.environ if environ is None else environ
+    merged: dict[str, Any] = {}
+    provenance: dict[str, str] = {}
+
+    layers: list[tuple[str, Path]] = [(LAYER_DEFAULT, default_config_path())]
+    user_config = user_config_path()
+    if user_config.exists():
+        layers.append((LAYER_USER, user_config))
+    project_config = project_config_path(project_root)
+    if project_config.exists():
+        layers.append((LAYER_PROJECT, project_config))
+    if config_path is not None:
+        layers.append((LAYER_FILE, Path(config_path).expanduser()))
+
+    for name, layer_path in layers:
+        document = read_config_document(layer_path, source=name)
+        written = merge_settings(merged, document, source=f"{name} ({layer_path})")
+        for key in written:
+            provenance[key] = f"{name} ({layer_path})"
+
+    for key, (raw, variable) in environment_settings(environment).items():
+        merged[key] = raw
+        provenance[key] = f"{LAYER_ENVIRONMENT} ({variable})"
+
+    for key, raw in override_settings(overrides).items():
+        merged[key] = raw
+        provenance[key] = override_source
+
+    coerced: dict[str, Any] = {}
+    for key, setting in SETTINGS_BY_KEY.items():
+        if key in merged:
+            coerced[setting.field] = setting.coerce(
+                merged[key],
+                source=provenance.get(key, LAYER_DEFAULT),
+            )
+        else:
+            raise SettingsError(f"No value for setting: {key}")
+    for key in SETTINGS_BY_KEY:
+        provenance.setdefault(key, LAYER_DEFAULT)
+
+    return EffectiveSettings.from_values(coerced), provenance
+
+
+def describe_settings(
+    settings: EffectiveSettings,
+    provenance: Mapping[str, str],
+) -> str:
+    """Render the effective settings, one line per key, with its source."""
+
+    lines: list[str] = [
+        "Effective settings, later layers overriding earlier ones:",
+        "  default.toml < user config < project config < --config < environment < --set",
+    ]
+    width = max(len(setting.key) for setting in SETTINGS)
+    for section in SETTINGS_SECTIONS:
+        lines.append("")
+        lines.append(f"[{section}]")
+        for setting in SETTINGS:
+            if not setting.key.startswith(f"{section}."):
+                continue
+            value = getattr(settings, setting.field)
+            rendered = '""' if value is None else repr(value)
+            if isinstance(value, str):
+                rendered = f'"{value}"'
+            lines.append(
+                f"  {setting.key:<{width}} = {rendered:<28} "
+                f"# {provenance.get(setting.key, LAYER_DEFAULT)}"
+            )
+    return "\n".join(lines)

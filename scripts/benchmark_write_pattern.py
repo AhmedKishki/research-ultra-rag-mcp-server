@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import time
 from contextlib import AbstractContextManager, nullcontext
@@ -37,7 +38,6 @@ from typing import Any
 import pymupdf
 from fastmcp import Client
 
-import research_ultra_rag_mcp.dense as dense_module
 import research_ultra_rag_mcp.service as service_module
 from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.service import ResearchService
@@ -135,31 +135,46 @@ class durable_writes:
 
 
 class chunk_batch:
-    """Force a chunker batch size for the duration of a run."""
+    """Force a chunker batch size for the duration of a run.
+
+    The value is a setting, so this sets the environment variable the settings
+    layer reads rather than patching a module constant: a run that resolves its
+    configuration inside this context sees the forced value.
+    """
+
+    VARIABLE = "RESEARCH_ULTRARAG_CHUNKING_BATCH_UNITS"
 
     def __init__(self, units: int) -> None:
         self.units = units
 
     def __enter__(self) -> None:
-        self._original = service_module.CHUNK_BATCH_UNITS
-        service_module.CHUNK_BATCH_UNITS = self.units
+        self._original = os.environ.get(self.VARIABLE)
+        os.environ[self.VARIABLE] = str(self.units)
 
     def __exit__(self, *exc_info: object) -> None:
-        service_module.CHUNK_BATCH_UNITS = self._original
+        if self._original is None:
+            os.environ.pop(self.VARIABLE, None)
+        else:
+            os.environ[self.VARIABLE] = self._original
 
 
 class embedding_batch:
     """Force the ONNX inference batch size for the duration of a run."""
 
+    VARIABLE = "RESEARCH_ULTRARAG_EMBEDDING_INFERENCE_BATCH_SIZE"
+
     def __init__(self, size: int) -> None:
         self.size = size
 
     def __enter__(self) -> None:
-        self._original = dense_module.EMBEDDING_INFERENCE_BATCH_SIZE
-        dense_module.EMBEDDING_INFERENCE_BATCH_SIZE = self.size
+        self._original = os.environ.get(self.VARIABLE)
+        os.environ[self.VARIABLE] = str(self.size)
 
     def __exit__(self, *exc_info: object) -> None:
-        dense_module.EMBEDDING_INFERENCE_BATCH_SIZE = self._original
+        if self._original is None:
+            os.environ.pop(self.VARIABLE, None)
+        else:
+            os.environ[self.VARIABLE] = self._original
 
 
 def patch_for(variant: str, side: str) -> AbstractContextManager[None]:

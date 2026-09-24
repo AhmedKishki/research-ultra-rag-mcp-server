@@ -42,9 +42,19 @@ def test_embed_texts_uses_the_measured_inference_batch_size(tmp_path: Path) -> N
     vectors = backend.embed_texts(["alpha", "beta"])
 
     # Sequences are padded to the longest member of their inference batch, so the
-    # batch size is a throughput decision rather than a memory setting.
-    assert recorded == [dense_module.EMBEDDING_INFERENCE_BATCH_SIZE]
+    # batch size is a throughput decision rather than a memory setting, and it
+    # reaches the model loader from the settings.
+    assert recorded == [1]
     assert vectors.shape == (2, EMBEDDING_DIMENSION)
+
+    configured = LocalVectorDenseBackend(
+        tmp_path / "models",
+        offline=True,
+        embedding_inference_batch_size=4,
+    )
+    configured._embedding_model = StubEmbedder()  # type: ignore[assignment]
+    configured.embed_texts(["alpha", "beta"])
+    assert recorded == [1, 4]
 
 
 def test_embedding_threads_reach_the_model_loader(

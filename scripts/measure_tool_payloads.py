@@ -28,13 +28,12 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from research_ultra_rag_mcp.config import (
-    FULL_TOOL_DETAIL,
-    LEAN_TOOL_DETAIL,
     ResearchConfig,
     configured_source_directory,
     resolve_config,
 )
 from research_ultra_rag_mcp.server import create_server
+from research_ultra_rag_mcp.settings import FULL_TOOL_DETAIL, LEAN_TOOL_DETAIL
 
 DEFAULT_QUERY = "research evidence"
 
@@ -128,12 +127,18 @@ async def _measure(args: argparse.Namespace) -> int:
     for tool, arguments in calls:
         try:
             lean = await _answer(
-                replace(base, tool_detail=LEAN_TOOL_DETAIL),
+                replace(
+                    base,
+                    settings=replace(base.settings, tool_detail=LEAN_TOOL_DETAIL),
+                ),
                 tool,
                 arguments,
             )
             full = await _answer(
-                replace(base, tool_detail=FULL_TOOL_DETAIL),
+                replace(
+                    base,
+                    settings=replace(base.settings, tool_detail=FULL_TOOL_DETAIL),
+                ),
                 tool,
                 arguments,
             )

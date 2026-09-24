@@ -46,7 +46,6 @@ from typing import Any
 from fastmcp import Client
 
 from research_ultra_rag_mcp.config import (
-    FULL_TOOL_DETAIL,
     configured_source_directory,
     resolve_config,
 )
@@ -55,6 +54,7 @@ from research_ultra_rag_mcp.rerankers import (
     RERANKER_MODEL_CHOICES,
 )
 from research_ultra_rag_mcp.service import ResearchService
+from research_ultra_rag_mcp.settings import FULL_TOOL_DETAIL
 from research_ultra_rag_mcp.transport import create_research_transport
 from research_ultra_rag_mcp.ultrarag import (
     VanillaUltraRAG,

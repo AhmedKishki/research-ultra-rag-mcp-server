@@ -13,8 +13,6 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from .config import (
-    LEAN_TOOL_DETAIL,
-    TOOL_DETAIL_MODES,
     ConfigurationError,
     ResearchConfig,
     configured_source_directory,
@@ -22,8 +20,9 @@ from .config import (
     resolve_config,
 )
 from .instructions import SERVER_INSTRUCTIONS
-from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
+from .rerankers import RERANKER_MODEL_CHOICES
 from .service import ResearchError, ResearchService
+from .settings import TOOL_DETAIL_MODES, describe_settings
 from .tool_views import present_tool_response
 from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 from .version import SERVER_VERSION
@@ -415,7 +414,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model-cache-root",
-        default=os.environ.get("RESEARCH_ULTRARAG_MODEL_CACHE_ROOT"),
+        default=None,
         help=(
             "Shared FastEmbed model cache (default: "
             "~/.cache/research-ultra-rag-mcp/models)."
@@ -442,7 +441,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--embedding-threads",
         type=int,
-        default=os.environ.get("RESEARCH_ULTRARAG_EMBEDDING_THREADS"),
+        default=None,
         help=(
             "ONNX Runtime threads for the embedding model; unset lets the "
             "runtime decide"
@@ -451,7 +450,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dense-backend",
         choices=("auto", "exact", "qdrant"),
-        default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
+        default=None,
         help=(
             "Dense index backend for new generations. 'auto' uses an exact scan "
             "over the portable vectors below the documented corpus threshold and "
@@ -461,9 +460,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reranker-model",
         choices=RERANKER_MODEL_CHOICES,
-        default=os.environ.get(
-            "RESEARCH_ULTRARAG_RERANKER_MODEL", DEFAULT_RERANKER_MODEL
-        ),
+        default=None,
         help=(
             "Reranker model the engine loads for every search; each choice is "
             "pinned to a revision."
@@ -472,7 +469,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--tool-detail",
         choices=TOOL_DETAIL_MODES,
-        default=os.environ.get("RESEARCH_ULTRARAG_TOOL_DETAIL", LEAN_TOOL_DETAIL),
+        default=None,
         help=(
             "Tool answer detail. 'lean' returns the fields an agent acts on. "
             "'full' returns the complete payload for developer debugging of "
@@ -493,7 +490,34 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-level",
         choices=("debug", "info", "warn", "error"),
-        default="warn",
+        default=None,
+    )
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("RESEARCH_ULTRARAG_CONFIG"),
+        help=(
+            "Settings file layered between the project config and the "
+            "environment. Omit to use only the packaged default, the per-user "
+            "file, and the project's own config.toml."
+        ),
+    )
+    parser.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        metavar="KEY=VALUE",
+        default=[],
+        help=(
+            "Override one setting for this invocation; repeat for more. "
+            "--print-config lists every key."
+        ),
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help=(
+            "Print the merged settings with the layer each value came from, then exit."
+        ),
     )
     return parser
 
@@ -544,9 +568,14 @@ def main() -> None:
             embedding_threads=args.embedding_threads,
             tool_detail=args.tool_detail,
             reranker_model=args.reranker_model,
+            config_path=args.config,
+            settings_overrides=args.set_overrides,
         )
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
+    if args.print_config:
+        print(describe_settings(config.settings, config.settings_provenance))
+        return
     create_server(config, ui_port=_ui_port_decision(args.ui_port)).run(
         transport="stdio", show_banner=False
     )

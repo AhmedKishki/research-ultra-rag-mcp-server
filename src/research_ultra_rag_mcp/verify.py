@@ -11,8 +11,9 @@ from typing import Any
 
 from fastmcp import Client
 
-from .config import FULL_TOOL_DETAIL, configured_source_directory, resolve_config
-from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
+from .config import configured_source_directory, resolve_config
+from .rerankers import RERANKER_MODEL_CHOICES
+from .settings import FULL_TOOL_DETAIL, describe_settings
 from .transport import create_research_transport
 
 
@@ -45,7 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model-cache-root",
-        default=os.environ.get("RESEARCH_ULTRARAG_MODEL_CACHE_ROOT"),
+        default=None,
         help="Override the shared FastEmbed model cache.",
     )
     parser.add_argument(
@@ -59,7 +60,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--embedding-threads",
         type=int,
-        default=os.environ.get("RESEARCH_ULTRARAG_EMBEDDING_THREADS"),
+        default=None,
         help=(
             "ONNX Runtime threads for the embedding model; unset lets the "
             "runtime decide"
@@ -68,7 +69,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dense-backend",
         choices=("auto", "exact", "qdrant"),
-        default=os.environ.get("RESEARCH_ULTRARAG_DENSE_BACKEND", "auto"),
+        default=None,
         help=(
             "Dense index backend for a new generation (default: auto, which is "
             "an exact scan below the documented corpus threshold)."
@@ -77,12 +78,37 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reranker-model",
         choices=RERANKER_MODEL_CHOICES,
-        default=os.environ.get(
-            "RESEARCH_ULTRARAG_RERANKER_MODEL", DEFAULT_RERANKER_MODEL
-        ),
+        default=None,
         help=(
             "Reranker model the engine loads for every search; each choice is "
             "pinned to a revision."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("RESEARCH_ULTRARAG_CONFIG"),
+        help=(
+            "Settings file layered between the project config and the "
+            "environment. Omit to use only the packaged default, the per-user "
+            "file, and the project's own config.toml."
+        ),
+    )
+    parser.add_argument(
+        "--set",
+        dest="set_overrides",
+        action="append",
+        metavar="KEY=VALUE",
+        default=[],
+        help=(
+            "Override one setting for this invocation; repeat for more. "
+            "--print-config lists every key."
+        ),
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help=(
+            "Print the merged settings with the layer each value came from, then exit."
         ),
     )
     return parser
@@ -122,7 +148,12 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         runtime_root=args.runtime_root,
         embedding_threads=args.embedding_threads,
         reranker_model=args.reranker_model,
+        config_path=args.config,
+        settings_overrides=args.set_overrides,
     )
+    if args.print_config:
+        print(describe_settings(config.settings, config.settings_provenance))
+        return None
     log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(
         config,
@@ -173,7 +204,8 @@ def main() -> None:
         result = asyncio.run(_verify(args))
     except Exception as exc:
         raise SystemExit(f"Verification failed: {exc}") from exc
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result is not None:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

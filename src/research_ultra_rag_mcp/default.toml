@@ -1,0 +1,81 @@
+# Default settings for research-ultra-rag-mcp.
+#
+# This file ships inside the package and holds every tunable this server reads.
+# A layer above it names only what it changes; layers win per key, lowest first:
+#
+#   this file  <  ~/.config/research-ultra-rag-mcp/config.toml
+#              <  <project>/.research-rag/config.toml
+#              <  --config PATH
+#              <  RESEARCH_ULTRARAG_* environment variables
+#              <  --set key=value
+#
+# `research-ultra-rag-mcp --print-config` prints the merged result and names the
+# layer that supplied each value. A key that is not declared here is refused in
+# every layer, so a typo is an error rather than a silent default.
+#
+# A setting whose class is `identity` decides what a generation contains: its
+# value is recorded in the generation (the retrieval-policy fingerprint for
+# ranking, the chunk settings for chunking), and changing it means the next
+# ingestion builds a new generation instead of mixing two. `AGENTS.md` records
+# the constants that deliberately stay in code: schema and policy versions, and
+# the names and paths that make up the project boundary.
+
+[runtime]
+# Require an installed vanilla runtime and already-cached models.
+offline = false
+# debug, info, warn, or error.
+log_level = "warn"
+# lean (what an agent receives) or full (the developer debugging payload).
+tool_detail = "lean"
+# ONNX Runtime threads for the embedding model; 0 leaves the choice to the runtime.
+embedding_threads = 0
+# Shared FastEmbed model cache; empty means this application's per-user cache.
+model_cache_root = ""
+
+[retrieval]
+# Reciprocal-rank-fusion constant: higher flattens the rank curve. (identity)
+rrf_k = 60
+# Weight of each rank in the fusion. (identity)
+bm25_weight = 1.25
+dense_weight = 1.0
+# Fewest and most fused candidates a search considers. (identity)
+minimum_candidates = 20
+maximum_candidates = 200
+# A dense candidate below this cosine similarity is withheld, not ranked. (identity)
+dense_minimum_cosine_similarity = 0.72
+# Most candidates the cross-encoder reorders by score; the unranked tail of the
+# fused order is appended after them, so a reference group stays reachable. (identity)
+rerank_max_candidates = 50
+# Withheld candidates quoted per gate reason in a search answer. (identity)
+maximum_withheld_examples = 5
+
+[chunking]
+# Target chunk length in GPT-2 tokens, and the tokens neighbours share. (identity:
+# both are recorded in the generation and decide chunk boundaries.)
+size = 384
+overlap = 64
+# Extraction units sent to one chunker call. Throughput only: each unit keeps its
+# own durable output file and its own redo boundary.
+batch_units = 16
+
+[ingestion]
+# Soft time budget for one ingest call; exhausting it returns a checkpointed
+# in_progress result rather than losing work.
+work_budget_seconds = 45
+# Chunks embedded per gateway call, and PDF pages extracted per call. Throughput only.
+embedding_batch_size = 64
+pdf_page_batch_size = 8
+
+[dense]
+# Dense index backend for new generations: auto, exact, or qdrant. (engine choice,
+# recorded in every generation it builds.)
+backend = "auto"
+# CPU cross-encoder that reranks every search. Every supported name is pinned to a
+# revision in rerankers.py. (engine choice, recorded in the answer and the manifest.)
+reranker_model = "Xenova/ms-marco-MiniLM-L-6-v2"
+# Sequences per embedding inference. Throughput only: a batch of 1 returns exactly
+# the same floats as a batch of 64 (MEASUREMENTS.md).
+embedding_inference_batch_size = 1
+# Above this many chunks, `auto` selects the embedded ANN index instead of the exact
+# scan. (engine choice, recorded in every generation it builds.)
+exact_backend_chunk_limit = 200000

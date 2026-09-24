@@ -33,7 +33,6 @@ from .dense import (
     EMBEDDING_MAXIMUM_TOKENS,
     EMBEDDING_MODEL,
     EMBEDDING_MODEL_REVISION,
-    EXACT_BACKEND_CHUNK_LIMIT,
     EXACT_BACKEND_NAME,
     QDRANT_BACKEND_NAME,
     DenseBackend,
@@ -69,6 +68,7 @@ from .generation import (
 )
 from .launcher import ui_launcher_state
 from .rerankers import resolve_reranker_model
+from .settings import SETTINGS_BY_KEY, EffectiveSettings
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
     SourceFile,
@@ -108,51 +108,50 @@ INGESTION_CHECKPOINT_VERSION = 1
 INGESTION_IDENTITY_POLICY_VERSION = 2
 PENDING_ACTIVATION_VERSION = 1
 METADATA_STORAGE_POLICY = "automatic_only_runtime_overlay_v1"
-DEFAULT_WORK_BUDGET_SECONDS = 45
-MINIMUM_WORK_BUDGET_SECONDS = 10
-MAXIMUM_WORK_BUDGET_SECONDS = 300
-EMBEDDING_BATCH_SIZE = 64
-PDF_PAGE_BATCH_SIZE = 8
-# Extraction units sent to one chunker call. The gateway round trip and the
-# per-call commit dominate the chunking phase on slow storage, so several units
-# share a call; a returned chunk names its unit in `doc_id`, and each unit still
-# gets its own durable output file and keeps its own redo boundary within a
-# crash. Setting this to 1 restores one call and one commit per unit.
-CHUNK_BATCH_UNITS = 16
+# The retrieval policy is fixed here — the tool offers exactly one way to
+# search — while the numbers that shape it live in the settings file, so fusion
+# weights, gates, batch sizes, and budgets are tunable without editing code.
 DEFAULT_RETRIEVAL_METHOD = "hybrid"
 RETRIEVAL_METHODS = frozenset({"bm25", "dense", "hybrid"})
-RRF_K = 60
-BM25_RRF_WEIGHT = 1.25
-DENSE_RRF_WEIGHT = 1.0
-DENSE_MINIMUM_COSINE_SIMILARITY = 0.72
-MINIMUM_CANDIDATES = 20
-MAXIMUM_CANDIDATES = 200
-RERANK_MAX_CANDIDATES = 50
-MAXIMUM_WITHHELD_EXAMPLES = 5
 # The generation-relative directory each dense backend writes its index into.
 DENSE_INDEX_PATHS = {
     QDRANT_BACKEND_NAME: "indexes/qdrant",
     EXACT_BACKEND_NAME: "indexes/vectors",
 }
-RETRIEVAL_POLICY_FINGERPRINT = value_fingerprint(
-    {
-        "default_method": DEFAULT_RETRIEVAL_METHOD,
-        "available_methods": sorted(RETRIEVAL_METHODS),
-        "bm25": {"language": "en", "tokenizer": "default"},
-        "fusion": {
-            "method": "weighted_reciprocal_rank_fusion",
-            "rrf_k": RRF_K,
-            "bm25_weight": BM25_RRF_WEIGHT,
-            "dense_weight": DENSE_RRF_WEIGHT,
-            "minimum_candidates": MINIMUM_CANDIDATES,
-            "maximum_candidates": MAXIMUM_CANDIDATES,
-        },
-        "relevance_gates": {
-            "bm25_requires_query_token_overlap": True,
-            "dense_minimum_cosine_similarity": DENSE_MINIMUM_COSINE_SIMILARITY,
-        },
-    }
-)
+
+
+def retrieval_policy_fingerprint(settings: EffectiveSettings) -> str:
+    """Return the identity of the ranking policy these settings describe.
+
+    The fusion constants and the relevance gates decide what a search returns,
+    so their values are part of what a generation *is*: a generation that
+    recorded a different policy than this process runs is not reusable, and the
+    next ingestion builds a new generation instead of mixing two.
+    """
+
+    return value_fingerprint(
+        {
+            "default_method": DEFAULT_RETRIEVAL_METHOD,
+            "available_methods": sorted(RETRIEVAL_METHODS),
+            "bm25": {"language": "en", "tokenizer": "default"},
+            "fusion": {
+                "method": "weighted_reciprocal_rank_fusion",
+                "rrf_k": settings.rrf_k,
+                "bm25_weight": settings.bm25_weight,
+                "dense_weight": settings.dense_weight,
+                "minimum_candidates": settings.minimum_candidates,
+                "maximum_candidates": settings.maximum_candidates,
+            },
+            "relevance_gates": {
+                "bm25_requires_query_token_overlap": True,
+                "dense_minimum_cosine_similarity": (
+                    settings.dense_minimum_cosine_similarity
+                ),
+            },
+        }
+    )
+
+
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 _STOPWORDS = frozenset(
     {
@@ -271,6 +270,7 @@ def _checkpoint_identity(
     chunk_size: int,
     chunk_overlap: int,
     force_recompute: bool,
+    retrieval_policy: str,
 ) -> str:
     return value_fingerprint(
         {
@@ -285,7 +285,7 @@ def _checkpoint_identity(
             "extraction_policy_version": EXTRACTION_POLICY_VERSION,
             "cleaning_policy_version": CLEANING_POLICY_VERSION,
             "artifact_policy_version": ARTIFACT_POLICY_VERSION,
-            "retrieval_policy_fingerprint": RETRIEVAL_POLICY_FINGERPRINT,
+            "retrieval_policy_fingerprint": retrieval_policy,
             "embedding_model": EMBEDDING_MODEL,
             "embedding_model_revision": EMBEDDING_MODEL_REVISION,
             "embedding_dimension": EMBEDDING_DIMENSION,
@@ -758,6 +758,8 @@ def _record_withheld(
     withheld: dict[str, dict[str, Any]],
     chunk: dict[str, Any],
     reasons: Sequence[str],
+    *,
+    limit: int,
 ) -> None:
     """Record why a candidate was withheld so the response can disclose it."""
 
@@ -765,7 +767,7 @@ def _record_withheld(
         entry = withheld.setdefault(reason, {"count": 0, "example_chunk_ids": []})
         entry["count"] = int(entry["count"]) + 1
         examples = entry["example_chunk_ids"]
-        if len(examples) < MAXIMUM_WITHHELD_EXAMPLES:
+        if len(examples) < limit:
             examples.append(str(chunk["chunk_id"]))
 
 
@@ -820,12 +822,18 @@ class ResearchService:
                     offline=config.offline,
                     embedding_threads=config.embedding_threads,
                     reranker_model=config.reranker_model,
+                    embedding_inference_batch_size=(
+                        config.settings.embedding_inference_batch_size
+                    ),
                 ),
                 EXACT_BACKEND_NAME: LocalVectorDenseBackend(
                     config.models_root,
                     offline=config.offline,
                     embedding_threads=config.embedding_threads,
                     reranker_model=config.reranker_model,
+                    embedding_inference_batch_size=(
+                        config.settings.embedding_inference_batch_size
+                    ),
                 ),
             }
         # The primary backend answers model-only calls; indexing, validation, and
@@ -834,6 +842,11 @@ class ResearchService:
             self._dense_backends[EXACT_BACKEND_NAME]
             if config.dense_backend in {"auto", "exact"}
             else self._dense_backends[QDRANT_BACKEND_NAME]
+        )
+        # The ranking policy is part of a generation identity, so it is
+        # computed once from the settings this process resolved.
+        self.retrieval_policy_fingerprint = retrieval_policy_fingerprint(
+            config.settings
         )
         self._lock = asyncio.Lock()
         self._project_lock = AsyncFileLock(
@@ -886,7 +899,7 @@ class ResearchService:
             return EXACT_BACKEND_NAME
         if self.config.dense_backend == "qdrant":
             return QDRANT_BACKEND_NAME
-        if chunk_count <= EXACT_BACKEND_CHUNK_LIMIT:
+        if chunk_count <= self.config.settings.exact_backend_chunk_limit:
             return EXACT_BACKEND_NAME
         return QDRANT_BACKEND_NAME
 
@@ -1764,6 +1777,7 @@ class ResearchService:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             force_recompute=force_recompute,
+            retrieval_policy=self.retrieval_policy_fingerprint,
         )
         now = _utc_now()
         checkpoint: dict[str, Any] = {
@@ -1839,13 +1853,14 @@ class ResearchService:
         ):
             reasons.append("embedding_model")
         if (
-            manifest.get("retrieval_policy_fingerprint") != RETRIEVAL_POLICY_FINGERPRINT
+            manifest.get("retrieval_policy_fingerprint")
+            != self.retrieval_policy_fingerprint
             or fusion_policy.get("method") != "weighted_reciprocal_rank_fusion"
-            or fusion_policy.get("rrf_k") != RRF_K
-            or fusion_policy.get("bm25_weight") != BM25_RRF_WEIGHT
-            or fusion_policy.get("dense_weight") != DENSE_RRF_WEIGHT
+            or fusion_policy.get("rrf_k") != self.config.settings.rrf_k
+            or fusion_policy.get("bm25_weight") != self.config.settings.bm25_weight
+            or fusion_policy.get("dense_weight") != self.config.settings.dense_weight
             or relevance_policy.get("dense_minimum_cosine_similarity")
-            != DENSE_MINIMUM_COSINE_SIMILARITY
+            != self.config.settings.dense_minimum_cosine_similarity
             or relevance_policy.get("bm25_requires_query_token_overlap") is not True
         ):
             reasons.append("retrieval_policy")
@@ -2281,6 +2296,7 @@ class ResearchService:
         path: Path,
         batches_root: Path,
         total: int,
+        embedding_batch_size: int,
     ) -> None:
         """Assemble portable vectors without allocating a second full matrix."""
 
@@ -2294,7 +2310,7 @@ class ResearchService:
                 dtype=np.float32,
                 shape=(total, EMBEDDING_DIMENSION),
             )
-            for offset in range(0, total, EMBEDDING_BATCH_SIZE):
+            for offset in range(0, total, embedding_batch_size):
                 batch = np.load(
                     batches_root / f"{offset:012d}.npy",
                     allow_pickle=False,
@@ -2443,7 +2459,7 @@ class ResearchService:
                     snapshot,
                     records,
                     exclusion_revision=str(checkpoint["source_exclusion_revision"]),
-                    retrieval_policy_fingerprint=RETRIEVAL_POLICY_FINGERPRINT,
+                    retrieval_policy_fingerprint=(self.retrieval_policy_fingerprint),
                     metadata_storage_policy=METADATA_STORAGE_POLICY,
                 ):
                     manifest = snapshot.manifest
@@ -2574,7 +2590,7 @@ class ResearchService:
                             "extraction_stage": "pdf_scan",
                             "next_index": 0,
                             "total": total,
-                            "page_batch_size": PDF_PAGE_BATCH_SIZE,
+                            "page_batch_size": self.config.settings.pdf_page_batch_size,
                             "rejected_units": [],
                             "empty_units": 0,
                             "removed_repeated_margin_blocks": 0,
@@ -2584,7 +2600,12 @@ class ResearchService:
                         }
                         checkpoint["extraction_work_total"] = (
                             int(checkpoint.get("extraction_work_total") or 0)
-                            + (_pdf_batch_count(total, PDF_PAGE_BATCH_SIZE) * 2)
+                            + (
+                                _pdf_batch_count(
+                                    total, self.config.settings.pdf_page_batch_size
+                                )
+                                * 2
+                            )
                             + 2
                         )
                         atomic_write_json(state_path, state)
@@ -2899,7 +2920,8 @@ class ResearchService:
                         continue
                     if chunked_count < len(units):
                         batch_units = units[
-                            chunked_count : chunked_count + CHUNK_BATCH_UNITS
+                            chunked_count : chunked_count
+                            + self.config.settings.chunk_batch_units
                         ]
                         requested_ids = {str(unit["id"]) for unit in batch_units}
                         chunking_root = artifact_root / "chunking"
@@ -3062,7 +3084,7 @@ class ResearchService:
                 batch: list[dict[str, Any]] = []
                 for chunk in iter_jsonl(chunks_path):
                     batch.append(chunk)
-                    if len(batch) < EMBEDDING_BATCH_SIZE:
+                    if len(batch) < self.config.settings.embedding_batch_size:
                         continue
                     atomic_write_jsonl(
                         batches_root / f"{offset:012d}.jsonl",
@@ -3198,6 +3220,7 @@ class ResearchService:
                     vectors_path,
                     staging_root / "work" / "vector-batches",
                     total,
+                    self.config.settings.embedding_batch_size,
                 )
                 self._add_phase_time(
                     checkpoint,
@@ -3466,7 +3489,7 @@ class ResearchService:
                     "source_exclusion_revision": checkpoint[
                         "source_exclusion_revision"
                     ],
-                    "retrieval_policy_fingerprint": RETRIEVAL_POLICY_FINGERPRINT,
+                    "retrieval_policy_fingerprint": (self.retrieval_policy_fingerprint),
                     "source_file_count": len(scan.selected),
                     "excluded_source_count": len(exclusions),
                     "document_count": len(documents),
@@ -3503,16 +3526,16 @@ class ResearchService:
                         "dense": dense_metadata,
                         "fusion": {
                             "method": "weighted_reciprocal_rank_fusion",
-                            "rrf_k": RRF_K,
-                            "bm25_weight": BM25_RRF_WEIGHT,
-                            "dense_weight": DENSE_RRF_WEIGHT,
-                            "minimum_candidates": MINIMUM_CANDIDATES,
-                            "maximum_candidates": MAXIMUM_CANDIDATES,
+                            "rrf_k": self.config.settings.rrf_k,
+                            "bm25_weight": self.config.settings.bm25_weight,
+                            "dense_weight": self.config.settings.dense_weight,
+                            "minimum_candidates": self.config.settings.minimum_candidates,
+                            "maximum_candidates": self.config.settings.maximum_candidates,
                         },
                         "relevance_gates": {
                             "bm25_requires_query_token_overlap": True,
                             "dense_minimum_cosine_similarity": (
-                                DENSE_MINIMUM_COSINE_SIMILARITY
+                                self.config.settings.dense_minimum_cosine_similarity
                             ),
                         },
                         "reranker": {
@@ -3522,7 +3545,7 @@ class ResearchService:
                             "model_revision": _reranker_revision(
                                 self.config.reranker_model
                             ),
-                            "maximum_candidates": RERANK_MAX_CANDIDATES,
+                            "maximum_candidates": self.config.settings.rerank_max_candidates,
                         },
                     },
                     "documents": documents,
@@ -3647,23 +3670,42 @@ class ResearchService:
     async def ingest(
         self,
         *,
-        chunk_size: int = 384,
-        chunk_overlap: int = 64,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
         force_recompute: bool = False,
-        work_budget_seconds: int = DEFAULT_WORK_BUDGET_SECONDS,
+        work_budget_seconds: int | None = None,
     ) -> dict[str, Any]:
-        if not 50 <= chunk_size <= 384:
-            raise ResearchError("chunk_size must be between 50 and 384 GPT-2 tokens")
+        """Create or refresh the generation that search reads.
+
+        An omitted parameter comes from the merged settings, which is where the
+        chunking values live; a caller that passes one gets it checked here.
+        """
+
+        settings = self.config.settings
+        if chunk_size is None:
+            chunk_size = settings.chunk_size
+        if chunk_overlap is None:
+            chunk_overlap = settings.chunk_overlap
+        if work_budget_seconds is None:
+            work_budget_seconds = settings.work_budget_seconds
+        size_setting = SETTINGS_BY_KEY["chunking.size"]
+        if not size_setting.minimum <= chunk_size <= size_setting.maximum:
+            raise ResearchError(
+                "chunk_size must be between "
+                f"{size_setting.minimum:g} and {size_setting.maximum:g} GPT-2 tokens"
+            )
         if not 0 <= chunk_overlap < chunk_size:
             raise ResearchError(
                 "chunk_overlap must be non-negative and below chunk_size"
             )
-        if (
-            not MINIMUM_WORK_BUDGET_SECONDS
-            <= work_budget_seconds
-            <= (MAXIMUM_WORK_BUDGET_SECONDS)
-        ):
-            raise ResearchError("work_budget_seconds must be between 10 and 300")
+        budget_setting = SETTINGS_BY_KEY["ingestion.work_budget_seconds"]
+        # An engine caller may ask for 0 to checkpoint at the next boundary; the
+        # configured setting keeps the higher floor, since a whole build with a
+        # budget below it would only ever complete one unit per call.
+        if not 0 <= work_budget_seconds <= budget_setting.maximum:
+            raise ResearchError(
+                f"work_budget_seconds must be between 0 and {budget_setting.maximum:g}"
+            )
 
         async with self._operation():
             deadline = time.perf_counter() + work_budget_seconds
@@ -3706,6 +3748,7 @@ class ResearchService:
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 force_recompute=force_recompute,
+                retrieval_policy=self.retrieval_policy_fingerprint,
             )
             recovered = await self._recover_pending_activation(
                 expected_identity=identity,
@@ -3889,7 +3932,7 @@ class ResearchService:
         )
         requested = min(
             total_chunk_count,
-            max(limit * 4, MINIMUM_CANDIDATES),
+            max(limit * 4, self.config.settings.minimum_candidates),
         )
         query_tokens = _content_tokens(query)
         by_contents: dict[str, list[dict[str, Any]]] = {}
@@ -3963,6 +4006,7 @@ class ResearchService:
                         withheld,
                         chunk,
                         text_corruption_reasons(_chunk_text(chunk)),
+                        limit=self.config.settings.maximum_withheld_examples,
                     )
                     continue
                 tokens = tokens_cache.get(chunk_id)
@@ -3989,6 +4033,11 @@ class ResearchService:
     def _fuse_rankings(
         bm25_ranking: list[str],
         dense_ranking: list[str],
+        *,
+        rrf_k: int,
+        bm25_weight: float,
+        dense_weight: float,
+        maximum_candidates: int,
     ) -> tuple[list[str], dict[str, float]]:
         scores: defaultdict[str, float] = defaultdict(float)
         component_ranks = (
@@ -3997,16 +4046,17 @@ class ResearchService:
         )
         bm25_ranks, dense_ranks = component_ranks
         for chunk_id, rank in bm25_ranks.items():
-            scores[chunk_id] += BM25_RRF_WEIGHT / (RRF_K + rank)
+            scores[chunk_id] += bm25_weight / (rrf_k + rank)
         for chunk_id, rank in dense_ranks.items():
-            scores[chunk_id] += DENSE_RRF_WEIGHT / (RRF_K + rank)
+            scores[chunk_id] += dense_weight / (rrf_k + rank)
+        absent = maximum_candidates + 1
         ordered = sorted(
             scores,
             key=lambda chunk_id: (
                 -scores[chunk_id],
                 min(
-                    bm25_ranks.get(chunk_id, MAXIMUM_CANDIDATES + 1),
-                    dense_ranks.get(chunk_id, MAXIMUM_CANDIDATES + 1),
+                    bm25_ranks.get(chunk_id, absent),
+                    dense_ranks.get(chunk_id, absent),
                 ),
                 chunk_id,
             ),
@@ -4153,8 +4203,8 @@ class ResearchService:
             )
             candidate_depth = min(
                 active_chunk_count,
-                MAXIMUM_CANDIDATES,
-                max(MINIMUM_CANDIDATES, top_k * 4),
+                self.config.settings.maximum_candidates,
+                max(self.config.settings.minimum_candidates, top_k * 4),
             )
 
             use_bm25 = retrieval_method in {"bm25", "hybrid"}
@@ -4249,6 +4299,7 @@ class ResearchService:
                         withheld,
                         chunk,
                         text_corruption_reasons(_chunk_text(chunk)),
+                        limit=self.config.settings.maximum_withheld_examples,
                     )
                     continue
                 if not self._matches_filters(
@@ -4261,7 +4312,10 @@ class ResearchService:
                     excluded_document_ids=excluded_document_ids,
                 ):
                     continue
-                if dense_hit.score < DENSE_MINIMUM_COSINE_SIMILARITY:
+                if (
+                    dense_hit.score
+                    < self.config.settings.dense_minimum_cosine_similarity
+                ):
                     dense_below_threshold += 1
                     continue
                 accepted_dense_hits.append(dense_hit)
@@ -4278,6 +4332,10 @@ class ResearchService:
                 ordered_ids, fusion_scores = self._fuse_rankings(
                     bm25_ranking,
                     dense_ranking,
+                    rrf_k=self.config.settings.rrf_k,
+                    bm25_weight=self.config.settings.bm25_weight,
+                    dense_weight=self.config.settings.dense_weight,
+                    maximum_candidates=self.config.settings.maximum_candidates,
                 )
             elif retrieval_method == "bm25":
                 ordered_ids = bm25_ranking
@@ -4301,7 +4359,7 @@ class ResearchService:
             if rerank and ordered_ids:
                 rerank_count = min(
                     len(ordered_ids),
-                    RERANK_MAX_CANDIDATES,
+                    self.config.settings.rerank_max_candidates,
                     max(top_k * 2, 10),
                 )
                 rerank_ids = ordered_ids[:rerank_count]
@@ -4440,9 +4498,9 @@ class ResearchService:
                 "fusion": (
                     {
                         "method": "weighted_reciprocal_rank_fusion",
-                        "rrf_k": RRF_K,
-                        "bm25_weight": BM25_RRF_WEIGHT,
-                        "dense_weight": DENSE_RRF_WEIGHT,
+                        "rrf_k": self.config.settings.rrf_k,
+                        "bm25_weight": self.config.settings.bm25_weight,
+                        "dense_weight": self.config.settings.dense_weight,
                     }
                     if retrieval_method == "hybrid"
                     else None
@@ -4450,7 +4508,7 @@ class ResearchService:
                 "relevance_policy": {
                     "bm25_requires_query_token_overlap": True,
                     "dense_minimum_cosine_similarity": (
-                        DENSE_MINIMUM_COSINE_SIMILARITY
+                        self.config.settings.dense_minimum_cosine_similarity
                     ),
                 },
                 "rejected_candidates": {

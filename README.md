@@ -44,16 +44,60 @@ There is nothing else to install: no separate UltraRAG checkout, no external vec
 
 The pinned UltraRAG runtime is installed automatically. The embedding model is downloaded on first ingestion, and the reranker model on its first search. Model binaries are shared at `~/.cache/research-ultra-rag-mcp/models`, while all document data stays inside each project.
 
-Useful settings, all optional:
+## Settings
+
+Nothing that decides an outcome is compiled in. `default.toml` ships inside the package with the values this server uses when nobody says otherwise, and every layer above it names only what it changes — a handful of keys, or a whole section, and the rest is inherited. Later layers win, per key:
+
+| Layer | Where |
+|---|---|
+| built-in defaults | `default.toml` inside the installed package |
+| per-user config | `~/.config/research-ultra-rag-mcp/config.toml` (platform config directory) |
+| per-project config | `<project>/.research-rag/config.toml` |
+| an explicit file | `--config PATH` or `RESEARCH_ULTRARAG_CONFIG` |
+| environment | `RESEARCH_ULTRARAG_*`, one per setting |
+| command line | `--set key=value`, repeatable |
+
+Inspect the result instead of guessing: `research-ultra-rag-mcp --project-root <project> --print-config` prints every key, its effective value, and the layer that supplied it. A key that is not declared is refused in every layer, so a mistyped name is an error rather than a silent default, and a value outside its bounds is refused with the key and the bound named.
+
+Settings come in three classes, marked in `default.toml`:
+
+- **identity** — the value decides what a generation contains. The ranking values (fusion weights, the RRF constant, the dense cosine gate, candidate counts, the rerank cap, the withheld-example limit) enter the retrieval-policy fingerprint, and the chunking values are recorded with the generation. Change one and the next ingestion builds a new generation instead of quietly mixing two; a generation that recorded a different policy is reported as needing an upgrade, never reused as if it matched.
+- **engine choice** — the dense backend, the reranker model, and the exact-scan threshold. Each is recorded in the generation it built and in the answers that used it.
+- **runtime** — thread counts, batch sizes, the work budget, log level, tool detail, and where the shared model cache lives. These shape this process only and cannot change an artifact.
+
+The operational values stay command-line only, because they name an invocation rather than a preference: `--project-root`, `--source-directory`, `--runtime-root`, `--vanilla-executable`, `--runtime-cache-root`, `--port`, and `--ui-port`.
+
+The settings that are commonly set, and what they do:
 
 | Setting | What it does |
 |---|---|
-| `--model-cache-root` or `RESEARCH_ULTRARAG_MODEL_CACHE_ROOT` | Move the shared model cache elsewhere. |
-| `--dense-backend auto\|exact\|qdrant` or `RESEARCH_ULTRARAG_DENSE_BACKEND` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for very large ones. |
-| `--embedding-threads` or `RESEARCH_ULTRARAG_EMBEDDING_THREADS` | Set the CPU thread count for embedding. Left unset by default because the best value depends on your machine. |
-| `--reranker-model NAME` or `RESEARCH_ULTRARAG_RERANKER_MODEL` | Choose the CPU cross-encoder that reranks every search. Six are supported, each pinned to a revision, and an unknown name is refused rather than resolved to whatever the model hub serves that day. See "How a search works". |
+| `runtime.model_cache_root` or `--model-cache-root` | Move the shared model cache elsewhere. |
+| `dense.backend auto\|exact\|qdrant` or `--dense-backend` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for very large ones. |
+| `dense.reranker_model NAME` or `--reranker-model` | Choose the CPU cross-encoder that reranks every search. Six are supported, each pinned to a revision, and an unknown name is refused rather than resolved to whatever the model hub serves that day. See "How a search works". |
+| `runtime.embedding_threads` or `--embedding-threads` | Set the CPU thread count for embedding. Left to the runtime by default because the best value depends on your machine. |
+| `retrieval.*` | Tune fusion and gating: `rrf_k`, `bm25_weight`, `dense_weight`, `minimum_candidates`, `maximum_candidates`, `dense_minimum_cosine_similarity`, `rerank_max_candidates`, `maximum_withheld_examples`. These are identity settings: the next ingestion is a new generation. |
+| `chunking.size`, `chunking.overlap` | Chunk length and overlap in tokens. Identity settings, recorded with the generation. |
+| `ingestion.work_budget_seconds` | Soft time budget for one `ingest` call before it returns a checkpointed `in_progress` result. |
+| `runtime.tool_detail` or `--tool-detail` | `lean` (what an agent gets) or `full` (the developer debugging payload). |
 | `--runtime-root` or `RESEARCH_ULTRARAG_RUNTIME_ROOT` | Keep the working files (indexes, staging, logs) on a different disk. See "Where project data is stored". |
 | `--offline` | Fail instead of downloading anything. Use it once the runtime and models are cached. |
+
+Two examples:
+
+```bash
+# One run, without editing any file.
+research-ultra-rag-mcp --project-root ~/research \
+    --set retrieval.rrf_k=30 --set chunking.size=300 --print-config
+
+# A project that always uses a different reranker and a tighter dense gate.
+cat > ~/research/.research-rag/config.toml <<'TOML'
+[dense]
+reranker_model = "jinaai/jina-reranker-v1-turbo-en"
+
+[retrieval]
+dense_minimum_cosine_similarity = 0.65
+TOML
+```
 
 ## Update an existing installation
 

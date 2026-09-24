@@ -31,6 +31,7 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "research-ultra-rag-verify",
         "--force-recompute",
         "--reranker-model",
+        "--print-config",
         'status="in_progress"',
         "metadata_overlay_active",
         "effective_immediately",

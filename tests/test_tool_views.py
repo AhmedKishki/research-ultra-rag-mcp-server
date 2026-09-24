@@ -9,13 +9,15 @@ from pathlib import Path
 import pytest
 
 from research_ultra_rag_mcp.config import (
-    FULL_TOOL_DETAIL,
-    LEAN_TOOL_DETAIL,
     ConfigurationError,
     resolve_config,
 )
 from research_ultra_rag_mcp.server import _parser
 from research_ultra_rag_mcp.service import ResearchError
+from research_ultra_rag_mcp.settings import (
+    FULL_TOOL_DETAIL,
+    LEAN_TOOL_DETAIL,
+)
 from research_ultra_rag_mcp.tool_views import present_tool_response
 
 # Keys the service builds for ranking, extraction, and storage diagnostics. A
@@ -465,16 +467,17 @@ def test_tool_detail_defaults_to_lean_and_rejects_unknown_modes(project: Path) -
         )
 
 
-def test_server_parser_reads_the_detail_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_server_parser_leaves_the_detail_mode_to_the_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("RESEARCH_ULTRARAG_PROJECT_ROOT", "/tmp/research-project")
     monkeypatch.delenv("RESEARCH_ULTRARAG_TOOL_DETAIL", raising=False)
 
-    assert _parser().parse_args([]).tool_detail == LEAN_TOOL_DETAIL
-
-    monkeypatch.setenv("RESEARCH_ULTRARAG_TOOL_DETAIL", "full")
-    assert _parser().parse_args([]).tool_detail == FULL_TOOL_DETAIL
-    assert _parser().parse_args(["--tool-detail", LEAN_TOOL_DETAIL]).tool_detail == (
-        LEAN_TOOL_DETAIL
+    # No flag and no variable means nothing was chosen here, so the settings
+    # layers decide; an explicit flag is passed through.
+    assert _parser().parse_args([]).tool_detail is None
+    assert _parser().parse_args(["--tool-detail", FULL_TOOL_DETAIL]).tool_detail == (
+        FULL_TOOL_DETAIL
     )
 
 

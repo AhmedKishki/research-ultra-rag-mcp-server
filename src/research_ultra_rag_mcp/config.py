@@ -7,13 +7,18 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from platformdirs import user_cache_path
 
 from .launcher import ensure_ui_launcher
-from .rerankers import DEFAULT_RERANKER_MODEL, RERANKER_MODEL_CHOICES
+from .settings import (
+    EffectiveSettings,
+    SettingsError,
+    resolve_settings,
+)
 
 
 class ConfigurationError(ValueError):
@@ -21,12 +26,6 @@ class ConfigurationError(ValueError):
 
 
 _RUNTIME_MARKER = ".research-ultra-rag-runtime.json"
-
-# Tool answer detail. `lean` is what the MCP tools return; `full` is the
-# developer debugging mode and returns the service payload unchanged.
-LEAN_TOOL_DETAIL = "lean"
-FULL_TOOL_DETAIL = "full"
-TOOL_DETAIL_MODES = (LEAN_TOOL_DETAIL, FULL_TOOL_DETAIL)
 
 # A server this project starts for itself is a managed child: it may not serve
 # the browser UI, because only a server an operator started may. Every child
@@ -69,13 +68,36 @@ class ResearchConfig:
     vanilla_executable: Path
     runtime_cache_root: Path | None
     model_cache_root: Path
-    offline: bool
-    log_level: str
-    dense_backend: str = "auto"
+    settings: EffectiveSettings
+    settings_provenance: dict[str, str] = field(default_factory=dict)
     runtime_root: Path | None = None
-    embedding_threads: int | None = None
-    tool_detail: str = LEAN_TOOL_DETAIL
-    reranker_model: str = DEFAULT_RERANKER_MODEL
+
+    # The tunables live in one place — the merged settings — and these names
+    # read through to them, so nothing has to be kept in step by hand.
+
+    @property
+    def offline(self) -> bool:
+        return self.settings.offline
+
+    @property
+    def log_level(self) -> str:
+        return self.settings.log_level
+
+    @property
+    def tool_detail(self) -> str:
+        return self.settings.tool_detail
+
+    @property
+    def embedding_threads(self) -> int | None:
+        return self.settings.embedding_threads
+
+    @property
+    def dense_backend(self) -> str:
+        return self.settings.dense_backend
+
+    @property
+    def reranker_model(self) -> str:
+        return self.settings.reranker_model
 
     @property
     def generations_root(self) -> Path:
@@ -399,13 +421,22 @@ def resolve_config(
     runtime_cache_root: str | Path | None = None,
     runtime_root: str | Path | None = None,
     model_cache_root: str | Path | None = None,
-    offline: bool = False,
-    log_level: str = "warn",
-    dense_backend: str = "auto",
+    offline: bool | None = None,
+    log_level: str | None = None,
+    dense_backend: str | None = None,
     embedding_threads: int | str | None = None,
-    tool_detail: str = LEAN_TOOL_DETAIL,
-    reranker_model: str = DEFAULT_RERANKER_MODEL,
+    tool_detail: str | None = None,
+    reranker_model: str | None = None,
+    config_path: str | Path | None = None,
+    settings_overrides: Sequence[str] = (),
+    environ: Mapping[str, str] | None = None,
 ) -> ResearchConfig:
+    """Resolve the project boundary, then merge every settings layer.
+
+    Every keyword above is the *command-line* layer: passing one overrides the
+    environment and the config files for this invocation, and leaving it unset
+    inherits from them.
+    """
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
         raise ConfigurationError(f"Project root is not a directory: {project}")
@@ -451,49 +482,32 @@ def resolve_config(
             f"vanilla-ultra-rag-mcp executable was not found: {executable}"
         )
 
-    if log_level not in {"debug", "info", "warn", "error"}:
-        raise ConfigurationError(f"Unsupported log level: {log_level}")
-
-    normalized_tool_detail = (
-        tool_detail.strip().casefold() if isinstance(tool_detail, str) else ""
-    )
-    if normalized_tool_detail not in TOOL_DETAIL_MODES:
-        raise ConfigurationError(
-            f"Unsupported tool detail: {tool_detail!r}; expected one of: "
-            f"{', '.join(TOOL_DETAIL_MODES)}"
-        )
-
-    if (
-        embedding_threads is None
-        or isinstance(embedding_threads, str)
-        and not embedding_threads.strip()
+    overrides = list(settings_overrides)
+    for key, value in (
+        ("runtime.model_cache_root", model_cache_root),
+        ("runtime.log_level", log_level),
+        ("runtime.tool_detail", tool_detail),
+        ("runtime.embedding_threads", embedding_threads),
+        ("dense.backend", dense_backend),
+        ("dense.reranker_model", reranker_model),
     ):
-        normalized_threads = None
-    else:
-        try:
-            normalized_threads = int(embedding_threads)
-        except (TypeError, ValueError) as exc:
-            raise ConfigurationError(
-                f"Invalid embedding thread count: {embedding_threads!r}"
-            ) from exc
-        if normalized_threads < 1:
-            raise ConfigurationError("--embedding-threads must be at least 1")
+        if value is not None and str(value).strip():
+            overrides.append(f"{key}={value}")
+    if offline:
+        overrides.append("runtime.offline=true")
 
-    normalized_dense_backend = dense_backend.strip().casefold()
-    if normalized_dense_backend not in {"auto", "exact", "qdrant"}:
-        raise ConfigurationError(
-            "Unsupported dense backend: "
-            f"{dense_backend!r}; expected auto, exact, or qdrant"
+    try:
+        settings, _provenance = resolve_settings(
+            project,
+            config_path=config_path,
+            overrides=overrides,
+            environ=environ,
         )
-
-    # The reranker is an engine setting: every search is reranked, and this names
-    # the model that does it. Each choice is pinned to a revision, so an unknown
-    # name is refused here rather than resolved to whatever the hub serves today.
-    if reranker_model not in RERANKER_MODEL_CHOICES:
-        raise ConfigurationError(
-            f"Unsupported reranker model: {reranker_model!r}; expected one of: "
-            + ", ".join(RERANKER_MODEL_CHOICES)
-        )
+    except SettingsError as exc:
+        # One error type for the caller: a settings layer problem is a
+        # configuration problem, whether it came from a file, the environment,
+        # or the command line.
+        raise ConfigurationError(str(exc)) from exc
 
     portable.mkdir(parents=True, exist_ok=True)
     if not relocated:
@@ -518,14 +532,14 @@ def resolve_config(
         else None
     )
     configured_model_cache = (
-        Path(model_cache_root).expanduser().resolve()
-        if model_cache_root is not None
+        settings.model_cache_root
+        if settings.model_cache_root is not None
         else user_cache_path("research-ultra-rag-mcp", appauthor=False) / "models"
-    )
+    ).resolve()
     legacy_model_cache = state / "models"
     if (
-        offline
-        and model_cache_root is None
+        settings.offline
+        and settings.model_cache_root is None
         and not _contains_files(configured_model_cache)
         and _contains_files(legacy_model_cache)
     ):
@@ -559,13 +573,9 @@ def resolve_config(
         vanilla_executable=executable,
         runtime_cache_root=cache,
         model_cache_root=configured_model_cache,
-        offline=offline,
-        log_level=log_level,
-        dense_backend=normalized_dense_backend,
+        settings=settings,
+        settings_provenance=dict(_provenance),
         runtime_root=custom_state if relocated else None,
-        embedding_threads=normalized_threads,
-        tool_detail=normalized_tool_detail,
-        reranker_model=reranker_model,
     )
 
 
