@@ -275,3 +275,19 @@ Measured on the current generation with reranked hybrid, 30 of the 32 judged que
 - **Two embedded-backend optimisations are open** — one client per phase, and time-boxed upload batches — and they only matter above the 200,000-chunk threshold.
 - **Extraction is English-oriented.** The embedding model, the text-health policy, and the chunker target English-primary prose; other scripts appear as quotations inside it and are marked advisory rather than withheld.
 - **`assembly` cost sits inside the machine's noise.** It stayed under 1.7 s in every measured run, so no claim is made about it.
+
+## What a ranking change costs the corpus (Tier 3)
+
+The reuse snapshot never depended on the ranking policy. `generation_is_reusable` compares the schema, extraction, cleaning and artifact policy versions, the project id, the chunk size and overlap, and the embedding model — and nothing else — so weights, gates, caps and the reranked window cannot affect what a corpus holds. Measured on the German reference corpus, changing `retrieval.rrf_k` from 60 to 30 and re-ingesting:
+
+| Quantity | Result |
+|---|---|
+| new generation | yes (`generation_changed: true`) |
+| documents reused / rebuilt | 13 / **0** |
+| chunks reused / rebuilt | 9,237 / **0** |
+| vectors reused / created | 9,237 / **0** |
+| phase timings | extraction 9.4 s, chunking 6.0 s, embedding 35.3 s, bm25 2.2 s, assembly 20.6 s |
+
+About two minutes end to end against a full build's seventeen, which is what makes a Tier 1 experiment that reaches a new baseline cheap to apply.
+
+What *did* depend on the policy was the staging checkpoint identity: it included the retrieval-policy fingerprint, so editing a ranking value discarded a build **in progress**, which is why an interrupted build could not be resumed across a ranking edit. The policy was removed from that identity (`INGESTION_IDENTITY_POLICY_VERSION` 3), which touches only disposable staging — a published generation records its policy in its manifest and was never identified by this fingerprint — and a test now pins that a ranking change reuses every chunk and vector.

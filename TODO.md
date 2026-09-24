@@ -36,7 +36,6 @@ Two facts rule out a lever that looks attractive. No paraphrase miss is withheld
 
 ## Tier 3 — code, no rebuild
 
-- **Split the ranking policy from the reuse fingerprint.** `source_set_matches` in `generation.py` returns `False` when the retrieval-policy fingerprint differs, so changing a ranking value — a weight, a gate, a cap — invalidates the reuse snapshot and forces a full re-chunk and re-embed even though chunk boundaries and vectors are unchanged. Until the ranking policy is separated from the identity of the corpus, every Tier 1 experiment that reaches a new baseline costs a 17-minute rebuild to apply.
 - **Pseudo-relevance feedback on the lexical side.** Expand the BM25 query with terms taken from an initial top-ranked set. No model, no credential, roughly +0.1 s, and measured against the judged set like everything else.
 - **Split the resumable ingestion loop into per-phase handlers** and enable `C901` with a documented threshold. The `ingest` method in `service.py` is roughly 1,100 lines, which makes reviewing a change to it risky; no complexity check is enabled today.
 

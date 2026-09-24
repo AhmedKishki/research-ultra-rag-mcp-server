@@ -154,9 +154,19 @@ def _checkpoint_identity(
     chunk_size: int,
     chunk_overlap: int,
     force_recompute: bool,
-    retrieval_policy: str,
     embedding: EmbeddingModel,
 ) -> str:
+    """Fingerprint the inputs a staged build may resume from.
+
+    The ranking policy is deliberately absent. It decides how a generation is
+    *searched*, not what its artifacts contain: extraction, chunk boundaries, and
+    vectors are identical whatever the weights, gates, or window are, so a
+    ranking edit must not discard a build in progress. The policy still reaches
+    the manifest at publish time, so the record stays truthful; measured on the
+    reference corpus, a ranking edit reuses every chunk and vector and costs about
+    two minutes instead of a full rebuild.
+    """
+
     return value_fingerprint(
         {
             "project_id": project_id,
@@ -170,7 +180,6 @@ def _checkpoint_identity(
             "extraction_policy_version": EXTRACTION_POLICY_VERSION,
             "cleaning_policy_version": CLEANING_POLICY_VERSION,
             "artifact_policy_version": ARTIFACT_POLICY_VERSION,
-            "retrieval_policy_fingerprint": retrieval_policy,
             "embedding_model": embedding.name,
             "embedding_model_revision": embedding.revision,
             "embedding_dimension": embedding.dimension,
@@ -700,7 +709,9 @@ CLEANING_POLICY_VERSION = 3
 
 ARTIFACT_POLICY_VERSION = 3
 
-INGESTION_IDENTITY_POLICY_VERSION = 2
+# 3: the ranking policy left this identity. It never affected artifacts, and
+# keeping it made a ranking edit discard a build in progress.
+INGESTION_IDENTITY_POLICY_VERSION = 3
 
 METADATA_STORAGE_POLICY = "automatic_only_runtime_overlay_v1"
 

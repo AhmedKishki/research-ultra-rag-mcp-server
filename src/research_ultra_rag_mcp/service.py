@@ -1129,7 +1129,6 @@ class ResearchService:
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             force_recompute=force_recompute,
-            retrieval_policy=self.retrieval_policy_fingerprint,
             embedding=self.config.settings.embedding_facts,
         )
         now = _utc_now()
@@ -3201,7 +3200,6 @@ class ResearchService:
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 force_recompute=force_recompute,
-                retrieval_policy=self.retrieval_policy_fingerprint,
                 embedding=self.config.settings.embedding_facts,
             )
             recovered = await self._recover_pending_activation(

@@ -3824,3 +3824,52 @@ def test_the_reranked_window_follows_its_settings(project: Path) -> None:
         )
 
     asyncio.run(exercise())
+
+
+def test_a_ranking_change_reuses_chunks_and_vectors(project: Path) -> None:
+    """A ranking value decides how a generation is searched, not what it holds."""
+
+    async def exercise() -> None:
+        source = project / "sources" / "article.pdf"
+        write_pdf(
+            source,
+            [
+                (
+                    "Commodity fetishism describes how relations between people "
+                    "appear as relations between things, so value seems to belong "
+                    "to the object rather than to the labour that produced it."
+                ),
+                (
+                    "The form of value, not its use, produces the mysterious "
+                    "character of the commodity, and the inversion is practical "
+                    "rather than merely mistaken."
+                ),
+            ],
+            title="Reuse Article",
+        )
+        base = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            base, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        first = await service.ingest(chunk_size=50, chunk_overlap=10)
+        assert first["chunk_count"] >= 2, first["chunk_count"]
+
+        # The same corpus under a different ranking policy: rrf_k is a ranking
+        # value, so it must not invalidate a single chunk or vector.
+        changed_config = resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            settings_overrides=["retrieval.rrf_k=30"],
+        )
+        changed = ResearchService(  # type: ignore[arg-type]
+            changed_config, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        second = await changed.ingest(chunk_size=50, chunk_overlap=10)
+
+        assert second["generation_changed"] is True
+        assert second["rebuilt_document_count"] == 0
+        assert second["reused_chunk_count"] == second["chunk_count"]
+        assert second["rebuilt_chunk_count"] == 0
+        assert second["created_vector_count"] == 0
+
+    asyncio.run(exercise())
