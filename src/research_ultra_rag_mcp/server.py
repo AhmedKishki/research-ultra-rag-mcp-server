@@ -15,6 +15,7 @@ from pydantic import Field
 from .config import (
     ConfigurationError,
     ResearchConfig,
+    apply_process_priority,
     configured_source_directory,
     is_managed_child,
     resolve_config,
@@ -608,6 +609,7 @@ def main() -> None:
     if args.print_config:
         print(describe_settings(config.settings, config.settings_provenance))
         return
+    apply_process_priority(config.nice)
     create_server(config, ui_port=_ui_port_decision(args.ui_port)).run(
         transport="stdio", show_banner=False
     )

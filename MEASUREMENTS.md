@@ -306,3 +306,23 @@ No quality metric moved, and the latency difference is run order rather than the
 That list is the finding. Term selection ranks candidates by how many of the leading passages contain them, and the only filter is `_content_tokens`, whose stopword set is bm25s's 33-word English list. Words like *about*, *between*, *have* and *can* clear it, so the expansion adds terms that appear everywhere and discriminate nothing, which is why eight of them changed no ranking decision. The technique has not been shown to be worthless; this *selection rule* has been shown to be too weak, and the fix is a corpus-rarity weight — the classic term-selection criterion — rather than leader frequency alone.
 
 Until that is tried, the default stays off and the refinement is recorded in `TODO.md`.
+
+## What a running project costs the machine
+
+Measured on the reference machine (AMD Ryzen 7 4800H: 8 physical cores, 16 threads, 15 GB) with both corpora's UIs and servers running.
+
+A reranked search at `top_k=40`, about 50 reranked candidates instead of the default 20, with a cold model load each time:
+
+| `runtime.embedding_threads` | wall | total CPU | average cores busy |
+|---|---|---|---|
+| 0 (the shipped default) | 19.99 s | 76.7 core-s | 3.8 |
+| 8 | 18.59 s | 82.9 core-s | 4.5 |
+| 4 | 19.20 s | 69.5 core-s | 3.6 |
+
+Wall clock barely moves. Eight threads buy 7% and spend 8% more CPU than the default; four threads cost 3% and save 16%. A search is mostly model loading, and a default `top_k=10` search reranks 20 candidates, about two seconds of work.
+
+Resident memory across every research-rag process, with two projects' UIs and servers alive: **2,055 MB**, roughly 450–500 MB per project, against 15.3 GB of RAM. A project costs that whether or not it is being used.
+
+`runtime.nice` reaches the whole tree because children inherit it. Measured with the setting at 15: the command line, the vanilla gateway it started, and that gateway's extractor and retriever children all reported 15, while processes started before the setting existed stayed at 0 until they were restarted.
+
+Two facts bound what a long build can do to a machine. An `ingest` call yields between atomic units and returns a checkpointed `in_progress` result when `ingestion.work_budget_seconds` (45) runs out, so cancelling between calls loses nothing. Builds are serialized by the project lock, so two ingests cannot compound.

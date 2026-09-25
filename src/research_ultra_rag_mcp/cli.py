@@ -37,6 +37,7 @@ from fastmcp import Client
 from .config import (
     ConfigurationError,
     ResearchConfig,
+    apply_process_priority,
     configured_source_directory,
     resolve_config,
 )
@@ -529,6 +530,7 @@ async def _run(args: argparse.Namespace) -> dict[str, Any] | None:
     if args.command == "init":
         return _init(args)
     config = _resolve(args)
+    apply_process_priority(config.nice)
     if args.command == "config":
         print(describe_settings(config.settings, config.settings_provenance))
         return None

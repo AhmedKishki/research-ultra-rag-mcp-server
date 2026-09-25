@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from research_ultra_rag_mcp.config import ConfigurationError, resolve_config
+import research_ultra_rag_mcp.config as config_module
+from research_ultra_rag_mcp.config import (
+    ConfigurationError,
+    apply_process_priority,
+    resolve_config,
+)
 from research_ultra_rag_mcp.service import retrieval_policy_fingerprint
 from research_ultra_rag_mcp.settings import (
     SETTINGS,
@@ -323,3 +328,48 @@ def test_a_stopword_list_that_cannot_roundtrip_is_refused(
     monkeypatch.setattr(json_functions, "dumps", lambda d, **kw: "not json")
     with pytest.raises(SettingsError, match="cannot re-read"):
         resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})
+
+
+def test_the_nice_setting_leaves_priority_alone_unless_asked(project: Path) -> None:
+    """0 is the shipped default: a process nobody asked to yield does not yield."""
+
+    config = resolve_config(project, vanilla_executable=sys.executable)
+
+    assert config.nice == 0
+
+
+def test_apply_process_priority_raises_by_the_difference_and_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {"current": 4}
+    increments: list[int] = []
+
+    def fake_nice(increment: int) -> int:
+        increments.append(increment)
+        state["current"] += increment
+        return state["current"]
+
+    monkeypatch.setattr(config_module.os, "nice", fake_nice)
+
+    assert apply_process_priority(10) == 10
+    # The read is a zero increment, which is how niceness is read on POSIX.
+    assert increments == [0, 6]
+
+    # Idempotent, so a child that inherited the value and applies it again is safe.
+    assert apply_process_priority(10) == 10
+    assert increments == [0, 6, 0]
+
+    # 0 means "leave priority as it is", and does not even read it.
+    assert apply_process_priority(0) is None
+    assert increments == [0, 6, 0]
+
+
+def test_apply_process_priority_reports_a_refusal_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(_increment: int) -> int:
+        raise OSError("this platform has no niceness")
+
+    monkeypatch.setattr(config_module.os, "nice", refuse)
+
+    assert apply_process_priority(10) is None

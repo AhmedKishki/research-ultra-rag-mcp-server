@@ -78,6 +78,7 @@ The settings that are commonly set, and what they do:
 | `language.bm25_stopwords` | Which language's stopword list BM25 filters with. Empty means the first language in `language.corpus`, because BM25 takes a single list and a corpus in several languages has to point it at one of them. Also part of the ranking policy. |
 | `dense.embedding_model NAME` | The embedding model for the dense half of retrieval, from the pinned table in `embeddings.py`. Each name carries its revision, vector dimension, token limit, licence, the languages it covers, and any query/passage prefix it requires. Changing it is a re-ingestion with a new index. |
 | `runtime.embedding_threads` or `--embedding-threads` | Set the CPU thread count for embedding. Left to the runtime by default because the best value depends on your machine. |
+| `runtime.nice` | CPU niceness for the server and every process it starts. `0` leaves priority unchanged; `10` or higher keeps a desktop responsive while a build saturates every core. |
 | `retrieval.*` | Tune fusion and gating: `rrf_k`, `bm25_weight`, `dense_weight`, `minimum_candidates`, `maximum_candidates`, `dense_minimum_cosine_similarity`, `rerank_max_candidates`, `rerank_window_multiple`, `rerank_window_floor`, `maximum_withheld_examples`. These are identity settings: the next ingestion is a new generation. |
 | `chunking.size`, `chunking.overlap` | Chunk length and overlap in tokens. Identity settings, recorded with the generation. |
 | `ingestion.work_budget_seconds` | Soft time budget for one `ingest` call before it returns a checkpointed `in_progress` result. |
@@ -133,9 +134,10 @@ embedding_model = "intfloat/multilingual-e5-large"
 
 ### What is worth setting on this machine
 
-Two things have a measured payoff; everything else is worth leaving at its shipped default until a measurement says otherwise.
+Two things have a measured throughput payoff, and one keeps the machine usable while they run; everything else is worth leaving at its shipped default until a measurement says otherwise.
 
 - `runtime.embedding_threads = 8` shortens every rebuild. On the reference machine it measured 31.66 chunks/s against the runtime's default 23.65, so the embedding phase of a 17-minute build drops by about a third. The optimum is machine-specific, so it is the one setting worth re-measuring on your own hardware.
+- `runtime.nice = 10` keeps a low- or mid-range machine responsive. Niceness changes who wins when the build and your desktop want the same core, and nothing else: a process nobody is competing with gets the same CPU at any priority. It reaches the whole tree from one call, because children inherit it, so the UltraRAG gateway and its extractor and retriever children yield along with the server. The shipped default is `0`, which is what a server on a dedicated machine wants.
 - A larger `top_k` is free accuracy. The reranker reorders about twice as many candidates as the caller asks for, so the depth of the request sets both how many passages come back and how deep the ranking goes. Measured on the judged set: 8 passages answers 80.0% of questions at rank 1 with MRR 0.825, while 10 and above answers 83.3% with MRR 0.858. The default is 10 for that reason, and asking for 15 is the first move when an answer looks thin.
 
 Everything under `retrieval.*` and `chunking.*` is a measurement waiting to happen rather than a knob to turn: `TODO.md` lists which values are worth trying and what would have to be true before a change to the shipped default is justified.

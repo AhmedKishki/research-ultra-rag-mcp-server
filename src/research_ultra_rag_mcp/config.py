@@ -57,6 +57,30 @@ def is_managed_child() -> bool:
     return os.environ.get(MANAGED_CHILD_ENV) == "1"
 
 
+def apply_process_priority(nice: int) -> int | None:
+    """Raise this process's niceness to ``nice``, and report what it became.
+
+    One call covers the whole process tree: children inherit the value, so the
+    vanilla gateway, the UltraRAG children it starts, and every model thread
+    below them all yield the same way. Niceness is relative, so the increment is
+    the difference from the current value, and a process already at or above the
+    target is left alone — which makes a second call in a child harmless.
+
+    A refusal returns ``None`` instead of raising: a priority preference must
+    never stop a server from starting.
+    """
+
+    if nice <= 0:
+        return None
+    try:
+        current = os.nice(0)
+        if nice <= current:
+            return current
+        return os.nice(nice - current)
+    except OSError:
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class ResearchConfig:
     project_root: Path
@@ -78,6 +102,10 @@ class ResearchConfig:
     @property
     def offline(self) -> bool:
         return self.settings.offline
+
+    @property
+    def nice(self) -> int:
+        return self.settings.nice
 
     @property
     def log_level(self) -> str:

@@ -298,6 +298,20 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_EMBEDDING_THREADS",
     ),
     Setting(
+        key="runtime.nice",
+        field="nice",
+        kind=int,
+        layer="runtime",
+        doc=(
+            "CPU niceness for this process and every child it starts; 0 leaves "
+            "priority unchanged, and a higher value keeps the machine responsive "
+            "during a long build by yielding to whatever else is running."
+        ),
+        minimum=0,
+        maximum=19,
+        env="RESEARCH_ULTRARAG_NICE",
+    ),
+    Setting(
         key="runtime.model_cache_root",
         field="model_cache_root",
         kind=str,
@@ -723,6 +737,7 @@ class EffectiveSettings:
     log_level: str
     tool_detail: str
     embedding_threads: int | None
+    nice: int
     model_cache_root: Path | None
     rrf_k: int
     bm25_weight: float

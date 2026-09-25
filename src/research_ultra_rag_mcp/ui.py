@@ -27,6 +27,7 @@ from ui_ultra_rag_mcp import create_ui_app as create_shared_ui_app
 from .config import (
     ConfigurationError,
     ResearchConfig,
+    apply_process_priority,
     configured_source_directory,
     resolve_config,
     resolve_source_reference,
@@ -509,6 +510,7 @@ def main() -> None:
     if args.print_config:
         print(describe_settings(config.settings, config.settings_provenance))
         return
+    apply_process_priority(config.nice)
     run_ui(
         create_ui_app(config),
         host=args.host,
