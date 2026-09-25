@@ -45,8 +45,8 @@ Any question that needs a user choice must be presented as a numbered list of co
 ## Current compatibility baseline
 
 - Package: `research-ultra-rag-mcp`
-- Commands: `research-ultra-rag-mcp`, `research-ultra-rag-ui`, and `research-ultra-rag-verify`
-- Version: `0.40.0`
+- Commands: `research-ultra-rag` (the core command line), `research-ultra-rag-mcp` (stdio server), `research-ultra-rag-ui` (browser view), and `research-ultra-rag-verify` (MCP-surface check)
+- Version: `0.41.0`
 - `bm25s` is pinned to a fork (`AhmedKishki/bm25s` @ `20f6c02`) carrying a one-line fix for its non-ASCII stopword serialization; `settings` fails fast on a stopword list that cannot round-trip through it, so revert the pin only once upstream fixes it.
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
@@ -261,6 +261,7 @@ Do not move the dense backend implementations into the vanilla gateway or patch 
 ## Safe change rules
 
 - Use `pathlib.Path`, type hints, and JSON-serializable tool results.
+- Answer through the core, never around it: the core command line, the MCP tools, and the browser UI all call a `ResearchService` method and project the result with `tool_views`, so one capability has one implementation and the surfaces cannot disagree about it.
 - Keep blocking extraction and filesystem scans outside the event loop.
 - Serialize every project operation with both the in-process service lock and the cross-process `project.lock`.
 - Prefer new immutable generations to in-place index mutation.

@@ -13,7 +13,7 @@ The server is built on [UltraRAG](https://github.com/OpenBMB/UltraRAG), whose co
 Plain-language summary of every capability, and why it is there:
 
 - **Lean tool answers, with a developer debugging mode.** Every tool returns the fields an agent acts on; a field that is empty, null, or at its default is omitted. `--tool-detail full` returns the complete payload instead.
-- **An MCP server for AI agents, plus a local browser UI.** Agents call tools over stdio; you can also click through the same features in a browser. Both operate on the same project state.
+- **Three ways in, one project state: a core command line, an MCP server, and a browser UI.** `research-ultra-rag` does everything from a shell — create a project, build it, search it, review sources, read settings — with no MCP client and no agent. `research-ultra-rag-mcp` serves the same operations to an agent over stdio, and the browser UI is the third surface. All three read and write the same project and project their answers through the same code, so they cannot disagree.
 - **A per-project UI launcher, created when the project is initialised.** The first run writes `open-ui.sh` in the project root as a symlink to a generated script under `.research-rag/bin/`, so starting or stopping that project's browser UI is one command and the private server it starts cannot be left behind. It starts on the first free port at or above the one it was generated with and remembers that port, because two projects must never serve their UI from the same port: opening the wrong project's UI is worse than a second URL. An existing file or symlink is never overwritten.
 - **Ingests regular `.pdf` and `.epub` files only.** It walks the source directory recursively. Markdown and every other format are ignored, so a stray `notes.md` in the folder never enters the knowledge base.
 - **Resolves bibliographic metadata and locators.** Titles, authors, years, DOIs, and a locator that points back into the original file (PDF page, or EPUB section), so you can always find the page behind a passage.
@@ -161,7 +161,20 @@ A **running** server keeps the code it started with. Its process belongs to your
 
 ## Create an isolated research project
 
-A project is just a directory. Put your originals in a `sources/` subdirectory:
+A project is just a directory, and the core command line creates one — or attaches the same state to a directory you already have:
+
+```bash
+# A project that does not exist yet.
+research-ultra-rag --project-root ~/my-research-project init --name "My Research Project"
+
+# A directory you already work in: only .research-rag is added, nothing moves.
+cd ~/my-thesis
+research-ultra-rag init --name "Thesis Corpus" --sources sources
+```
+
+`init` writes `.research-rag/project.json` — the project's stable id, its name, and its source directory — creates the source directory, and generates the browser launcher. It never overwrites a file you wrote, and it never changes the project id, so re-running it is safe: the name changes only when `--name` is given, which is also how an existing project gets named.
+
+Put your originals in the source directory:
 
 ```text
 my-research-project/
@@ -170,7 +183,13 @@ my-research-project/
     └── book-two.epub
 ```
 
-Everything the server creates lives in a `.research-rag/` folder next to it, so one directory holds one research project and nothing is shared between projects except the downloaded model files.
+Everything the server creates lives in a `.research-rag/` folder next to it, so one directory holds one research project and nothing is shared between projects except the downloaded model files. Of that folder, the derived state and the launcher are machine-local and should stay out of version control, while the descriptor, catalogs, and review files are small, portable, and worth keeping:
+
+```text
+.research-rag/runtime/
+.research-rag/bin/
+open-ui.sh
+```
 
 ## Connect an AI agent
 
@@ -367,6 +386,46 @@ Two normalisation rules exist so that typed queries match printed text: formula-
 Script mixing and non-Latin dominance are never rejection reasons. A quotation in another language stays retrievable and its text is returned unchanged. Reviewed metadata is never overridden by this classifier.
 
 Finally, ingestion drops nonempty chunks that contain no alphanumeric content at all. Ordinary prose, numbers, and formulas containing at least one letter or digit are not affected.
+
+## Use the terminal
+
+`research-ultra-rag` drives the same engine the tools call, in your shell, with no MCP client and no agent:
+
+```bash
+# Create and build.
+research-ultra-rag --project-root ~/my-research-project init --name "My Project"
+research-ultra-rag --project-root ~/my-research-project ingest
+
+# Read.
+research-ultra-rag --project-root ~/my-research-project status
+research-ultra-rag --project-root ~/my-research-project search "commodity fetishism"
+research-ultra-rag --project-root ~/my-research-project sources
+research-ultra-rag --project-root ~/my-research-project passage chunk-000123
+
+# Review, which applies to the current generation without rebuilding it.
+research-ultra-rag --project-root ~/my-research-project exclude papers/duplicate.pdf \
+    --reason "superseded by the reprint"
+research-ultra-rag --project-root ~/my-research-project metadata papers/hall.pdf \
+    --title "Race, Articulation and Societies Structured in Dominance" --year 1980
+
+# Browse it, and read the settings that actually apply.
+research-ultra-rag --project-root ~/my-research-project ui --open
+research-ultra-rag --project-root ~/my-research-project config
+```
+
+Each command prints the answer its tool would return, as JSON. `--detail lean` prints exactly what an agent receives; the default, `full`, prints everything, which is what a person reading a terminal wants. `--project-root` may be omitted when you are already in the project directory, and `RESEARCH_ULTRARAG_PROJECT_ROOT` sets it for a session. `search` takes `--top-k`, `--method`, `--no-rerank`, and the same category, project, keyword, and source-id filters the tool takes.
+
+Two things are worth knowing about how it runs.
+
+The UltraRAG gateway is started on first use rather than by the command name, because the BM25 index is initialized through it when a generation is loaded for querying. `search` and `ingest` open one; `init`, `config`, `ui`, `sources`, `status`, `passage`, and the review commands answer from local state and never start a gateway at all, so they work before the runtime or the models are installed.
+
+The command resolves settings in its own process, so `--set` reaches every operation instead of only the ones the command runs itself:
+
+```bash
+research-ultra-rag --set retrieval.rrf_k=30 --project-root ~/my-research-project search "..."
+```
+
+`research-ultra-rag-verify` remains the check for the MCP surface itself: it starts a real stdio server and calls the tools over the protocol, which is the one thing the core command line deliberately does not do.
 
 ## Use the UI
 

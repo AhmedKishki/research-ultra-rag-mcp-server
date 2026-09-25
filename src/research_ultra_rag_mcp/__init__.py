@@ -1,3 +1,6 @@
-"""Research-oriented MCP workflows built on the vanilla UltraRAG gateway."""
+"""Research-oriented project knowledge bases over PDF and EPUB sources.
 
-__version__ = "0.11.0"
+One domain core with four surfaces over the same project state: the core command
+line (`cli`), the stdio MCP server (`server`), the browser view (`ui`), and the
+MCP-surface check (`verify`).
+"""

@@ -2,11 +2,11 @@
 
 The package is one distribution with two layers. The domain core — the service,
 the generation store, extraction, the dense stack, the settings — is reusable on
-its own: the evaluation harness imports it directly and scores in process, while
-the browser UI and the verifier reach the same state through the MCP tool
-surface. Nothing but this test keeps that arrow pointing one way, so it asserts
-both halves of it: only the surface modules may import MCP machinery, and no core
-module may import the surface or an entry point.
+its own: the core command line and the evaluation harness import it directly and
+call it in process, while the browser UI and the verifier reach the same state
+through the MCP tool surface. Nothing but this test keeps that arrow pointing one
+way, so it asserts both halves of it: only the surface modules may import MCP
+machinery, and no core module may import the surface or an entry point.
 
 Imports are read with ``ast`` rather than executed, so the test cannot be fooled
 by an import that only succeeds in one environment.
@@ -20,17 +20,21 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parent.parent / "src" / "research_ultra_rag_mcp"
 
 # The modules allowed to import MCP machinery: the tool surface and its
-# projector, the stdio transports, the two entry points that talk to a server,
-# and the typed boundary over the vanilla runtime, which reaches it over MCP.
+# projector, the stdio transports, the entry points that talk to a server, and
+# the typed boundary over the vanilla runtime, which reaches it over MCP. The
+# core `cli` holds a client to that gateway for `ingest`; it never speaks the
+# research tool surface.
 MCP_MODULES = frozenset(
-    {"server.py", "transport.py", "ui.py", "ultrarag.py", "verify.py"}
+    {"cli.py", "server.py", "transport.py", "ui.py", "ultrarag.py", "verify.py"}
 )
 
 # The modules no core module may import: the tool surface, its projector, the
-# agent-facing instructions, and the two entry points. `launcher` and
-# `transport` are deliberately absent — the core reads launcher state for
-# `status`, and both are shared plumbing rather than the tool surface.
-SURFACE_MODULES = frozenset({"server", "tool_views", "instructions", "ui", "verify"})
+# agent-facing instructions, and the entry points. `launcher` and `transport`
+# are deliberately absent — the core reads launcher state for `status`, and both
+# are shared plumbing rather than the tool surface.
+SURFACE_MODULES = frozenset(
+    {"cli", "server", "tool_views", "instructions", "ui", "verify"}
+)
 
 # `python -m research_ultra_rag_mcp` exists to launch the server, so this module
 # is an entry point rather than core and is expected to import the surface.

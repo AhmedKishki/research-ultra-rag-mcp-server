@@ -285,16 +285,66 @@ def _migrate_legacy_runtime(
             pass
 
 
+def _write_project_descriptor(
+    descriptor_path: Path,
+    *,
+    project_id: str,
+    name: str,
+    source_directory: str,
+) -> None:
+    """Replace the descriptor atomically, so a reader never sees a partial one."""
+
+    temporary = descriptor_path.with_name(
+        f".{descriptor_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    temporary.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project_id": project_id,
+                "name": name,
+                "source_directory": source_directory,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, descriptor_path)
+
+
+def _normalize_project_name(name: str) -> str:
+    """Return the name to record, refusing one that is not a usable project name."""
+
+    normalized = name.strip()
+    if not normalized:
+        raise ConfigurationError("A project name cannot be empty")
+    if any(character in normalized for character in "\r\n\t"):
+        raise ConfigurationError("A project name cannot contain line breaks or tabs")
+    return normalized
+
+
 def _initialize_portable_project(
     project: Path,
     portable_root: Path,
     source_directory: str,
+    name: str | None = None,
 ) -> tuple[str, str]:
-    """Create or validate the small, Git-friendly project descriptor."""
+    """Create or validate the small, Git-friendly project descriptor.
+
+    ``name`` names the project. A project being created takes it, and falls back
+    to the directory name when no caller supplies one. An existing project keeps
+    the name it recorded unless a caller names it explicitly. The stable
+    ``project_id`` is never rewritten either way, so naming a project cannot
+    invalidate a generation.
+    """
 
     portable_root.mkdir(parents=True, exist_ok=True)
     (portable_root / "bundles").mkdir(exist_ok=True)
     descriptor_path = portable_root / "project.json"
+    requested_name = _normalize_project_name(name) if name is not None else None
     if descriptor_path.exists():
         try:
             descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
@@ -318,28 +368,23 @@ def _initialize_portable_project(
                 "Configured source directory differs from .research-rag/project.json: "
                 f"{source_directory!r} != {configured_sources!r}"
             )
+        if requested_name is not None and requested_name != project_name:
+            _write_project_descriptor(
+                descriptor_path,
+                project_id=project_id,
+                name=requested_name,
+                source_directory=source_directory,
+            )
+            project_name = requested_name
     else:
         project_id = str(uuid.uuid4())
-        project_name = project.name
-        temporary = descriptor_path.with_name(
-            f".{descriptor_path.name}.{uuid.uuid4().hex}.tmp"
+        project_name = requested_name or project.name
+        _write_project_descriptor(
+            descriptor_path,
+            project_id=project_id,
+            name=project_name,
+            source_directory=source_directory,
         )
-        temporary.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "project_id": project_id,
-                    "name": project_name,
-                    "source_directory": source_directory,
-                },
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, descriptor_path)
 
     return project_id, project_name
 
@@ -417,6 +462,7 @@ def resolve_config(
     project_root: str | Path,
     *,
     source_directory: str = "sources",
+    project_name: str | None = None,
     vanilla_executable: str | Path | None = None,
     runtime_cache_root: str | Path | None = None,
     runtime_root: str | Path | None = None,
@@ -436,6 +482,10 @@ def resolve_config(
     Every keyword above is the *command-line* layer: passing one overrides the
     environment and the config files for this invocation, and leaving it unset
     inherits from them.
+
+    ``project_name`` is the exception, because a project name is not a setting.
+    It is the name recorded in the project descriptor, and only `init` supplies
+    one, so every other caller leaves the recorded name alone.
     """
     project = Path(project_root).expanduser().resolve()
     if not project.is_dir():
@@ -514,10 +564,13 @@ def resolve_config(
         _migrate_legacy_runtime(project, portable, default_state)
 
     normalized_source_directory = source_argument.as_posix()
+    # `project_name` is the caller's request, and the descriptor is authoritative
+    # about the name that was actually recorded, so it is read back here.
     project_id, project_name = _initialize_portable_project(
         project,
         portable,
         normalized_source_directory,
+        project_name,
     )
     state = _prepare_runtime_root(
         custom_state,
