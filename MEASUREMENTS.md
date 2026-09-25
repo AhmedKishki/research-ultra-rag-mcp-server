@@ -292,6 +292,40 @@ About two minutes end to end against a full build's seventeen, which is what mak
 
 What *did* depend on the policy was the staging checkpoint identity: it included the retrieval-policy fingerprint, so editing a ranking value discarded a build **in progress**, which is why an interrupted build could not be resumed across a ranking edit. The policy was removed from that identity (`INGESTION_IDENTITY_POLICY_VERSION` 3), which touches only disposable staging — a published generation records its policy in its manifest and was never identified by this fingerprint — and a test now pins that a ranking change reuses every chunk and vector.
 
+## The cosine gate, calibrated
+
+`retrieval.dense_minimum_cosine_similarity` withholds a dense candidate that scores below it, before the fusion sees it. Swept it with everything else at the shipped values, against the same generation and the same 30 evaluated queries:
+
+| Gate | dense succ@1 | dense results | hybrid succ@3 | hybrid MRR | fused pool | reranked succ@1 | reranked MRR | reranked doc@k |
+|---|---|---|---|---|---|---|---|---|
+| 0.0 (off) | 56.7% | 10.00 | 76.7% | 0.706 | 69.8 | 83.3% | 0.857 | 96.7% |
+| 0.6 | 56.7% | 9.93 | 76.7% | 0.706 | 67.2 | 83.3% | 0.857 | 96.7% |
+| **0.72 (shipped)** | 46.7% | 5.23 | 80.0% | 0.712 | 46.8 | 83.3% | 0.858 | 93.3% |
+| 0.8 | 10.0% | 0.77 | 80.0% | 0.689 | 40.1 | 80.0% | 0.825 | 90.0% |
+
+Below 0.72 the gate does almost nothing: 0.6 is indistinguishable from off on every metric and removes 2.6 of 70 candidates a query. At 0.72 it removes 23 candidates a query from the fused pool and the shipped path is unchanged — succ@1 is identical, and it trades one top-3 hit for one document. At 0.8 it stops removing noise and starts removing relevant passages: the paraphrases lose a query, `doc@k` falls from 93.3% to 90.0%, and a dense-only ranking returns 0.77 results a query, so the fused answer has nothing left but its lexical half.
+
+So 0.72 it is: the shipped path cannot tell the values below it apart, and the value above it is where the gate starts costing answers. The default stays, and the measurement's use is that it bounds the knob rather than crowning a value.
+
+One consequence is worth carrying: the gate is calibrated for a fused ranking, and a dense-only one wants a much lower value — at 0.72 it returns 5.2 results where 10 were asked for. The agent-facing search tool is hybrid-only, so nothing shipped is in that position, and a dense-only method exposed later would have to not apply this gate.
+
+## The reranked window, calibrated
+
+The window is `max(top_k * retrieval.rerank_window_multiple, retrieval.rerank_window_floor)`, capped by `retrieval.rerank_max_candidates` and the fused candidate count — 20 at the default `top_k` of 10. Swept it shallower and deeper with the gate at 0.72:
+
+| Window | reranked succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean s |
+|---|---|---|---|---|---|---|---|
+| 10 | 80.0% | 83.3% | 86.7% | 0.825 | 0.835 | 90.0% | 1.14 |
+| 15 | 80.0% | 83.3% | 86.7% | 0.825 | 0.835 | 90.0% | 1.34 |
+| **20 (shipped)** | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | 1.70 |
+| 30 | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 96.7% | 2.55 |
+
+Ten and fifteen are the same run: both give up one query, and the same one. It is a paraphrase — "Why is reprocessing materials not a real solution to overconsumption?" — whose target the fusion ranks between 16 and 20: the cross-encoder puts it first once it is inside a 20-candidate window, and neither shallower window ever sees it. Depth 20 buys exactly that band, and the band holds only that. Thirty reproduces the shipped succ@1 and MRR, finds one more target document at a rank past 10, and costs 50% more time.
+
+The cost is linear and easy to carry: 1.14, 1.34, 1.70 and 2.55 seconds per reranked query for windows of 10, 15, 20 and 30, which is about 0.07 s for each candidate the cross-encoder reorders plus about 0.44 s fixed. Ten more candidates cost about 0.7 s.
+
+So the default window stays at 20: it is the shallowest window that reaches the measured plateau, and 15 trades one top-1 hit for 0.36 s. Absolute latency is comparable only within one sweep, and this one is the sweep to read: the same configuration measured 1.70 s per reranked query here against 2.3 s in section 4, and the difference is the machine's state rather than the setting.
+
 ## Pseudo-relevance feedback, measured
 
 `retrieval.prf` searches the lexical half once, mines terms from the leading passages, searches again with the terms added, and ranks with the second result. Selection weights each candidate by how many leaders use it times how rare it is across the generation, from a document-frequency table built on the first query that needs one and kept while that generation stays loaded, so the cost stays off the query path and a process with the feature off never reads the corpus for it.

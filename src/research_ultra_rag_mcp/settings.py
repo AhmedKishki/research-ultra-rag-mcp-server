@@ -383,7 +383,9 @@ SETTINGS: tuple[Setting, ...] = (
         layer="identity",
         doc=(
             "Dense relevance gate: a candidate below this cosine similarity is "
-            "withheld rather than ranked."
+            "withheld rather than ranked. Measured: a fused ranking is "
+            "insensitive to the values below this default and loses answers "
+            "above it, while a dense-only ranking wants a much lower value."
         ),
         minimum=-1.0,
         maximum=1.0,
@@ -410,7 +412,9 @@ SETTINGS: tuple[Setting, ...] = (
         doc=(
             "Depth of the reranked window as a multiple of the requested top_k. "
             "The window is max(top_k * this, rerank_window_floor), capped by "
-            "rerank_max_candidates and the fused candidate count."
+            "rerank_max_candidates and the fused candidate count. Measured: 20 "
+            "is the shallowest window that reaches the plateau, and each ten "
+            "more candidates cost about 0.7 s per query."
         ),
         minimum=1,
         maximum=1000,

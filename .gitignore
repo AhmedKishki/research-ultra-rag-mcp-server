@@ -25,6 +25,9 @@ evaluation/*-report.json
 /sources/
 /projects/
 /.research-rag/
+# The launcher a project's own `init` writes at its root. This repository is one
+# of those project roots, so it has one.
+/open-ui.sh
 
 # Personal notes, writing, and skill folders.
 /obsidian-vault/

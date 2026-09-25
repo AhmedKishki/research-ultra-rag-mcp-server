@@ -6,8 +6,6 @@ Cost orders the file. A measurement costs one harness run; a code change costs n
 
 ## Minutes: a measurement, or a small change
 
-- [ ] **Measure a shallower reranked window.** Test. 20, 30, 40–77 and 50 rank the judged passage identically while 50 costs 2.5× more, so nothing says the default window is the cheapest one that holds quality. `retrieval.rerank_window_multiple` and `retrieval.rerank_window_floor` make it expressible.
-- [ ] **Calibrate the cosine gate.** Test. It is a setting, and the evidence says it is not the paraphrase bottleneck, so measure it after the semantic levers.
 - [ ] **Surface the retained-generation inventory in the UI.** Feature. `status` reports `generations` and `retained_generation_bytes`; the pinned status view shows none of them.
 - [ ] **Warn about a runtime-root mismatch in the standalone UI launcher.** Feature. It starts its own server without reading an MCP client configuration, so it can show a different generation than an agent. `--ui-port` is unaffected.
 - [ ] **Give `stale` one meaning.** Feature. In the no-generation branch it doubles as "ready to build".
