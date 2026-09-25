@@ -343,6 +343,23 @@ The terms are the ones the feature was designed to add. A direct search with `RE
 
 So the selection rule is doing its job and the judged set cannot see the difference. A known-item set — one designated passage per query, judged by one annotator — scores a passage that makes the same point as a miss, so it can register a change only when the change moves that exact passage. Widening the judgments is what would let this feature be measured; the default stays off until then.
 
+## Contextual chunk headers, measured
+
+`chunking.headers` prepends the source title and, where a locator carries one, the section to the text a chunk is *embedded* from. The passage itself is untouched, so returned text and citations stay as they were, and the header lives in a separate `embedding_text` on the chunk. The reference corpus was rebuilt with it on and measured against the same 30 judged queries:
+
+| Configuration | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean s |
+|---|---|---|---|---|---|---|---|
+| off | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | — |
+| on | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | 1.40 |
+
+Both generations hold 14,410 chunks, so they differ in the headers and nothing else. Every metric is identical, and so is every query class: quotes 10 of 10, paraphrases 7 of 10, entities 8 of 10 either way.
+
+Part of the reason is visible in the chunks themselves. This corpus is mostly PDFs, a PDF locator carries a page rather than a section, so a PDF chunk is headed by its title alone — and the first chunk of a paper usually repeats that title in its own first line, which the header then duplicates. For the rest of a paper the header adds the work's name where the passage had none, which is the case the feature exists for, and the judged set cannot see it: it is known-item, so it registers a change only when the exact designated passage moves, the same limit that made the pseudo-relevance expansion measure neutral.
+
+Latency is not comparable across sessions, and this run had no same-session control: 1.40 s per reranked query here against 1.70 s for the same window in the sweep above, with a different machine state behind both.
+
+The default stays off. A project that wants the header opts in with `chunking.headers = true`, which is what the reference corpus now does. It is an identity setting, so the next ingestion of that project rebuilds — and a re-ingest without it would silently drop the headers, which is why the choice belongs in the project's config rather than on one command line.
+
 ## What a running project costs the machine
 
 Measured on the reference machine (AMD Ryzen 7 4800H: 8 physical cores, 16 threads, 15 GB) with both corpora's UIs and servers running.

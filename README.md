@@ -81,7 +81,7 @@ The settings that are commonly set, and what they do:
 | `runtime.nice` | CPU niceness for the server and every process it starts. `0` leaves priority unchanged; `10` or higher keeps a desktop responsive while a build saturates every core. |
 | `retrieval.*` | Tune fusion and gating: `rrf_k`, `bm25_weight`, `dense_weight`, `minimum_candidates`, `maximum_candidates`, `dense_minimum_cosine_similarity`, `rerank_max_candidates`, `rerank_window_multiple`, `rerank_window_floor`, `maximum_withheld_examples`. These are identity settings: the next ingestion is a new generation. |
 | `chunking.size`, `chunking.overlap` | Chunk length and overlap in tokens. Identity settings, recorded with the generation. |
-| `chunking.headers` | Prepend a source's title and section to the text a chunk is embedded from, never to the text a search returns. Off until a rebuild has measured it, and a re-ingest with it on recomputes every vector. |
+| `chunking.headers` | Prepend a source's title and section to the text a chunk is embedded from, never to the text a search returns. Off: a rebuild of the reference corpus measured no change, so a project opts in with `chunking.headers = true`, and a re-ingest with it on recomputes every vector. |
 | `ingestion.work_budget_seconds` | Soft time budget for one `ingest` call before it returns a checkpointed `in_progress` result. |
 | `runtime.tool_detail` or `--tool-detail` | `lean` (what an agent gets) or `full` (the developer debugging payload). |
 | `--runtime-root` or `RESEARCH_ULTRARAG_RUNTIME_ROOT` | Keep the working files (indexes, staging, logs) on a different disk. See "Where project data is stored". |

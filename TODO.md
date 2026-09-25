@@ -12,6 +12,7 @@ Cost orders the file. A measurement costs one harness run; a code change costs n
 - [ ] **Narrow the two broad `except Exception` handlers** at durability boundaries, so a storage fault cannot be swallowed. Feature.
 - [ ] **Report activation failures as structured values** instead of one all-or-nothing message. Feature.
 - [ ] **Check free disk space before a build starts.** Feature.
+- [ ] **Refuse to measure while a build is running.** Feature. `scripts/evaluate_retrieval.py` started alongside an ingestion does not fail, it starves: the two compete for every core, and the harness sat with 66 ONNX threads at zero CPU time for ten minutes while the build held eleven cores. It should notice a staging build under the project's runtime root and stop with a message instead.
 - [ ] **Decide how `list_sources` exposes the keyword vocabulary.** Feature. `reviewed_metadata_sources` is the largest lean answer and the only place an agent can discover which keywords exist; either report counts in `status` or reduce the list to handles.
 
 ## Hours: code, still no rebuild
@@ -31,6 +32,7 @@ Cost orders the file. A measurement costs one harness run; a code change costs n
 These are the levers for the paraphrase gap: three of ten judged paraphrase queries miss the judged passage entirely within the top ten, while nothing is withheld.
 
 - [ ] **Add contextual chunk headers.** Feature. Prepend the title and the section to the text that is embedded, never to the text that is returned, so returned text stays quote-clean.
+- [ ] **Measure the headers on a corpus with sections.** Test, one rebuild per corpus. On a PDF corpus the header is the title alone and the first chunk of a paper already repeats it; an EPUB corpus is where the locator carries a section and where the header has something the passage does not say itself.
 - [ ] **Measure chunk size and overlap.** Test, one rebuild per variant. `chunking.size` of 256, 384, or 512 against `chunking.overlap` of 48, 64, or 128.
 - [ ] **Measure the embedding models the registry offers.** Test, one rebuild per model: `BAAI/bge-base-en-v1.5` and `mixedbread-ai/mxbai-embed-large-v1` for English, `jinaai/jina-embeddings-v2-base-de` for German, `intfloat/multilingual-e5-large` across languages. The German model is the first candidate for a corpus in that language, where the English default cannot help.
 - [ ] **Section-aware chunking with parent-document retrieval.** Feature, the largest change here. Retrieve the chunk and return the enclosing section; it needs section structure preserved through extraction and a second level in the generation.

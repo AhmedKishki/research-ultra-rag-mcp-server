@@ -528,8 +528,9 @@ SETTINGS: tuple[Setting, ...] = (
             "Prepend the source title and the section to the text a chunk is "
             "embedded from, never to the text a search returns, so returned "
             "text stays quote-clean. A re-ingest with it on recomputes every "
-            "vector, because vector reuse is keyed on the passage. Off until a "
-            "rebuild has measured it."
+            "vector, because vector reuse is keyed on the passage. Measured "
+            "neutral on the reference corpus, so the default is off and a "
+            "project opts in."
         ),
         env="RESEARCH_ULTRARAG_CHUNKING_HEADERS",
     ),
