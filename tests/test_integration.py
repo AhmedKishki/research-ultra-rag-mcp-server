@@ -110,6 +110,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "categories_any",
                 "projects_any",
                 "keywords",
+                "languages_any",
                 "source_ids",
                 "exclude_source_ids",
             },

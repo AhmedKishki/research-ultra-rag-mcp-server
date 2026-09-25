@@ -35,6 +35,7 @@ from research_ultra_rag_mcp.extraction import (
 )
 from research_ultra_rag_mcp.sources import (
     SourcePolicyError,
+    normalize_metadata,
     scan_sources,
     sha256_file,
     stable_source_id,
@@ -699,8 +700,17 @@ def test_pdf_front_matter_resolves_title_authors_year_and_doi(project: Path) -> 
         "authors": "pdf_front_matter",
         "year": "pdf_front_matter",
         "doi": "pdf_metadata",
+        "language": "missing",
         "categories": "missing",
         "keywords": "missing",
+    }
+    # Every extraction records a language decision, including the decision that
+    # this fixture's text is too short to judge one.
+    assert source["language"] in ([], ["en"])
+    assert source["metadata_provenance"]["language"] in {
+        "text_sample",
+        "pdf_catalog",
+        "missing",
     }
     assert "metadata_confidence" not in source
     assert "conflicting_candidates" not in source["metadata_warnings"]
@@ -1326,3 +1336,55 @@ def test_an_empty_page_label_falls_back_to_the_physical_page() -> None:
     locator = _pdf_locator(Unlabelled(), 4)
 
     assert locator == {"type": "pdf_page", "page": 4, "page_label": "4"}
+
+
+def test_language_metadata_takes_iso_codes_and_refuses_other_values() -> None:
+    """A source may declare a language BM25 has no stopword list for."""
+
+    assert normalize_metadata({"language": ["EN", "de"]}) == {"language": ["en", "de"]}
+    # Arabic is a true statement about a source even though BM25 cannot tokenize
+    # it. The corpus-level setting is where that limitation is refused.
+    assert normalize_metadata({"language": ["ar"]}) == {"language": ["ar"]}
+    with pytest.raises(SourcePolicyError, match="ISO 639"):
+        normalize_metadata({"language": ["english"]})
+    with pytest.raises(SourcePolicyError, match="list of strings"):
+        normalize_metadata({"language": "de"})
+
+
+def test_language_detection_is_conservative() -> None:
+    """Detection answers from function words, or it answers nothing.
+
+    The German sample is longer than the others on purpose: coverage of a large
+    stopword list needs more text than coverage of a small one, and the floor is
+    what keeps a short sample from being answered with a guess.
+    """
+
+    english = (
+        "This chapter argues that the commodity is not a thing but a social "
+        "relation between people that takes the form of a thing. The argument is "
+        "that what appears to be a relation between things is in fact a relation "
+        "between people, and that this is not a mistake of the observer but a "
+        "property of the world that the theory has to explain."
+    ) * 3
+    german = (
+        "Dieses Kapitel argumentiert, dass die Ware nicht eine Sache, sondern ein "
+        "gesellschaftliches Verhaeltnis zwischen Menschen ist, das die Form einer "
+        "Sache annimmt. Daraus folgt, dass der Wert einer Ware nicht durch die "
+        "Arbeit bestimmt wird, die in sie eingegangen ist, sondern durch die "
+        "gesellschaftlich notwendige Arbeit zu ihrer Reproduktion. Wir haben "
+        "gesehen, dass die Analyse des Fetischs nicht von der Analyse der Form "
+        "getrennt werden kann, und dass die Form das ist, worum es der Theorie "
+        "geht."
+    ) * 6
+    arabic = (
+        "يناقش هذا الفصل أن السلعة ليست شيئا بل علاقة اجتماعية بين الناس تتخذ شكل "
+        "الشيء، ويترتب على ذلك أن قيمة السلعة لا يحددها العمل الذي دخل فيها."
+    ) * 3
+
+    assert extraction_module._detect_language(english) == "en"
+    assert extraction_module._detect_language(german) == "de"
+    # A language outside the candidate set covers no list at all, even with enough
+    # text to judge a language the lists do cover.
+    assert extraction_module._detect_language(arabic) == ""
+    # Too little text to judge is not a guess either.
+    assert extraction_module._detect_language("yes no maybe") == ""

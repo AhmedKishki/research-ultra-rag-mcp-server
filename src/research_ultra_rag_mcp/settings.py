@@ -149,6 +149,28 @@ BM25_STOPWORD_LANGUAGES = frozenset(
 )
 
 
+def bm25_stopwords(language: str) -> frozenset[str] | None:
+    """Return one language's BM25 stopword list, or None when there is none.
+
+    The list is the one bm25s itself filters with, so a detector built on it
+    scores the same function words the lexical half will ignore. None means
+    bm25s is absent or does not know the language: a caller treats that as
+    "not detectable here", never as a wrong answer.
+    """
+
+    code = str(language).strip().casefold()
+    if code not in BM25_STOPWORD_LANGUAGES:
+        return None
+    try:
+        from bm25s.tokenization import _infer_stopwords
+    except ImportError:
+        return None
+    try:
+        return frozenset(str(item).casefold() for item in _infer_stopwords(code))
+    except ValueError:
+        return None
+
+
 def normalize_corpus_languages(value: Any) -> tuple[str, ...]:
     """Parse `language.corpus` into the languages a corpus is written in.
 
@@ -498,6 +520,20 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_CHUNKING_OVERLAP",
     ),
     Setting(
+        key="chunking.headers",
+        field="chunk_headers",
+        kind=bool,
+        layer="identity",
+        doc=(
+            "Prepend the source title and the section to the text a chunk is "
+            "embedded from, never to the text a search returns, so returned "
+            "text stays quote-clean. A re-ingest with it on recomputes every "
+            "vector, because vector reuse is keyed on the passage. Off until a "
+            "rebuild has measured it."
+        ),
+        env="RESEARCH_ULTRARAG_CHUNKING_HEADERS",
+    ),
+    Setting(
         key="chunking.batch_units",
         field="chunk_batch_units",
         kind=int,
@@ -758,6 +794,7 @@ class EffectiveSettings:
     maximum_withheld_examples: int
     chunk_size: int
     chunk_overlap: int
+    chunk_headers: bool
     chunk_batch_units: int
     work_budget_seconds: int
     embedding_batch_size: int

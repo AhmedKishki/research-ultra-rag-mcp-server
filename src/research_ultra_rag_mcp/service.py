@@ -110,6 +110,7 @@ from .support import (  # noqa: F401
     _document_matches_metadata,
     _effective_document_metadata,
     _effective_documents,
+    _embedding_text,
     _enrich_chunks,
     _generation_id,
     _hash_with_stable_stat,
@@ -1134,6 +1135,7 @@ class ResearchService:
             baseline_generation_id=baseline_generation_id,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            chunk_headers=self.config.settings.chunk_headers,
             force_recompute=force_recompute,
             embedding=self.config.settings.embedding_facts,
         )
@@ -1152,6 +1154,7 @@ class ResearchService:
             "parameters": {
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
+                "chunk_headers": self.config.settings.chunk_headers,
                 "force_recompute": force_recompute,
             },
             "source_inventory": inventory,
@@ -1442,6 +1445,12 @@ class ResearchService:
                 excluded_document_ids,
                 field="project",
                 label="project",
+            ),
+            "languages": _metadata_inventory(
+                effective_documents,
+                excluded_document_ids,
+                field="language",
+                label="language",
             ),
             "allowed_formats": sorted(ALLOWED_SOURCE_EXTENSIONS),
             "ignored_extensions": scan.ignored_extensions,
@@ -1831,6 +1840,7 @@ class ResearchService:
                 project_id=self.config.project_id,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                chunk_headers=self.config.settings.chunk_headers,
                 load_units=False,
                 load_chunks=False,
                 load_vectors=False,
@@ -1962,6 +1972,7 @@ class ResearchService:
                         project_id=self.config.project_id,
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
+                        chunk_headers=self.config.settings.chunk_headers,
                         load_units=True,
                         load_chunks=True,
                         load_vectors=False,
@@ -2321,6 +2332,7 @@ class ResearchService:
                         project_id=self.config.project_id,
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
+                        chunk_headers=self.config.settings.chunk_headers,
                         load_units=True,
                         load_chunks=True,
                         load_vectors=False,
@@ -2449,7 +2461,12 @@ class ResearchService:
                         discarded_empty,
                         discarded_symbol_only,
                         discarded_corrupt,
-                    ) = _enrich_chunks(raw_chunks, units, [document])
+                    ) = _enrich_chunks(
+                        raw_chunks,
+                        units,
+                        [document],
+                        headers=self.config.settings.chunk_headers,
+                    )
                     audited = await _atomic_to_thread(
                         _record_embedding_token_counts,
                         chunks,
@@ -2589,6 +2606,7 @@ class ResearchService:
                         project_id=self.config.project_id,
                         chunk_size=chunk_size,
                         chunk_overlap=chunk_overlap,
+                        chunk_headers=self.config.settings.chunk_headers,
                         load_units=False,
                         load_chunks=True,
                         load_vectors=True,
@@ -2609,13 +2627,21 @@ class ResearchService:
                 )
                 missing_positions: list[int] = []
                 missing_texts: list[str] = []
-                batch_texts = [_chunk_text(chunk) for chunk in batch]
+                # What is embedded is the chunk's own text, header included. Vector
+                # reuse is keyed on the canonical passage, and a header cannot be
+                # reconstructed from that key, so reuse suspends when the two
+                # differ: recomputing a vector is always correct, while reusing
+                # another chunk's vector is not.
+                batch_texts = [_embedding_text(chunk) for chunk in batch]
+                reuse_keys = [_chunk_text(chunk) for chunk in batch]
                 reusable_vectors = (
                     await _atomic_to_thread(
                         snapshot.vectors_for_texts,
-                        batch_texts,
+                        reuse_keys,
                     )
-                    if snapshot is not None and not force_recompute
+                    if snapshot is not None
+                    and not force_recompute
+                    and reuse_keys == batch_texts
                     else {}
                 )
                 reused_count = 0
@@ -2972,6 +2998,7 @@ class ResearchService:
                         "unit": "tokens",
                         "chunk_size": chunk_size,
                         "chunk_overlap": chunk_overlap,
+                        "headers": self.config.settings.chunk_headers,
                     },
                     "retrieval": {
                         "default_method": DEFAULT_RETRIEVAL_METHOD,
@@ -3205,6 +3232,7 @@ class ResearchService:
                 baseline_generation_id=baseline_generation_id,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                chunk_headers=self.config.settings.chunk_headers,
                 force_recompute=force_recompute,
                 embedding=self.config.settings.embedding_facts,
             )
@@ -3342,6 +3370,7 @@ class ResearchService:
         categories_any: set[str],
         keywords: set[str],
         projects_any: set[str],
+        languages_any: set[str],
         document_filter: set[str],
         excluded_document_ids: set[str],
     ) -> bool:
@@ -3354,6 +3383,7 @@ class ResearchService:
                 keywords=keywords,
                 categories_any=categories_any,
                 projects_any=projects_any,
+                languages_any=languages_any,
             )
         )
 
@@ -3368,6 +3398,7 @@ class ResearchService:
         categories_any: set[str],
         projects_any: set[str],
         keywords: set[str],
+        languages_any: set[str],
         document_filter: set[str],
         excluded_document_ids: set[str],
         withheld: dict[str, dict[str, Any]],
@@ -3386,6 +3417,7 @@ class ResearchService:
             categories_any
             or keywords
             or projects_any
+            or languages_any
             or document_filter
             or excluded_document_ids
         )
@@ -3439,6 +3471,7 @@ class ResearchService:
                             categories_any=categories_any,
                             keywords=keywords,
                             projects_any=projects_any,
+                            languages_any=languages_any,
                             document_filter=document_filter,
                             excluded_document_ids=excluded_document_ids,
                         )
@@ -3553,6 +3586,7 @@ class ResearchService:
         categories_any: list[str] | None = None,
         projects_any: list[str] | None = None,
         keywords: list[str] | None = None,
+        languages_any: list[str] | None = None,
         source_ids: list[str] | None = None,
         exclude_source_ids: list[str] | None = None,
         retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
@@ -3620,6 +3654,7 @@ class ResearchService:
             category_any_filter = _normalized_filter(categories_any)
             project_any_filter = _normalized_filter(projects_any)
             keyword_filter = _normalized_filter(keywords)
+            language_any_filter = _normalized_filter(languages_any)
             source_include_document_ids, unknown_source_ids = (
                 self._document_ids_for_source_ids(manifest, requested_source_ids)
             )
@@ -3642,7 +3677,10 @@ class ResearchService:
 
             dense_document_filter: set[str] | None = None
             metadata_filter_active = bool(
-                category_any_filter or project_any_filter or keyword_filter
+                category_any_filter
+                or project_any_filter
+                or keyword_filter
+                or language_any_filter
             )
             if metadata_filter_active:
                 dense_document_filter = {
@@ -3653,6 +3691,7 @@ class ResearchService:
                         keywords=keyword_filter,
                         categories_any=category_any_filter,
                         projects_any=project_any_filter,
+                        languages_any=language_any_filter,
                     )
                 }
             if document_filter:
@@ -3670,6 +3709,7 @@ class ResearchService:
                     keywords=keyword_filter,
                     categories_any=category_any_filter,
                     projects_any=project_any_filter,
+                    languages_any=language_any_filter,
                 )
                 and (not document_filter or document_id in document_filter)
             }
@@ -3729,6 +3769,7 @@ class ResearchService:
                         categories_any=category_any_filter,
                         keywords=keyword_filter,
                         projects_any=project_any_filter,
+                        languages_any=language_any_filter,
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
@@ -3747,6 +3788,7 @@ class ResearchService:
                     categories_any=category_any_filter,
                     keywords=keyword_filter,
                     projects_any=project_any_filter,
+                    languages_any=language_any_filter,
                     document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                     withheld=withheld,
@@ -3793,6 +3835,7 @@ class ResearchService:
                         categories_any=category_any_filter,
                         keywords=keyword_filter,
                         projects_any=project_any_filter,
+                        languages_any=language_any_filter,
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
@@ -3834,6 +3877,7 @@ class ResearchService:
                     categories_any=category_any_filter,
                     keywords=keyword_filter,
                     projects_any=project_any_filter,
+                    languages_any=language_any_filter,
                     document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                 ):
@@ -3999,6 +4043,7 @@ class ResearchService:
                     "categories_any": sorted(category_any_filter),
                     "projects_any": sorted(project_any_filter),
                     "keywords_all": sorted(keyword_filter),
+                    "languages_any": sorted(language_any_filter),
                     "source_document_ids": sorted(document_filter),
                     "source_ids": requested_source_ids,
                     "exclude_source_ids": requested_exclude_source_ids,

@@ -154,6 +154,7 @@ def _checkpoint_identity(
     baseline_generation_id: str | None,
     chunk_size: int,
     chunk_overlap: int,
+    chunk_headers: bool,
     force_recompute: bool,
     embedding: EmbeddingModel,
 ) -> str:
@@ -166,6 +167,9 @@ def _checkpoint_identity(
     the manifest at publish time, so the record stays truthful; measured on the
     reference corpus, a ranking edit reuses every chunk and vector and costs about
     two minutes instead of a full rebuild.
+
+    Contextual chunk headers are not a ranking policy: they decide the text a
+    vector covers, so they belong here and a resume cannot mix the two.
     """
 
     return value_fingerprint(
@@ -176,6 +180,7 @@ def _checkpoint_identity(
             "baseline_generation_id": baseline_generation_id,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
+            "chunk_headers": chunk_headers,
             "force_recompute": force_recompute,
             "generation_schema_version": SCHEMA_VERSION,
             "extraction_policy_version": EXTRACTION_POLICY_VERSION,
@@ -324,22 +329,26 @@ def _document_matches_metadata(
     keywords: set[str],
     categories_any: set[str] = frozenset(),
     projects_any: set[str] = frozenset(),
+    languages_any: set[str] = frozenset(),
 ) -> bool:
     """Match one document against the reviewed-metadata filter layers.
 
     `project` records which project a source was gathered for, `categories` the
-    branches it belongs to, and `keywords` the terms that identify it. A source
-    normally carries one project, so that layer is a passthrough inside a
-    one-project server and becomes meaningful when a corpus is copied or shared.
+    branches it belongs to, `keywords` the terms that identify it, and `language`
+    what it is written in. A source normally carries one project, so that layer is
+    a passthrough inside a one-project server and becomes meaningful when a corpus
+    is copied or shared.
     """
 
     document_categories = _normalized_filter(document.get("categories"))
     document_keywords = _normalized_filter(document.get("keywords"))
     document_projects = _normalized_filter(document.get("project"))
+    document_languages = _normalized_filter(document.get("language"))
     return (
         keywords.issubset(document_keywords)
         and (not categories_any or not categories_any.isdisjoint(document_categories))
         and (not projects_any or not projects_any.isdisjoint(document_projects))
+        and (not languages_any or not languages_any.isdisjoint(document_languages))
     )
 
 
@@ -388,7 +397,7 @@ def _public_document(document: dict[str, Any]) -> dict[str, Any]:
     result.pop("metadata_override_revision", None)
     for field in ("title", "doi"):
         result[field] = normalize_inline_text(str(result.get(field) or ""))
-    for field in ("authors", "categories", "keywords", "project"):
+    for field in ("authors", "categories", "keywords", "language", "project"):
         result[field] = [
             normalized
             for value in result.get(field) or []
@@ -426,7 +435,7 @@ def _canonical_metadata_override(value: dict[str, Any]) -> dict[str, Any]:
     for field in ("title", "doi"):
         if field in normalized:
             result[field] = normalize_inline_text(str(normalized[field]))
-    for field in ("authors", "categories", "keywords", "project"):
+    for field in ("authors", "categories", "keywords", "language", "project"):
         if field not in normalized:
             continue
         items: list[str] = []
@@ -506,8 +515,9 @@ def _effective_document_metadata(
         "authors": [],
         "year": None,
         "doi": "",
+        "language": [],
     }
-    for field in ("title", "authors", "year", "doi"):
+    for field in ("title", "authors", "year", "doi", "language"):
         if field in normalized_override:
             result[field] = normalized_override[field]
             provenance[field] = "reviewed_override"
@@ -583,6 +593,35 @@ def _chunk_text(chunk: dict[str, Any]) -> str:
     )
 
 
+def _embedding_text(chunk: dict[str, Any]) -> str:
+    """Return the text a chunk is embedded from, contextual header included.
+
+    A header is prepended to what the dense half embeds and never to what a
+    search returns, so a returned passage stays quotable as it stands. A
+    generation built without headers has no separate embedding text, and the
+    canonical passage text is what was embedded.
+    """
+
+    return str(chunk.get("embedding_text") or _chunk_text(chunk))
+
+
+def _chunk_header(document: dict[str, Any], locator: dict[str, Any]) -> str:
+    """Return the context line prepended to a chunk's embedding text.
+
+    The parts are what a passage cannot say about itself: the source it came from
+    and the section it sits in. A PDF locator carries a page and a page label
+    rather than a section, so a PDF chunk is headed by its title alone instead of
+    by a fabricated section.
+    """
+
+    title = normalize_inline_text(str(document.get("title") or ""))
+    section = normalize_inline_text(str(locator.get("section_title") or ""))
+    parts = [part for part in (title, section) if part]
+    if len(parts) == 2 and parts[0].casefold() == parts[1].casefold():
+        parts = parts[:1]
+    return " — ".join(parts)
+
+
 def _public_passage(
     chunk: dict[str, Any],
     document: dict[str, Any],
@@ -601,6 +640,7 @@ def _public_passage(
         "authors": public_document["authors"],
         "year": public_document.get("year"),
         "doi": public_document["doi"],
+        "language": public_document["language"],
         "categories": public_document["categories"],
         "keywords": public_document["keywords"],
         "project": public_document["project"],
@@ -624,6 +664,8 @@ def _enrich_chunks(
     raw_chunks: list[dict[str, Any]],
     units: list[dict[str, Any]],
     documents: list[dict[str, Any]],
+    *,
+    headers: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int, int]:
     units_by_id = {str(item["id"]): item for item in units}
     documents_by_id = {str(item["document_id"]): item for item in documents}
@@ -658,21 +700,22 @@ def _enrich_chunks(
         identity = f"{unit_id}\0{ordinal}\0{text}".encode()
         chunk_id = f"chk_{hashlib.sha256(identity).hexdigest()[:24]}"
         locator = dict(unit["locator"])
-        enriched.append(
-            {
-                "id": chunk_id,
-                "chunk_id": chunk_id,
-                "document_id": document_id,
-                "source_id": document["source_id"],
-                "document_chunk_index": ordinal,
-                "unit_id": unit_id,
-                "locator": locator,
-                "contents": text,
-                "content_kind": str(unit.get("content_kind") or "prose"),
-                "annotations": list(unit.get("annotations") or []),
-                "quality_flags": list(unit.get("quality_flags") or []),
-            }
-        )
+        record: dict[str, Any] = {
+            "id": chunk_id,
+            "chunk_id": chunk_id,
+            "document_id": document_id,
+            "source_id": document["source_id"],
+            "document_chunk_index": ordinal,
+            "unit_id": unit_id,
+            "locator": locator,
+            "contents": text,
+            "content_kind": str(unit.get("content_kind") or "prose"),
+            "annotations": list(unit.get("annotations") or []),
+            "quality_flags": list(unit.get("quality_flags") or []),
+        }
+        if headers and (header := _chunk_header(document, locator)):
+            record["embedding_text"] = f"{header}\n\n{text}"
+        enriched.append(record)
 
     represented = {item["document_id"] for item in enriched}
     missing = [
@@ -750,7 +793,7 @@ def _record_embedding_token_counts(
 
     if not chunks:
         return True
-    texts = [_chunk_text(chunk) for chunk in chunks]
+    texts = [_embedding_text(chunk) for chunk in chunks]
     try:
         counts = count_tokens(texts)
     except DenseTokenAuditUnavailable:

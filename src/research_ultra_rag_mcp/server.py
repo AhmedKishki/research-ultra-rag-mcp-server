@@ -99,6 +99,18 @@ ProjectsAnyFilter: TypeAlias = Annotated[
         )
     ),
 ]
+LanguagesAnyFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Case-insensitive 'any of' language filters; a result must be written "
+            "in at least one supplied ISO 639 code. A source carries the language "
+            "detected while extracting it and the language a review set instead, "
+            "and `status.languages` lists the current inventory. Use it to search "
+            "one language of a mixed corpus. Omit or pass null for no filter."
+        )
+    ),
+]
 ForceRecompute: TypeAlias = Annotated[
     bool,
     Field(
@@ -278,6 +290,7 @@ def create_server(
         categories_any: CategoriesAnyFilter = None,
         projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
+        languages_any: LanguagesAnyFilter = None,
         source_ids: SourceIdFilter = None,
         exclude_source_ids: ExcludeSourceIdFilter = None,
     ) -> dict[str, Any]:
@@ -300,6 +313,7 @@ def create_server(
                     categories_any=categories_any,
                     projects_any=projects_any,
                     keywords=keywords,
+                    languages_any=languages_any,
                     source_ids=source_ids,
                     exclude_source_ids=exclude_source_ids,
                     retrieval_method="hybrid",
@@ -395,10 +409,13 @@ def create_server(
     ) -> dict[str, Any]:
         """Save reviewed bibliographic metadata for one source.
 
-        Fields: title, authors, year, doi, categories, keywords, and project. An
-        empty review clears the entry so automatic metadata applies again. The
-        review is authoritative at read time, so it binds current retrieval
-        without re-ingesting, and the same JSON file may be edited by hand.
+        Fields: title, authors, year, doi, language, categories, keywords, and
+        project. `language` takes ISO 639 codes, one per language the source is
+        written in, and a code BM25 has no stopword list for is accepted because
+        the metadata describes the source rather than the index. An empty review
+        clears the entry so automatic metadata applies again. The review is
+        authoritative at read time, so it binds current retrieval without
+        re-ingesting, and the same JSON file may be edited by hand.
         """
 
         return _present(

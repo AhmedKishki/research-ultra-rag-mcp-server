@@ -228,6 +228,7 @@ def test_search_carries_its_filters_and_reranks_by_default() -> None:
         "categories_any": ["theory"],
         "projects_any": None,
         "keywords": None,
+        "languages_any": None,
         "source_ids": None,
         "exclude_source_ids": ["sid-1"],
         "retrieval_method": "hybrid",

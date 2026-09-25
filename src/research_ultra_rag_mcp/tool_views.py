@@ -132,9 +132,9 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return the current generation's state: readiness, freshness, and counts.
 
     The answer describes the selected generation and inventories nothing: the
-    retained generations, the categories, and the projects are full-detail
-    readers, and `list_sources` is the source inventory. What a prune would
-    consider is reported as `retained_generation_count` and
+    retained generations, the categories, the projects, and the languages are
+    full-detail readers, and `list_sources` is the source inventory. What a prune
+    would consider is reported as `retained_generation_count` and
     `retained_generation_bytes` rather than as a list of generations.
 
     Change lists appear only when the generation is stale, and `restart_required`

@@ -262,6 +262,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Keep results carrying every one of these keywords.",
     )
     find.add_argument(
+        "--language",
+        action="append",
+        help="Keep results written in any of these ISO 639 codes.",
+    )
+    find.add_argument(
         "--source-id", action="append", help="Search only these stable source ids."
     )
     find.add_argument(
@@ -327,6 +332,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     review.add_argument(
         "--keyword", action="append", help="A keyword the work carries."
+    )
+    review.add_argument(
+        "--language",
+        action="append",
+        help="A language the work is written in, as an ISO 639 code.",
     )
     review.add_argument("--project", help="The project tag to file the work under.")
     review.add_argument(
@@ -597,6 +607,7 @@ def _metadata_body(args: argparse.Namespace) -> dict[str, Any]:
         "authors": args.author,
         "year": args.year,
         "doi": args.doi,
+        "language": args.language,
         "categories": args.category,
         "keywords": args.keyword,
         "project": args.project,
@@ -629,6 +640,7 @@ async def _operate(
             categories_any=args.category,
             projects_any=args.project,
             keywords=args.keyword,
+            languages_any=args.language,
             source_ids=args.source_id,
             exclude_source_ids=args.exclude_source_id,
             retrieval_method=args.method,

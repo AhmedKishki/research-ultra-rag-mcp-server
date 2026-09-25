@@ -45,6 +45,7 @@ def generation_is_reusable(
     project_id: str,
     chunk_size: int,
     chunk_overlap: int,
+    chunk_headers: bool,
     embedding: EmbeddingModel,
 ) -> bool:
     """Require exact processing and model compatibility before any reuse."""
@@ -61,6 +62,9 @@ def generation_is_reusable(
         and chunking.get("tokenizer") == "gpt2"
         and chunking.get("chunk_size") == chunk_size
         and chunking.get("chunk_overlap") == chunk_overlap
+        # A generation built before contextual headers existed means no headers,
+        # which is also the shipped default.
+        and chunking.get("headers", False) == chunk_headers
         and dense.get("embedding_model") == embedding.name
         and dense.get("embedding_model_revision") == embedding.revision
         and dense.get("embedding_dimension") == embedding.dimension
@@ -111,6 +115,7 @@ def load_reuse_snapshot(
     project_id: str,
     chunk_size: int,
     chunk_overlap: int,
+    chunk_headers: bool,
     embedding: EmbeddingModel,
     load_units: bool = True,
     load_chunks: bool = True,
@@ -130,6 +135,7 @@ def load_reuse_snapshot(
         project_id=project_id,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        chunk_headers=chunk_headers,
         embedding=embedding,
     ):
         return None

@@ -16,6 +16,7 @@ import pymupdf
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 from ebooklib import epub
 
+from .settings import BM25_STOPWORD_LANGUAGES, bm25_stopwords
 from .sources import SourceFile, sha256_file
 
 pymupdf.no_recommend_layout()
@@ -495,6 +496,61 @@ def _title_and_embedded_byline(
     return title, authors
 
 
+# A language is detected from how much of a language's own function-word
+# inventory a text sample uses. Coverage rather than raw share, because bm25s's
+# lists are wildly different sizes (33 English words against 499 Korean ones) and
+# a share would hand every sample to the longest list.
+_LANGUAGE_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+_LANGUAGE_SAMPLE_TOKENS = 4000
+_LANGUAGE_MINIMUM_TOKENS = 120
+_LANGUAGE_MINIMUM_COVERAGE = 0.10
+_LANGUAGE_MINIMUM_MARGIN = 1.5
+_LANGUAGE_TAG = re.compile(r"^([A-Za-z]{2,3})(?:[-_].*)?$")
+
+
+def _iso_language_code(value: str) -> str:
+    """Reduce a declared language tag such as `en-US` or `eng` to a code."""
+
+    match = _LANGUAGE_TAG.match(str(value).strip())
+    return match.group(1).casefold() if match else ""
+
+
+def _detect_language(text: str) -> str:
+    """Return the code whose stopword list a text sample covers most fully.
+
+    The candidate lists are the ones BM25 filters with, so a language detected
+    here is one whose function words the lexical half will ignore. A sample with
+    too few tokens, one whose best candidate does not clear a coverage floor, or
+    one whose best candidate does not clearly beat the runner-up returns empty
+    rather than a guess, and the caller records the language as missing. The floor
+    is what rejects a language outside the candidate set, whose texts cover no
+    list at all. CJK text is not separated into words here, so those sources
+    report no detection.
+    """
+
+    tokens = _LANGUAGE_WORD.findall(text.casefold())[:_LANGUAGE_SAMPLE_TOKENS]
+    if len(tokens) < _LANGUAGE_MINIMUM_TOKENS:
+        return ""
+    present = set(tokens)
+    scored: list[tuple[float, str]] = []
+    for code in sorted(BM25_STOPWORD_LANGUAGES):
+        stopwords = bm25_stopwords(code)
+        if not stopwords:
+            continue
+        scored.append((len(present & stopwords) / len(stopwords), code))
+    if not scored:
+        return ""
+    scored.sort(reverse=True)
+    coverage, best = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0.0
+    if (
+        coverage < _LANGUAGE_MINIMUM_COVERAGE
+        or coverage < runner_up * _LANGUAGE_MINIMUM_MARGIN
+    ):
+        return ""
+    return best
+
+
 def _base_metadata(
     *,
     source: SourceFile,
@@ -512,6 +568,8 @@ def _base_metadata(
     year_source = provenance.get("year", "missing")
     doi = automatic.get("doi", "")
     doi_source = provenance.get("doi", "missing")
+    language = [str(code) for code in automatic.get("language") or [] if str(code)]
+    language_source = provenance.get("language", "missing")
     resolved_authors = _normalize_text_list(list(authors or []))
     resolved_title = normalize_inline_text(str(title))
     if text_health_reasons(resolved_title):
@@ -537,6 +595,7 @@ def _base_metadata(
         "authors": author_source,
         "year": year_source,
         "doi": doi_source,
+        "language": language_source,
         "categories": "missing",
         "keywords": "missing",
     }
@@ -553,6 +612,7 @@ def _base_metadata(
         "authors": resolved_authors,
         "year": year,
         "doi": resolved_doi,
+        "language": language,
         "categories": [],
         "keywords": [],
         "metadata_provenance": metadata_provenance,
@@ -611,12 +671,24 @@ def _front_matter_identity(
     pages: list[tuple[list[_TextBlock], float, float]],
     metadata: dict[str, Any],
     filename_stem: str,
+    declared_language: str = "",
 ) -> tuple[dict[str, Any], dict[str, str], list[str]]:
     embedded_title = normalize_inline_text(str(metadata.get("title") or ""))
     embedded_authors = _pdf_author_list(metadata)
     visible_title = ""
     visible_authors: list[str] = []
     text_bearing_pages = [page for page in pages if page[0]][:5]
+    declared_code = _iso_language_code(declared_language)
+    language = declared_code or _detect_language(
+        "\n".join(
+            block.text
+            for blocks, _width, _height in text_bearing_pages
+            for block in blocks
+        )
+    )
+    language_source = (
+        "pdf_catalog" if declared_code else "text_sample" if language else "missing"
+    )
     first_page_text = (
         "\n".join(block.text for block in text_bearing_pages[0][0])
         if text_bearing_pages
@@ -771,15 +843,36 @@ def _front_matter_identity(
                 break
 
     return (
-        {"title": title, "authors": authors, "year": year, "doi": doi},
+        {
+            "title": title,
+            "authors": authors,
+            "year": year,
+            "doi": doi,
+            "language": [language] if language else [],
+        },
         {
             "title": title_source,
             "authors": authors_source,
             "year": year_source,
             "doi": doi_source,
+            "language": language_source,
         },
         warnings,
     )
+
+
+def _pdf_declared_language(document: pymupdf.Document) -> str:
+    """Return the language a PDF declares for itself, or an empty string.
+
+    A PDF may carry a `/Lang` entry in its catalog, which PyMuPDF exposes as
+    `Document.language`. Many carry none, and the caller falls back to detection
+    over the text sample.
+    """
+
+    try:
+        return str(document.language or "")
+    except (RuntimeError, ValueError):
+        return ""
 
 
 def _block_signature(block: _TextBlock) -> str:
@@ -1189,7 +1282,10 @@ def _extract_pdf(
             for page in document
         ]
         automatic, provenance, warnings = _front_matter_identity(
-            pages, metadata, source.path.stem
+            pages,
+            metadata,
+            source.path.stem,
+            declared_language=_pdf_declared_language(document),
         )
         record = _base_metadata(
             source=source,
@@ -1295,6 +1391,22 @@ def _epub_visible_identity(
         if visible_title or visible_authors:
             return visible_title, visible_authors
     return "", []
+
+
+def _epub_text_sample(book: epub.EpubBook, items: int = 3) -> str:
+    """Return the visible text of the first few spine documents."""
+
+    parts: list[str] = []
+    for spine_entry in book.spine[:items]:
+        item_id = spine_entry[0] if isinstance(spine_entry, tuple) else spine_entry
+        item = book.get_item_with_id(item_id)
+        if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
+            continue
+        soup = BeautifulSoup(item.get_content(), "html.parser")
+        for unwanted in soup(["script", "style", "nav"]):
+            unwanted.decompose()
+        parts.append(soup.get_text(" ", strip=True))
+    return "\n".join(parts)
 
 
 def _extract_epub(
@@ -1422,6 +1534,7 @@ def prepare_scanned_pdf(
             pages,
             document.metadata or {},
             source.path.stem,
+            declared_language=_pdf_declared_language(document),
         )
         record = _base_metadata(
             source=source,
@@ -1511,11 +1624,21 @@ def prepare_epub_extraction(
         (_YEAR.search(item) for item in dates if _YEAR.search(item)),
         None,
     )
+    declared_language = next(
+        (
+            code
+            for item in _epub_metadata_values(book, "language")
+            if (code := _iso_language_code(item))
+        ),
+        "",
+    )
+    language = declared_language or _detect_language(_epub_text_sample(book))
     automatic = {
         "title": title,
         "authors": resolved_authors,
         "year": int(year_match.group(1)) if year_match else None,
         "doi": next((_doi(item) for item in identifiers if _doi(item)), ""),
+        "language": [language] if language else [],
     }
     title_source = (
         "epub_opf" if opf_title else "epub_visible" if visible_title else "filename"
@@ -1536,6 +1659,13 @@ def prepare_epub_extraction(
             ),
             "year": "epub_opf" if year_match else "missing",
             "doi": "epub_opf" if automatic["doi"] else "missing",
+            "language": (
+                "epub_opf"
+                if declared_language
+                else "text_sample"
+                if language
+                else "missing"
+            ),
         },
         warnings=(
             ["conflicting_candidates"]

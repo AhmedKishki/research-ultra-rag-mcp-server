@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .config import ResearchConfig
+from .settings import LANGUAGE_PATTERN
 
 ALLOWED_SOURCE_EXTENSIONS = frozenset({".epub", ".pdf"})
 METADATA_FIELDS = frozenset(
-    {"title", "authors", "year", "doi", "categories", "keywords", "project"}
+    {
+        "title",
+        "authors",
+        "year",
+        "doi",
+        "language",
+        "categories",
+        "keywords",
+        "project",
+    }
 )
 
 
@@ -126,6 +137,28 @@ def _string_list(value: Any, field: str) -> list[str]:
     return result
 
 
+def _language_list(value: Any, field: str) -> list[str]:
+    """Normalize a source's languages to lowercase ISO 639 codes.
+
+    A source carries none, one, or several languages, because metadata records
+    what the source is written in, which is not the same question as whether
+    BM25 can tokenize it. A code BM25 has no stopword list for is accepted here
+    and surfaced as a corpus-level warning, because refusing it would force the
+    metadata to misdescribe a source that really is in that language.
+    """
+
+    languages: list[str] = []
+    for item in _string_list(value, field):
+        code = item.casefold()
+        if not re.fullmatch(LANGUAGE_PATTERN, code):
+            raise SourcePolicyError(
+                f"Metadata field {field!r} must be ISO 639-1 codes: {item!r}"
+            )
+        if code not in languages:
+            languages.append(code)
+    return languages
+
+
 def normalize_metadata(value: dict[str, Any]) -> dict[str, Any]:
     unknown = set(value) - METADATA_FIELDS
     if unknown:
@@ -144,6 +177,9 @@ def normalize_metadata(value: dict[str, Any]) -> dict[str, Any]:
     for field in ("authors", "categories", "keywords", "project"):
         if field in value:
             normalized[field] = _string_list(value[field], field)
+
+    if "language" in value:
+        normalized["language"] = _language_list(value["language"], "language")
 
     if "year" in value:
         year = value["year"]

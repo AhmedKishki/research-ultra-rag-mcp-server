@@ -211,6 +211,9 @@ class FakeDenseBackend:
         self.build_calls = 0
         self.embed_calls = 0
         self.embedded_text_count = 0
+        # The exact strings a vector was created from, so a test can assert what
+        # the dense half was given rather than only how much of it there was.
+        self.embedded_texts: list[str] = []
         self.upload_batches: list[tuple[int, int]] = []
         self.audit_unavailable = False
         self.audited_text_count = 0
@@ -231,6 +234,7 @@ class FakeDenseBackend:
     def embed_texts(self, texts: list[str]) -> np.ndarray:
         self.embed_calls += 1
         self.embedded_text_count += len(texts)
+        self.embedded_texts.extend(texts)
         return np.ones((len(texts), 384), dtype=np.float32)
 
     def _build_index(
@@ -3991,3 +3995,139 @@ def test_feedback_is_reproducible_for_the_same_input() -> None:
     assert support_module._pseudo_relevance_terms(
         **arguments
     ) == support_module._pseudo_relevance_terms(**arguments)  # type: ignore[arg-type]
+
+
+def test_contextual_headers_reach_the_embedding_and_never_the_passage(
+    project: Path,
+) -> None:
+    """A header is context for the dense half, not text a search returns."""
+
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "article.pdf",
+            [
+                (
+                    "Commodity fetishism describes how relations between people "
+                    "appear as relations between things, so that value seems to "
+                    "belong to the object rather than to the labour which produced "
+                    "it, and the analysis begins from that appearance."
+                ),
+                (
+                    "The mysterious character of the commodity arises from the "
+                    "form of value rather than from its use, and the inversion is "
+                    "practical rather than merely mistaken, which is why criticism "
+                    "starts at the surface it describes."
+                ),
+            ],
+            title="Headed Article",
+        )
+
+        async def ingest_with(
+            overrides: list[str],
+        ) -> tuple[dict[str, object], FakeDenseBackend]:
+            config = resolve_config(
+                project,
+                vanilla_executable=sys.executable,
+                settings_overrides=overrides,
+            )
+            backend = FakeDenseBackend()
+            service = ResearchService(  # type: ignore[arg-type]
+                config, FakeUltraRAG(), dense=backend
+            )
+            return await service.ingest(chunk_size=50, chunk_overlap=10), backend
+
+        plain, plain_backend = await ingest_with([])
+        headed, headed_backend = await ingest_with(["chunking.headers=true"])
+
+        # Off, every vector covers the passage and nothing else.
+        assert plain_backend.embedded_texts
+        assert all(
+            "Headed Article" not in text for text in plain_backend.embedded_texts
+        )
+
+        # On, every vector covers a header naming the source first. The chunk set
+        # is the same build, because a header changes what is embedded rather than
+        # what is chunked.
+        assert headed["chunk_count"] == plain["chunk_count"]
+        assert headed_backend.embedded_texts
+        assert all(
+            text.startswith("Headed Article\n\n")
+            for text in headed_backend.embedded_texts
+        )
+
+        # The vectors cover different text under the other policy, so nothing is
+        # reusable across the two.
+        assert headed["reused_chunk_count"] == 0
+        assert headed["created_vector_count"] == headed["chunk_count"]
+
+        # Whatever went into the vector, the returned passage is the passage.
+        config = resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            settings_overrides=["chunking.headers=true"],
+        )
+        service = ResearchService(  # type: ignore[arg-type]
+            config, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        result = await service.search("commodity fetishism labour", top_k=1)
+        text = str(result["hits"][0]["text"])
+        assert text
+        assert "Headed Article" not in text
+
+    asyncio.run(exercise())
+
+
+def test_reviewed_language_filters_a_search(project: Path) -> None:
+    """A language review binds retrieval at once, without a rebuild."""
+
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "english.pdf",
+            [
+                (
+                    "Commodity fetishism describes how relations between people "
+                    "appear as relations between things, so that value seems to "
+                    "belong to the object rather than to the labour which produced "
+                    "it."
+                )
+            ],
+            title="English Article",
+        )
+        write_pdf(
+            project / "sources" / "german.pdf",
+            [
+                (
+                    "Die Ware erscheint als Verhaeltnis zwischen Dingen, und der "
+                    "Wert scheint den Dingen anzugehoeren statt der Arbeit, die "
+                    "sie hervorgebracht hat."
+                )
+            ],
+            title="German Article",
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        # Reviews, not detection: this is what makes the field authoritative
+        # without re-ingesting.
+        await service.set_source_metadata(
+            source_path="english.pdf", metadata={"language": ["en"]}
+        )
+        await service.set_source_metadata(
+            source_path="german.pdf", metadata={"language": ["de"]}
+        )
+
+        german = await service.search(
+            "Ware Wert Arbeit", top_k=10, languages_any=["de"]
+        )
+        assert german["filters"]["languages_any"] == ["de"]
+        assert {hit["title"] for hit in german["hits"]} == {"German Article"}
+
+        english = await service.search(
+            "commodity fetishism labour", top_k=10, languages_any=["en"]
+        )
+        assert {hit["title"] for hit in english["hits"]} == {"English Article"}
+
+    asyncio.run(exercise())
