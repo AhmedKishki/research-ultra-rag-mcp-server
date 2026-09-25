@@ -14,7 +14,7 @@ The set is deliberately small, honest, and reproducible: 32 queries over 19 pass
   - `paraphrase` (11): the same 11 targets, asked as a question that avoids the author's vocabulary.
   - `entity` (10): a named person, project, place, or concept, asked about specifically.
 
-The `quote` and `paraphrase` classes deliberately share targets, so the two query styles are compared on identical passages. The harness reports the mean content-word overlap between each query and its target passage, which makes it checkable how lexical each class actually is rather than a claim.
+The `quote` and `paraphrase` classes deliberately share targets, so the two query styles are compared on identical passages. The harness reports the mean content-word overlap between each query and its target passage, which makes how lexical each class is checkable rather than a claim.
 
 ## Protocol and its limits
 

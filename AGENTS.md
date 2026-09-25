@@ -29,6 +29,16 @@ Every markdown file states what the software does now and what remains open. Git
 - Keep each fact in one place. Current rules live in this file, current behaviour in `README.md`, capabilities in `FEATURES.md`, numbers and limits in `MEASUREMENTS.md`, open work in `TODO.md`, and deferred ideas in `ROADMAP.md`; other files point at them instead of repeating them.
 - Cross-references must resolve after any edit: code comments, scripts, and documents name these files by path or by harness name, never by a section number that can drift.
 
+### Only direct, concise language
+
+Write every file — documents, commit messages, code comments, docstrings — in direct, concise language. State the fact and stop.
+
+- One sentence per fact. No preamble, no hedging, no restating what the reader already read.
+- Cut filler: *very*, *really*, *actually*, *simply*, *just*, *it is worth noting*, *importantly*, *of course*.
+- Do not sell. No superlatives or dramatic framing; a number, a mechanism, or a limit is the argument.
+- Prefer a concrete noun and an active verb: "the build fails" over "a failure condition may be encountered".
+- Length is not thoroughness. Split long sentences, turn paragraphs into bullets, and never open an item by restating its own title.
+
 ## Presenting decisions to the user
 
 Any question that needs a user choice must be presented as a numbered list of concrete options, never as an open question. For every decision:

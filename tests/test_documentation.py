@@ -78,7 +78,7 @@ def test_features_document_separates_upstream_from_added_work() -> None:
 
     headings = [
         "# Features",
-        "## 1. What UltraRAG provides, and what this server actually uses",
+        "## 1. What UltraRAG provides, and what this server uses",
         "## 2. Features added on top of UltraRAG",
         "## 3. What this server deliberately does not do",
         "## 4. Planned additions",

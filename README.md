@@ -20,7 +20,7 @@ Plain-language summary of every capability, and why it is there:
 - **One way to search, with the measured best settings.** Every search is hybrid retrieval with CPU reranking, which is the largest measured quality gain available. A query can be narrowed by source, by the project a source was gathered for, by the branch it belongs to, and by the terms that identify it, all from reviewed metadata. Filters are applied before ranking, so `top_k` is a budget inside the selection.
 - **Reviewed metadata that applies immediately.** Fix a wrong author or year in the project's review-state file and the change shows up in listings, citations, filters, and results at once — without re-ingesting or rewriting the generation.
 - **Reversible source inclusion.** Exclude a duplicate source, later restore it. The original file is never deleted or modified.
-- **Resumable ingestion.** Every call has a soft time budget. If it runs out, the server returns a checkpointed `in_progress` result and you simply call it again. Client timeouts, cancellations, and restarts lose at most one small batch of work.
+- **Resumable ingestion.** Every call has a soft time budget. If it runs out, the server returns a checkpointed `in_progress` result and you call it again. Client timeouts, cancellations, and restarts lose at most one small batch of work.
 - **Text-health policy with disclosure.** Corrupt text (broken character maps) and chunks with no readable letters or digits are excluded, and `status` reports the corpus-level counts. A quotation in another language or script is *not* excluded — it is returned as it is, and the advisory script note about it belongs to the full-detail payload.
 - **An embedding-fidelity audit.** Each chunk records how many embedding tokens it contains and whether its vector covers only the beginning of its text, so silent truncation is counted in the ingestion and status output.
 - **Immutable, project-local generations.** A build creates a new generation and only becomes active after both indexes pass validation. A failed build leaves the previous generation searchable.
@@ -72,7 +72,7 @@ The settings that are commonly set, and what they do:
 | Setting | What it does |
 |---|---|
 | `runtime.model_cache_root` or `--model-cache-root` | Move the shared model cache elsewhere. |
-| `dense.backend auto\|exact\|qdrant` or `--dense-backend` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for very large ones. |
+| `dense.backend auto\|exact\|qdrant` or `--dense-backend` | Choose how dense search is stored. `auto` (default) scans the portable vectors directly for normal-sized corpora and switches to an embedded index for large ones. |
 | `dense.reranker_model NAME` or `--reranker-model` | Choose the CPU cross-encoder that reranks every search. Six are supported, each pinned to a revision, and an unknown name is refused rather than resolved to whatever the model hub serves that day. See "How a search works". |
 | `language.corpus` | The languages the corpus is written in, as ISO 639-1 codes: one code, or several separated by commas for a corpus in more than one language, most-used-first (`de,en`). Only a language BM25 can tokenize is accepted, because the stopword list comes from it, and every language named decides whether the embedding model covers the text; a mismatch is reported by `status` rather than embedded silently. An identity setting: it is part of the ranking policy recorded with a generation. |
 | `language.bm25_stopwords` | Which language's stopword list BM25 filters with. Empty means the first language in `language.corpus`, because BM25 takes a single list and a corpus in several languages has to point it at one of them. Also part of the ranking policy. |
@@ -129,7 +129,7 @@ corpus = "de,en"
 embedding_model = "intfloat/multilingual-e5-large"
 ```
 
-`status` reports the mismatch when a corpus language and an embedding model disagree, which is the case before any of this is set: the default model covers `en` only, so a German corpus starts with a warning instead of a silent quality loss. The reranker is query-time only, so a multilingual one can be chosen separately; note that the registry's multilingual reranker (`jinaai/jina-reranker-v2-base-multilingual`) is CC-BY-NC-4.0, which suits non-commercial research but is a licence decision rather than a default.
+`status` reports the mismatch when a corpus language and an embedding model disagree, which is the case before any of this is set: the default model covers `en` only, so a German corpus starts with a warning instead of a silent quality loss. The reranker is query-time only, so a multilingual one can be chosen separately; the registry's multilingual reranker (`jinaai/jina-reranker-v2-base-multilingual`) is CC-BY-NC-4.0, which suits non-commercial research but is a licence decision rather than a default.
 
 ### What is worth setting on this machine
 
@@ -338,7 +338,7 @@ Search can legitimately return fewer results than `top_k`, including none, when 
 
 `source_ids` restricts a search to the sources you name and `exclude_source_ids` removes sources from the result, both by the stable `source_id` that `list_sources` reports. Omitting both searches the whole corpus, which is the default: include everything, exclude nothing. Filters are applied before ranking, so `top_k` is the budget inside the selection.
 
-A `source_id` is derived from a source's normalized relative path: it survives edits to the file's bytes and changes when the file is renamed or moved. An ID that resolves to nothing in the selected generation is reported as `unresolved_source_ids` (`unresolved_exclude_source_ids` for exclusions), and an include list that resolves to nothing at all is an error rather than a silently unfiltered search. A reviewed exclusion always wins: naming an excluded source in `source_ids` cannot bring it back, so the response returns no hits. The full-detail payload reports the same facts under `filters`, where `active_document_count` says how many sources the search actually covered.
+A `source_id` is derived from a source's normalized relative path: it survives edits to the file's bytes and changes when the file is renamed or moved. An ID that resolves to nothing in the selected generation is reported as `unresolved_source_ids` (`unresolved_exclude_source_ids` for exclusions), and an include list that resolves to nothing at all is an error rather than a silently unfiltered search. A reviewed exclusion always wins: naming an excluded source in `source_ids` cannot bring it back, so the response returns no hits. The full-detail payload reports the same facts under `filters`, where `active_document_count` says how many sources the search covered.
 
 ### Dividing a corpus with categories and projects
 
@@ -408,7 +408,7 @@ research-ultra-rag --project-root ~/my-research-project exclude papers/duplicate
 research-ultra-rag --project-root ~/my-research-project metadata papers/hall.pdf \
     --title "Race, Articulation and Societies Structured in Dominance" --year 1980
 
-# Browse it, and read the settings that actually apply.
+# Browse it, and read the settings that apply.
 research-ultra-rag --project-root ~/my-research-project ui --open
 research-ultra-rag --project-root ~/my-research-project config
 ```
@@ -601,7 +601,7 @@ Set `RESEARCH_ULTRARAG_RUNTIME_ROOT` instead if you prefer a variable. The MCP s
 Rules that keep this safe:
 
 - The path must be absolute.
-- The first run claims an empty directory by writing a small marker file naming this project. Later runs check that marker, so a root belonging to another project, a non-empty directory without a marker, and a path that is actually a file are all refused with an explicit message instead of silently mixing two projects together.
+- The first run claims an empty directory by writing a small marker file naming this project. Later runs check that marker, so a root belonging to another project, a non-empty directory without a marker, and a path that is a file are all refused with an explicit message instead of silently mixing two projects together.
 - Only derived state moves. Your portable review state stays in `<project>/.research-rag`.
 - `status` reports the effective location as `runtime_root` (`null` when the default is in use). To move back, drop the option and relocate the directory.
 
@@ -637,7 +637,7 @@ Every one of them answers as described under [What a tool answer contains](#what
 
 ## How it works under the hood
 
-You do not need this section to use the server, but it explains what the settings in "Install once" actually control.
+You do not need this section to use the server, but it explains what the settings in "Install once" control.
 
 ```text
 project PDF/EPUB files

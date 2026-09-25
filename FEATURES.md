@@ -1,6 +1,6 @@
 # Features
 
-This document lists what the server can do, and — just as importantly — where each capability comes from. Some of it is UltraRAG, some is built on top of UltraRAG, and some is only planned. It also compares this server with a different, more general MCP RAG server, because "which one should I use?" depends on the job.
+This document lists what the server can do, and where each capability comes from. Some of it is UltraRAG, some is built on top of UltraRAG, and some is only planned. It also compares this server with a different, more general MCP RAG server, because "which one should I use?" depends on the job.
 
 Three labels are used throughout:
 
@@ -10,7 +10,7 @@ Three labels are used throughout:
 
 For measurements behind the performance-related features, see `MEASUREMENTS.md`. For how to use them, see `README.md`. Where UltraRAG offers a capability that this server does not use, the reason and what the upstream component would have added are recorded in section 1.1: an unused upstream feature here is a documented decision, not an oversight.
 
-## 1. What UltraRAG provides, and what this server actually uses
+## 1. What UltraRAG provides, and what this server uses
 
 UltraRAG is much larger than the part this server needs. Its gateway exposes around 78 tools and 26 prompts across corpus, retrieval, reranking, prompt, generation, routing, memory, benchmark, and evaluation components, with several vector-database backends and an upstream web interface.
 
@@ -33,7 +33,7 @@ First, **the chunker and BM25 are upstream, but the parameters and the surroundi
 
 Second, **pinning a small upstream surface is a feature, not a gap**. It means an UltraRAG upgrade can be evaluated against three well-understood call sites instead of dozens, and that this server never depends on an upstream service, credential, GPU, or vector database being available.
 
-Third, **every capability marked No in the table above has a recorded reason**. Each one is either replaced by a component whose output the research contract can actually use (section 1.1) or left out deliberately (sections 1.2 and 1.3).
+Third, **every capability marked No in the table above has a recorded reason**. Each one is either replaced by a component whose output the research contract can use (section 1.1) or left out deliberately (sections 1.2 and 1.3).
 
 ### 1.1 Reuse decisions: when this server builds a component instead of reusing one
 
@@ -55,7 +55,7 @@ Any decision below would be revisited if the upstream component gained all four 
 
 **Qdrant (`retriever_init(index_backend="qdrant")`, `servers/retriever/src/index_backends/qdrant_backend.py`).**
 
-- **Benefit if reused:** the payload filtering and scored results this server actually wants, delivered by the same `qdrant-client` library it already depends on.
+- **Benefit if reused:** the payload filtering and scored results this server wants, delivered by the same `qdrant-client` library it already depends on.
 - **Why not:** the upstream component's `search()` returns only the payload text field (`str((hit.payload or {}).get(self.text_field, ""))`) and discards ids and scores, assigns `uuid5` point IDs derived from values instead of canonical chunk IDs, and creates its collection at init. The library is reused; the component is not.
 - **Benefit of the reuse that does happen:** this server's own thin backend stores integer point IDs with `chunk_id`, `document_id`, and `source_id` as payload, applies Qdrant's `MatchAny` payload filter to the document IDs the service already resolved from the reviewed overlay, and returns `point.score` as a ranking signal.
 - **Threshold:** selected per generation only above 200,000 chunks and recorded in that generation's manifest; below that, the exact scan is both simpler and faster.
@@ -71,7 +71,7 @@ Any decision below would be revisited if the upstream component gained all four 
 - **Benefit if reused:** upstream's reranker model catalogue, including `openbmb/MiniCPM-Reranker-Light` as its shipped default, and consistency with the upstream pipeline.
 - **Why not:** every upstream backend adds something this project refuses. The `sentence_transformers` backend pulls PyTorch into a package that otherwise needs only ONNX Runtime; the `infinity` backend is a model-serving engine; the `openai` backend needs a network credential and would send research queries to a third party; and upstream's shipped parameters target `device: cuda`. Its result is also `rerank_psg` — reordered passage strings with the scores discarded.
 - **Why scores matter here:** the server reorders at most 50 candidates by score and then appends the unreranked candidate tail, so a reference group can still reach a source whose best passage fell outside the reranked prefix; a string-only reranker cannot express that ordering.
-- **Why the gateway could not simply be asked for it:** `reranker` is one of the stateful namespaces the vanilla gateway can start, but the research transport requests `corpus` and `retriever` only, so no reranker child process runs today and adding one would add a second model-serving surface.
+- **Why the gateway cannot be asked for it:** `reranker` is one of the stateful namespaces the vanilla gateway can start, but the research transport requests `corpus` and `retriever` only, so no reranker child process runs today and adding one would add a second model-serving surface.
 - **What replaced it:** a FastEmbed cross-encoder through the already-pinned FastEmbed ONNX dependency and the same shared model cache, lazily loaded, applied to at most 50 candidates, and chosen by the engine rather than by the caller. Six of FastEmbed's registered cross-encoders are supported, each pinned to a revision in `rerankers.py`, with `Xenova/ms-marco-MiniLM-L-6-v2` as the default; a name outside that table is refused instead of being resolved to whatever the model hub serves that day.
 - **Measured benefit of the custom component, and its default:** on the judged set, reranked hybrid reaches 81.2% first-position success against 65.6% unreranked and 59.4% for BM25, at 2.30 s per query against 0.17 s. It is therefore the server's fixed behavior, with `rerank=false` reachable only from the engine (the harness and the tests) and a disclosed fallback to the unranked order when its model cannot be loaded. `MEASUREMENTS.md` records how the supported models compare on the same judged set.
 

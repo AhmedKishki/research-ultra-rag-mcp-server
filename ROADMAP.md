@@ -20,7 +20,7 @@ The server targets English-primary born-digital PDF and EPUB sources of 5,000–
 
 - A persistent document-metadata index, which a corpus of tens of thousands of sources would need before per-process caches of the document map or of the staleness verdict are worth their invalidation risk.
 - Pushing category and keyword filtering into the embedded dense index, which matters only above the 200,000-chunk threshold where that backend is selected.
-- Incremental dense-index construction for very large collections, where the embedded backend currently rebuilds its index for every changed generation.
+- Incremental dense-index construction for large collections, where the embedded backend currently rebuilds its index for every changed generation.
 
 ## Other
 
