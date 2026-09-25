@@ -16,7 +16,7 @@ The package builds on the separately versioned `vanilla-ultra-rag-mcp-server`. N
 - `FEATURES.md` is the capability inventory: what comes from UltraRAG, what this server adds on top, what is deliberately excluded, what is only planned, and how it differs from a general-purpose MCP RAG server. Keep the upstream/added/planned labels accurate; never present planned work as shipped. Whenever UltraRAG offers a capability that this server does not use, section 1.1 must state the reason, what reuse would have added, and the criteria under which the decision would be revisited; an unused upstream feature must never appear unexplained.
 - `MEASUREMENTS.md` holds the current numbers and the current limits: ingestion and query cost, retrieval quality against the judged set, and what those numbers do not establish. Every measurement quoted anywhere else in the repository is reproduced there.
 - `ROADMAP.md` contains only deferred product ideas that are not in scope yet.
-- `TODO.md` contains only open work: what is unimplemented, grouped by area, with the commands that verify the repository's current state.
+- `TODO.md` contains only open work: what is unimplemented, grouped by the problem each item solves, with the commands that verify the repository's current state.
 - `NOTICE` contains attribution and legal notices.
 
 ### Markdown describes the present, never the past
@@ -56,7 +56,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag` (the core command line), `research-ultra-rag-mcp` (stdio server), `research-ultra-rag-ui` (browser view), and `research-ultra-rag-verify` (MCP-surface check)
-- Version: `0.46.2`
+- Version: `0.46.3`
 - `bm25s` is pinned to a fork (`AhmedKishki/bm25s` @ `20f6c02`) carrying a one-line fix for its non-ASCII stopword serialization; `settings` fails fast on a stopword list that cannot round-trip through it, so revert the pin only once upstream fixes it.
 - `pymupdf` raises `IndexError` from `Page.get_label()` when a document's page-label tree starts after the page being asked about, which fails an entire extraction and so an entire ingestion; reported upstream at https://github.com/pymupdf/PyMuPDF/issues/5140. `_pdf_locator` catches it and falls back to the physical page number, and two tests pin that a real label still wins. Narrow the guard when that issue closes.
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.

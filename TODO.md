@@ -1,48 +1,49 @@
 # TODO
 
-Open work, cheapest first. A finished item leaves this file: git history is the archive. Behaviour is in `README.md`, capabilities in `FEATURES.md`, numbers and limits in `MEASUREMENTS.md`, deferred ideas in `ROADMAP.md`.
+Open work, grouped by the problem each item solves. A finished item leaves this file: git history is the archive. Behaviour is in `README.md`, capabilities in `FEATURES.md`, numbers and limits in `MEASUREMENTS.md`, deferred ideas in `ROADMAP.md`.
 
-Cost orders the file. A measurement costs one harness run; a code change costs no rebuild; an experiment that changes the corpus costs a rebuild of the reference corpus, 15–25 minutes with 8 threads.
+## A report that is true
 
-## Minutes: a measurement, or a small change
+What a caller is told has to match what the server actually holds.
 
-- [ ] **Surface the retained-generation inventory in the UI.** Feature. `status` reports `generations` and `retained_generation_bytes`; the pinned status view shows none of them.
-- [ ] **Warn about a runtime-root mismatch in the standalone UI launcher.** Feature. It starts its own server without reading an MCP client configuration, so it can show a different generation than an agent. `--ui-port` is unaffected.
-- [ ] **Give `stale` one meaning.** Feature. In the no-generation branch it doubles as "ready to build".
+- [ ] **Surface the retained-generation inventory in the UI.** Feature. `status` reports `generations` and `retained_generation_bytes`; the pinned status view shows none of them, so a browser cannot see what a prune would consider.
+- [ ] **Warn about a runtime-root mismatch in the standalone UI launcher.** Feature. The launcher starts its own server without reading an MCP client configuration, so a project whose agents use a different `--runtime-root` shows one generation in the browser and another to the agent, with nothing saying so. `--ui-port` is unaffected.
+- [ ] **Give `stale` one meaning.** Feature. In the no-generation branch it doubles as "ready to build", so a caller cannot tell a corpus that changed from one that was never built.
+- [ ] **Report activation failures as structured values** instead of one all-or-nothing message. Feature. A failed activation says that it failed rather than which step failed and what it left on disk.
+- [ ] **Make `--set` reach the surfaces that spawn a server.** Feature. `research-ultra-rag` resolves settings in process, so `--set` works there, while `research-ultra-rag-verify` and the UI spawn a child that resolves its own: `--set retrieval.rrf_k=30 --ingest` measures the defaults instead. Forward the overrides into the child environment, or document which channel each entry point honours.
+- [ ] **Decide how `list_sources` exposes the keyword vocabulary.** Feature. The keyword layer is all-of and its vocabulary only exists across sources, so nothing lets an agent discover which keywords exist; report counts in `status` or reduce the list to handles.
+- [ ] **Refuse to measure while a build is running.** Feature. `scripts/evaluate_retrieval.py` started alongside an ingestion does not fail, it starves: it sat with 66 ONNX threads at zero CPU time for ten minutes while the build held eleven cores. Notice a staging build under the project's runtime root and stop with a message instead.
+
+## The corpus and the machine holding it
+
+Work that protects the data, or that stops a build from costing more than it should.
+
 - [ ] **Narrow the two broad `except Exception` handlers** at durability boundaries, so a storage fault cannot be swallowed. Feature.
-- [ ] **Report activation failures as structured values** instead of one all-or-nothing message. Feature.
-- [ ] **Check free disk space before a build starts.** Feature.
-- [ ] **Refuse to measure while a build is running.** Feature. `scripts/evaluate_retrieval.py` started alongside an ingestion does not fail, it starves: the two compete for every core, and the harness sat with 66 ONNX threads at zero CPU time for ten minutes while the build held eleven cores. It should notice a staging build under the project's runtime root and stop with a message instead.
-- [ ] **Decide how `list_sources` exposes the keyword vocabulary.** Feature. `reviewed_metadata_sources` is the largest lean answer and the only place an agent can discover which keywords exist; either report counts in `status` or reduce the list to handles.
-
-## Hours: code, still no rebuild
-
-- [ ] **Make `--set` reach the surfaces that spawn a server.** Feature. `research-ultra-rag` resolves settings in process, so `--set` works there. `research-ultra-rag-verify` and the UI spawn a child that resolves its own, so `--set retrieval.rrf_k=30 --ingest` measures the defaults instead. Forward the overrides into the child environment, or document which channel each entry point honours.
-- [ ] **Reuse vectors across a contextual-header change.** Feature. Vector reuse is keyed on canonical passage text, because the same hash is what resolves a BM25 passage back to its chunk, so a header suspends reuse and a re-ingest with `chunking.headers` on recomputes every vector. The fix is two hash columns — one canonical, one embedded — and a lookup-schema bump, which rebuilds the sidecar from canonical artifacts rather than the corpus. Check the ordering too: `generation_is_reusable` validates the sidecar before anything ensures it, so a version bump denies reuse to the first ingest that follows it.
+- [ ] **Check free disk space before a build starts.** Feature. A build that runs out of room partway leaves a staging directory and no generation, on the machine least able to afford the retry.
 - [ ] **Prune retained generations.** Feature. Removal is manual and deletes data, so it needs which generation, a confirmation step, and never the current one.
 - [ ] **Roll back to a retained generation deliberately**, instead of only moving forward. Feature.
 - [ ] **An `ingest` dry run** that reports what would change and what would be reused, and writes nothing. Feature.
-- [ ] **Merge the stopword lists of a mixed corpus.** Feature. `language.corpus` can name several languages while BM25 filters the one list in `language.bm25_stopwords`. bm25s accepts a list, so the union is expressible: check that the pinned runtime passes a list through `bm25.lang`, then measure the union against a single list on a mixed corpus.
-- [ ] **An Arabic stopword source.** Feature. bm25s ships no Arabic list, so `language.corpus = "ar"` is refused while settings are read. Add an explicit list option, or an empty list that filters nothing, plus an Arabic-capable model in the pinned table.
-- [ ] **Split the resumable ingestion loop into per-phase handlers, then enable `C901`.** Feature. `_advance_ingestion` is 1,320 lines at complexity 107, against 35 for the next worst function in the package; three of its phase blocks call closures defined inside it and eight read loop-local state, so the split is an ingestion state object that handlers take and return. Accept on a green suite and a re-ingest that reuses every chunk and vector. The map and the transformation rules are in git history.
 - [ ] **A CPU reserve, so a build leaves cores free.** Feature. `runtime.embedding_threads` is a thread count, not a promise about the machine, and cutting threads costs build throughput — 8 threads measured 31.66 chunks/s against the default's 23.65 — where `runtime.nice` costs none. A reserve expresses the intent directly, as physical cores minus the reserve, and needs a measurement to price it.
+- [ ] **Reuse vectors across a contextual-header change.** Feature. Vector reuse is keyed on canonical passage text, because the same hash is what resolves a BM25 passage back to its chunk, so turning `chunking.headers` on recomputes every vector. The fix is two hash columns — one canonical, one embedded — and a lookup-schema bump, which rebuilds the sidecar from canonical artifacts rather than the corpus. Check the ordering too: `generation_is_reusable` validates the sidecar before anything ensures it, so a version bump denies reuse to the first ingest that follows it.
 
-## One rebuild each: 15–25 minutes per experiment
+## Closing the paraphrase gap
 
-These are the levers for the paraphrase gap: three of ten judged paraphrase queries miss the judged passage entirely within the top ten, while nothing is withheld.
+Three of ten judged paraphrase queries miss the designated passage within the top ten while nothing is withheld: the passages are there and the ranking cannot find them. These are the levers.
 
-- [ ] **Add contextual chunk headers.** Feature. Prepend the title and the section to the text that is embedded, never to the text that is returned, so returned text stays quote-clean.
-- [ ] **Measure the headers on a corpus with sections.** Test, one rebuild per corpus. On a PDF corpus the header is the title alone and the first chunk of a paper already repeats it; an EPUB corpus is where the locator carries a section and where the header has something the passage does not say itself.
-- [ ] **Measure chunk size and overlap.** Test, one rebuild per variant. `chunking.size` of 256, 384, or 512 against `chunking.overlap` of 48, 64, or 128.
-- [ ] **Measure the embedding models the registry offers.** Test, one rebuild per model: `BAAI/bge-base-en-v1.5` and `mixedbread-ai/mxbai-embed-large-v1` for English, `jinaai/jina-embeddings-v2-base-de` for German, `intfloat/multilingual-e5-large` across languages. The German model is the first candidate for a corpus in that language, where the English default cannot help.
-- [ ] **Section-aware chunking with parent-document retrieval.** Feature, the largest change here. Retrieve the chunk and return the enclosing section; it needs section structure preserved through extraction and a second level in the generation.
-
-## Days: work that no rebuild bounds
-
-- [ ] **Pooled relevance judgments.** Test. The set is known-item — one designated passage per query, one annotator — so a passage making the same point scores as a miss. Collect every candidate from every mode and judge the pool. This is also what would let the pseudo-relevance expansion be measured: with rarity-weighted terms it mines the corpus's own vocabulary, and a known-item set cannot see that.
+- [ ] **Pooled relevance judgments.** Test. The set is known-item — one designated passage per query, one annotator — so a passage that makes the same point scores as a miss, and a change that ranks an equally good passage above the designated one reads as a regression. Collect every candidate from every mode and judge the pool. This is also what would let the pseudo-relevance expansion be measured: with rarity-weighted terms it mines the corpus's own vocabulary, and a known-item set cannot see that.
 - [ ] **Grow the judged set from real questions**, if the privacy of a query log can be settled. Test.
-- [ ] **Re-measure the `search` row of the tool-answer table** after the next reference build. Test; `MEASUREMENTS.md` carries the pre-trim figure and says why.
+- [ ] **Measure the headers on a corpus with sections.** Test. On a PDF corpus the header is the title alone and the first chunk of a paper already repeats it; an EPUB corpus is where the locator carries a section and where the header says something the passage does not.
+- [ ] **Measure chunk size and overlap.** Test. `chunking.size` of 256, 384, or 512 against `chunking.overlap` of 48, 64, or 128.
+- [ ] **Measure the embedding models the registry offers.** Test: `BAAI/bge-base-en-v1.5` and `mixedbread-ai/mxbai-embed-large-v1` for English, `jinaai/jina-embeddings-v2-base-de` for German, `intfloat/multilingual-e5-large` across languages. The German model is the first candidate for a corpus in that language, where the English default cannot help.
+- [ ] **Section-aware chunking with parent-document retrieval.** Feature, the largest change here. Retrieve the chunk and return the enclosing section; it needs section structure preserved through extraction and a second level in the generation.
+- [ ] **Merge the stopword lists of a mixed corpus.** Feature. `language.corpus` can name several languages while BM25 filters the one list in `language.bm25_stopwords`, and per-source `language` metadata now reports which sources are which. bm25s accepts a list, so the union is expressible: check that the pinned runtime passes a list through `bm25.lang`, then measure the union against a single list.
+- [ ] **An Arabic stopword source.** Feature. bm25s ships no Arabic list, so `language.corpus = "ar"` is refused while settings are read even though a source can declare Arabic. Add an explicit list option, or an empty list that filters nothing, plus an Arabic-capable model in the pinned table.
 - [ ] **Keep the measurement current and wider.** Test. Re-run `scripts/evaluate_retrieval.py` when the corpus, the extraction policy, or a retrieval default changes, and add a second corpus and filtered queries.
+- [ ] **Re-measure the `search` row of the tool-answer table.** Test. `MEASUREMENTS.md` carries the pre-trim figure and says why it has to be taken again.
+
+## Keeping the code changeable
+
+- [ ] **Split the resumable ingestion loop into per-phase handlers, then enable `C901`.** Feature. `_advance_ingestion` is 1,320 lines at complexity 107 against 35 for the next worst function in the package; three of its phase blocks call closures defined inside it and eight read loop-local state, so the split is an ingestion state object that handlers take and return. Accept on a green suite and a re-ingest that reuses every chunk and vector. The map and the transformation rules are in git history.
 
 ## Verification
 
@@ -58,4 +59,3 @@ uv run python scripts/measure_tool_payloads.py --project /path/to/project --offl
 ```
 
 An item is done when the change is committed, its measurement is in `MEASUREMENTS.md` if it moved a number, and the commands above are clean.
-
