@@ -63,6 +63,8 @@ LOCK_DIR="$STATE_ROOT/open-ui.lock"
 LOCK_WAIT=40
 # Attempts at finding a port that this project's UI can actually bind.
 LAUNCH_ATTEMPTS=5
+# 0.25s steps a started UI gets to answer on its port before the attempt fails.
+READY_WAIT=80
 # The interpreter beside the UI command speaks Python; the port scan needs it.
 PYTHON="$(dirname "$UI_COMMAND")/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
@@ -141,6 +143,69 @@ take_lock() {
   trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
 }
 
+ui_serves_port() {
+  # True when PORT is served by the process this launcher started, or by one of
+  # its children. Another project's UI answering on the same port must not count,
+  # and a UI that lost the bind is on its way out. Exit 2 means there is no /proc
+  # to inspect, and the caller falls back to waiting on the process alone.
+  "$PYTHON" -c "
+import os, sys
+
+pid, port = int(sys.argv[1]), int(sys.argv[2])
+children = {}
+for entry in os.listdir('/proc'):
+    if not entry.isdigit():
+        continue
+    try:
+        with open('/proc/%s/stat' % entry) as handle:
+            fields = handle.read().rsplit(') ', 1)[-1].split()
+    except OSError:
+        continue
+    children.setdefault(int(fields[1]), []).append(int(entry))
+
+tree, queue = {pid}, [pid]
+while queue:
+    for child in children.get(queue.pop(), []):
+        if child not in tree:
+            tree.add(child)
+            queue.append(child)
+
+inodes = set()
+for member in tree:
+    try:
+        names = os.listdir('/proc/%d/fd' % member)
+    except OSError:
+        continue
+    for name in names:
+        try:
+            target = os.readlink('/proc/%d/fd/%s' % (member, name))
+        except OSError:
+            continue
+        if target.startswith('socket:['):
+            inodes.add(target[8:-1])
+
+try:
+    handle = open('/proc/net/tcp')
+except OSError:
+    sys.exit(2)
+want = ':%04X' % port
+found = False
+if inodes:
+    with handle:
+        next(handle, None)
+        for line in handle:
+            fields = line.split()
+            if (
+                len(fields) > 9
+                and fields[3] == '0A'
+                and fields[1].endswith(want)
+                and fields[9] in inodes
+            ):
+                found = True
+                break
+sys.exit(0 if found else 1)" "$1" "$2" 2>/dev/null
+}
+
 launch() {
   # One attempt on the current PORT. The child leads its own session, so a later
   # --stop can signal the UI and everything the UI starts below it.
@@ -163,8 +228,35 @@ launch() {
     fi
   fi
   CANDIDATE=$!
-  sleep 1
-  kill -0 "$CANDIDATE" 2>/dev/null
+  # Probing for a free port and binding it are two steps, so another project's
+  # launcher can take this port in between and leave this UI dying with a bind
+  # error. Waiting until the port is served by *this* process is what makes the
+  # recorded pid and port trustworthy, and it keeps the lock held until the
+  # answer is real so the next launcher's probe is honest.
+  waited=0
+  while [ "$waited" -lt "$READY_WAIT" ]; do
+    if ! kill -0 "$CANDIDATE" 2>/dev/null; then
+      return 1
+    fi
+    served=0
+    ui_serves_port "$CANDIDATE" "$PORT" || served=$?
+    if [ "$served" = "0" ]; then
+      return 0
+    fi
+    if [ "$served" = "2" ]; then
+      # Nothing to inspect, so a process that has survived its startup is the
+      # only evidence available.
+      sleep 2
+      kill -0 "$CANDIDATE" 2>/dev/null && return 0
+      return 1
+    fi
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  # Nothing of ours serves this port, so the attempt is over and the process that
+  # did not serve it must not be left running.
+  kill -TERM "$CANDIDATE" 2>/dev/null || true
+  return 1
 }
 
 start() {

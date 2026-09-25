@@ -38,6 +38,24 @@ def _alive(pid: int) -> bool:
     return stat.rsplit(") ", 1)[1].split()[0] != "Z"
 
 
+# A stub UI that behaves like the real one where the launcher can see it: it
+# answers on the port it was given, which is what the launcher waits for before
+# it records a pid and a port.
+_BINDING_STUB = (
+    'PORT=""\n'
+    'while [ "$#" -gt 0 ]; do\n'
+    '  case "$1" in\n'
+    '    --port) PORT="$2"; shift ;;\n'
+    "  esac\n"
+    "  shift\n"
+    "done\n"
+    'python3 -c "import socket, sys, time; s = socket.socket(); '
+    "s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(1); time.sleep(60)\" "
+    '"$PORT" &\n'
+    "wait\n"
+)
+
+
 def test_initialisation_creates_the_launcher_and_the_root_link(
     tmp_path: Path,
 ) -> None:
@@ -171,7 +189,7 @@ def test_launcher_starts_and_stops_the_whole_process_group(tmp_path: Path) -> No
         'printf \'%s\\n\' "$*" > "$STUB_ARGUMENT_FILE"\n'
         "sleep 30 &\n"
         'printf \'%s\\n\' "$!" > "$STUB_CHILD_FILE"\n'
-        "sleep 30\n",
+        f"{_BINDING_STUB}",
         encoding="utf-8",
     )
     stub.chmod(0o755)
@@ -288,7 +306,7 @@ def test_a_stale_port_lock_is_taken_over_rather_than_blocking(tmp_path: Path) ->
 
     script, state, environment = _stub_launcher(
         tmp_path,
-        stub_body="sleep 30\n",
+        stub_body=_BINDING_STUB,
     )
     lock = state / "open-ui.lock"
     lock.mkdir()
@@ -342,24 +360,11 @@ def test_two_launchers_serve_two_ports_and_stop_independently(
 ) -> None:
     """The port choice is atomic, so no launcher can take another's URL."""
 
-    binding = (
-        'PORT=""\n'
-        'while [ "$#" -gt 0 ]; do\n'
-        '  case "$1" in\n'
-        '    --port) PORT="$2"; shift ;;\n'
-        "  esac\n"
-        "  shift\n"
-        "done\n"
-        'python3 -c "import socket, sys, time; s = socket.socket(); '
-        "s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(1); time.sleep(60)\" "
-        '"$PORT" &\n'
-        "wait\n"
-    )
     first_script, first_state, first_env = _stub_launcher(
-        tmp_path, stub_body=binding, name="first"
+        tmp_path, stub_body=_BINDING_STUB, name="first"
     )
     second_script, second_state, second_env = _stub_launcher(
-        tmp_path, stub_body=binding, name="second"
+        tmp_path, stub_body=_BINDING_STUB, name="second"
     )
 
     first = subprocess.Popen(
