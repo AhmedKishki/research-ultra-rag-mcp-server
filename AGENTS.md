@@ -56,7 +56,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 
 - Package: `research-ultra-rag-mcp`
 - Commands: `research-ultra-rag` (the core command line), `research-ultra-rag-mcp` (stdio server), `research-ultra-rag-ui` (browser view), and `research-ultra-rag-verify` (MCP-surface check)
-- Version: `0.42.0`
+- Version: `0.43.0`
 - `bm25s` is pinned to a fork (`AhmedKishki/bm25s` @ `20f6c02`) carrying a one-line fix for its non-ASCII stopword serialization; `settings` fails fast on a stopword list that cannot round-trip through it, so revert the pin only once upstream fixes it.
 - `pymupdf` raises `IndexError` from `Page.get_label()` when a document's page-label tree starts after the page being asked about, which fails an entire extraction and so an entire ingestion; reported upstream at https://github.com/pymupdf/PyMuPDF/issues/5140. `_pdf_locator` catches it and falls back to the physical page number, and two tests pin that a real label still wins. Narrow the guard when that issue closes.
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
@@ -275,6 +275,7 @@ Do not move the dense backend implementations into the vanilla gateway or patch 
 - Answer through the core, never around it: the core command line, the MCP tools, and the browser UI all call a `ResearchService` method and project the result with `tool_views`, so one capability has one implementation and the surfaces cannot disagree about it.
 - Keep blocking extraction and filesystem scans outside the event loop.
 - Set process-level resource policy once, at start: `runtime.nice` is applied by the server, the UI, and the core command line before anything is spawned, so children inherit it and one setting reaches the whole process tree without a second copy of the logic.
+- Signal only a process this project can prove it owns. The stop sweep requires a research entry point in the command line *and* this project as `--project-root`, so it cannot touch a shell, an editor, or another project's server, and it never signals the process doing the sweep.
 - Serialize every project operation with both the in-process service lock and the cross-process `project.lock`.
 - Prefer new immutable generations to in-place index mutation.
 - Validate a new artifact before updating a pointer to it.

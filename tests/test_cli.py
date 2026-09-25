@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar, Self
@@ -25,6 +26,9 @@ from research_ultra_rag_mcp.cli import (
     _parser,
     _resolve,
     _run,
+    _service_processes,
+    _stop,
+    _terminate,
     _ui,
 )
 from research_ultra_rag_mcp.config import ConfigurationError
@@ -322,6 +326,118 @@ def test_a_reading_command_never_opens_the_gateway(
 
     assert result is not None
     assert result["source_count"] == 0
+
+
+def _fake_process(proc_root: Path, pid: int, arguments: list[str]) -> None:
+    """Write one process into a stand-in /proc tree."""
+
+    directory = proc_root / str(pid)
+    directory.mkdir(parents=True)
+    (directory / "cmdline").write_bytes(("\0".join(arguments) + "\0").encode("utf-8"))
+
+
+def test_the_stop_sweep_finds_only_processes_serving_this_project(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    proc_root = tmp_path / "proc"
+    server = ["python", "-m", "research_ultra_rag_mcp", "--project-root", str(project)]
+    _fake_process(proc_root, 10, server)
+    # Another project's server, a shell and an editor that name this path, and a
+    # process of ours with no project at all.
+    _fake_process(proc_root, 11, [*server[:-1], str(tmp_path / "elsewhere")])
+    _fake_process(proc_root, 12, ["/bin/bash", "-c", f"echo {project}"])
+    _fake_process(proc_root, 13, ["vim", str(project)])
+    _fake_process(proc_root, 14, ["python", "-m", "research_ultra_rag_mcp"])
+
+    found = _service_processes(project, proc_root)
+
+    assert [pid for pid, _ in found] == [10]
+    assert found[0][1].startswith("python -m research_ultra_rag_mcp --project-root")
+
+
+def test_the_stop_sweep_accepts_the_equals_form_of_the_option(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    proc_root = tmp_path / "proc"
+    _fake_process(
+        proc_root,
+        21,
+        ["python", "-m", "research_ultra_rag_mcp", f"--project-root={project}"],
+    )
+
+    assert [pid for pid, _ in _service_processes(project, proc_root)] == [21]
+
+
+def test_stopping_asks_first_and_kills_only_the_survivors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[tuple[int, int]] = []
+    alive = {2}
+
+    monkeypatch.setattr(cli_module, "STOP_GRACE_SECONDS", 0)
+    monkeypatch.setattr(
+        cli_module.os, "kill", lambda pid, number: sent.append((pid, number))
+    )
+    monkeypatch.setattr(cli_module, "_alive", lambda pid: pid in alive)
+
+    forced = _terminate([1, 2])
+
+    assert sent == [(1, signal.SIGTERM), (2, signal.SIGTERM), (2, signal.SIGKILL)]
+    assert forced == [2]
+
+
+def test_stop_without_servers_only_stops_the_browser_view(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: list[list[str]] = []
+
+    def record(command: list[str], **_options: Any) -> SimpleNamespace:
+        recorded.append(command)
+        return SimpleNamespace(
+            returncode=0, stdout="No UI is running for this project."
+        )
+
+    monkeypatch.setattr(cli_module, "subprocess", SimpleNamespace(run=record))
+    args = _args("--project-root", str(project), "stop")
+
+    report = _stop(args, _resolve(args))
+
+    assert len(recorded) == 1
+    assert recorded[0][0].endswith(".research-rag/bin/open-ui.sh")
+    assert recorded[0][1:] == ["--stop"]
+    assert report["ui_launcher_status"] == 0
+    # The launcher's message is captured, so stdout stays a single JSON report.
+    assert report["ui_launcher_output"] == "No UI is running for this project."
+    assert "servers" not in report
+
+
+def test_stop_with_servers_reports_what_it_found_and_stopped(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "subprocess",
+        SimpleNamespace(
+            run=lambda _command, **_options: SimpleNamespace(returncode=0, stdout="")
+        ),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_service_processes",
+        lambda _root, *_args: [(4242, "python -m research_ultra_rag_mcp")],
+    )
+    monkeypatch.setattr(cli_module, "_terminate", lambda _pids: [])
+    args = _args("--project-root", str(project), "stop", "--servers")
+
+    report = _stop(args, _resolve(args))
+
+    assert report["servers"] == [
+        {"pid": 4242, "command": "python -m research_ultra_rag_mcp"}
+    ]
+    assert report["forced_pids"] == []
+    assert len(report["notes"]) == 2
 
 
 def test_set_overrides_reach_the_settings_by_resolving_in_this_process(

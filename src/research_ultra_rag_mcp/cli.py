@@ -26,7 +26,9 @@ import asyncio
 import json
 import os
 import shlex
+import signal
 import subprocess
+import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
@@ -59,6 +61,10 @@ VERSION_CONTROL_NOTES = (
     ".research-rag/bin/",
     "open-ui.sh",
 )
+# A process the stop sweep may signal has to name one of these, so a shell or an
+# editor that merely mentions the project path is never touched.
+SERVICE_MARKERS = ("research_ultra_rag_mcp", "research-ultra-rag")
+STOP_GRACE_SECONDS = 5.0
 
 
 class _LazyGateway:
@@ -343,6 +349,20 @@ def _parser() -> argparse.ArgumentParser:
         "--stop", action="store_true", help="Stop it, and its private server."
     )
     browser.add_argument("--port", type=int, help="Serve on a different port.")
+
+    stop = commands.add_parser(
+        "stop",
+        help="Stop this project's browser view, and optionally every server of it.",
+    )
+    stop.add_argument(
+        "--servers",
+        action="store_true",
+        help=(
+            "Also stop every research process serving this project, including a "
+            "server an MCP client started. The client, not this command, decides "
+            "whether a server it owns comes back."
+        ),
+    )
     return parser
 
 
@@ -456,6 +476,119 @@ def _ui(args: argparse.Namespace, config: ResearchConfig) -> None:
         raise ResearchError(f"The UI launcher exited with status {status}.")
 
 
+def _project_argument(arguments: list[str]) -> str | None:
+    """Return the ``--project-root`` value in one command line, if it has one."""
+
+    for index, argument in enumerate(arguments):
+        if argument == "--project-root" and index + 1 < len(arguments):
+            return arguments[index + 1]
+        if argument.startswith("--project-root="):
+            return argument.split("=", 1)[1]
+    return None
+
+
+def _service_processes(
+    project_root: Path,
+    proc_root: Path = Path("/proc"),
+) -> list[tuple[int, str]]:
+    """Return the ``(pid, command)`` pairs serving this project.
+
+    A process qualifies when its command line names a research entry point *and*
+    this project as ``--project-root``. Both halves matter: the marker keeps a
+    shell or an editor that merely mentions the path out of the sweep, and the
+    path keeps another project's server out of it. A relative ``--project-root``
+    is not matched, because resolving it would use this process's directory
+    rather than the other one's; every launcher and client configuration passes
+    an absolute path.
+    """
+
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return []
+    found: list[tuple[int, str]] = []
+    for pid in sorted(int(entry.name) for entry in entries if entry.name.isdigit()):
+        if pid == os.getpid():
+            continue
+        try:
+            raw = (proc_root / str(pid) / "cmdline").read_bytes()
+        except OSError:
+            continue
+        arguments = [
+            part for part in raw.decode("utf-8", "replace").split("\0") if part
+        ]
+        if not any(
+            marker in argument for argument in arguments for marker in SERVICE_MARKERS
+        ):
+            continue
+        if _project_argument(arguments) != str(project_root):
+            continue
+        found.append((pid, " ".join(arguments)))
+    return found
+
+
+def _alive(pid: int) -> bool:
+    """Whether this process still exists and could be signalled."""
+
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _terminate(pids: list[int]) -> list[int]:
+    """Ask these processes to stop and then insist; return the ones killed outright."""
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+    deadline = time.monotonic() + STOP_GRACE_SECONDS
+    while time.monotonic() < deadline and any(_alive(pid) for pid in pids):
+        time.sleep(0.1)
+    forced = [pid for pid in pids if _alive(pid)]
+    for pid in forced:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            continue
+    return forced
+
+
+def _stop(args: argparse.Namespace, config: ResearchConfig) -> dict[str, Any]:
+    """Stop this project's browser view, and with ``--servers`` every process serving it.
+
+    The launcher's own message is captured rather than printed, so a caller gets
+    one JSON report on stdout and nothing else.
+    """
+
+    script = launcher_path(config.portable_root)
+    report: dict[str, Any] = {"project_root": str(config.project_root)}
+    if script.is_file():
+        stopped = subprocess.run(
+            [str(script), "--stop"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        report["ui_launcher_status"] = stopped.returncode
+        report["ui_launcher_output"] = stopped.stdout.strip()
+    else:
+        report["ui_launcher_status"] = None
+    if not args.servers:
+        return report
+    found = _service_processes(config.project_root)
+    report["servers"] = [{"pid": pid, "command": command} for pid, command in found]
+    report["forced_pids"] = _terminate([pid for pid, _ in found])
+    report["notes"] = [
+        "A server your MCP client started belongs to that client: this command stops it, and the client decides whether it comes back.",
+        "A build interrupted this way resumes from its checkpoint on the next ingest call.",
+    ]
+    return report
+
+
 def _metadata_body(args: argparse.Namespace) -> dict[str, Any]:
     """Build the review body, refusing a request that asks for two things at once."""
 
@@ -537,6 +670,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any] | None:
     if args.command == "ui":
         _ui(args, config)
         return None
+    if args.command == "stop":
+        return _stop(args, config)
     async with _service(config) as service:
         tool, payload = await _operate(args, service)
     return present_tool_response(tool, payload, detail=args.detail)

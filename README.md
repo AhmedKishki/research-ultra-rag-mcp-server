@@ -413,7 +413,13 @@ research-ultra-rag --project-root ~/my-research-project metadata papers/hall.pdf
 # Browse it, and read the settings that apply.
 research-ultra-rag --project-root ~/my-research-project ui --open
 research-ultra-rag --project-root ~/my-research-project config
+
+# Stop it, and every server serving this project.
+research-ultra-rag --project-root ~/my-research-project stop
+research-ultra-rag --project-root ~/my-research-project stop --servers
 ```
+
+`stop` hands over to the project's own launcher, so the browser view and the private server it started go together. `--servers` also signals every research process whose command line names this project, which is how a server an MCP client started is stopped from a shell. That process belongs to the client, so whether it comes back is the client's decision — and a build stopped this way resumes from its checkpoint.
 
 Each command prints the answer its tool would return, as JSON. `--detail lean` prints exactly what an agent receives; the default, `full`, prints everything, which is what a person reading a terminal wants. `--project-root` may be omitted when you are already in the project directory, and `RESEARCH_ULTRARAG_PROJECT_ROOT` sets it for a session. `search` takes `--top-k`, `--method`, `--no-rerank`, and the same category, project, keyword, and source-id filters the tool takes.
 
