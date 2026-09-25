@@ -19,6 +19,7 @@ from research_ultra_rag_mcp.extraction import (
     ExtractionError,
     _marker_annotations,
     _pdf_line_text,
+    _pdf_locator,
     _quality_flags,
     _TextBlock,
     extract_scanned_pdf_pages,
@@ -1285,3 +1286,43 @@ def test_pdf_symlink_is_rejected(project: Path, tmp_path: Path) -> None:
 
     with pytest.raises(SourcePolicyError, match="Symbolic-link"):
         scan_sources(config)
+
+
+def test_a_page_before_the_label_tree_still_gets_a_usable_locator(
+    tmp_path: Path,
+) -> None:
+    """A label tree that starts after page 1 must not fail page 1's locator.
+
+    PyMuPDF's label lookup filters the document's label tree and indexes the
+    result, so a document whose labels begin on page 2 makes its own call raise
+    on page 1. The locator falls back to the physical page, because a locator
+    has to resolve to something.
+    """
+
+    path = tmp_path / "labels-start-at-page-two.pdf"
+    document = pymupdf.open()
+    document.new_page()
+    document.new_page()
+    document.set_page_labels(
+        [{"startpage": 1, "prefix": "", "firstpagenum": 1, "style": "D"}]
+    )
+    document.save(path)
+    document.close()
+
+    with pymupdf.open(path) as reopened:
+        before_the_tree = _pdf_locator(reopened[0], 1)
+        inside_the_tree = _pdf_locator(reopened[1], 2)
+
+    assert before_the_tree == {"type": "pdf_page", "page": 1, "page_label": "1"}
+    # A real printed label is still what the locator reports.
+    assert inside_the_tree == {"type": "pdf_page", "page": 2, "page_label": "1"}
+
+
+def test_an_empty_page_label_falls_back_to_the_physical_page() -> None:
+    class Unlabelled:
+        def get_label(self) -> str:
+            return ""
+
+    locator = _pdf_locator(Unlabelled(), 4)
+
+    assert locator == {"type": "pdf_page", "page": 4, "page_label": "4"}

@@ -1065,9 +1065,14 @@ def _split_prose_and_lists(
 
 
 def _pdf_locator(page: pymupdf.Page, page_number: int) -> dict[str, Any]:
+    # PyMuPDF's own label lookup filters the document's label tree and indexes
+    # the result, so a tree that starts after the page being asked about makes it
+    # index an empty list and raise IndexError: a document whose labels begin on
+    # page 2 raises on page 1. A locator has to resolve to something, and the
+    # physical page number always does.
     try:
         page_label = str(page.get_label() or page_number)
-    except (RuntimeError, ValueError):
+    except (RuntimeError, ValueError, IndexError):
         page_label = str(page_number)
     return {"type": "pdf_page", "page": page_number, "page_label": page_label}
 
