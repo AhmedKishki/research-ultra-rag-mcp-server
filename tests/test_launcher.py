@@ -246,3 +246,171 @@ def test_launcher_starts_and_stops_the_whole_process_group(tmp_path: Path) -> No
             timeout=60,
             check=False,
         )
+
+
+def _stub_launcher(
+    tmp_path: Path,
+    *,
+    stub_body: str,
+    name: str = "research-project",
+) -> tuple[Path, Path, dict[str, str]]:
+    """Generate a launcher whose UI command is a stub script."""
+
+    project = tmp_path / name
+    (project / "sources").mkdir(parents=True)
+    portable = project / ".research-rag"
+    state = portable / "runtime"
+    state.mkdir(parents=True)
+    stub_directory = tmp_path / f"stub-bin-{name}"
+    stub_directory.mkdir()
+    stub = stub_directory / "research-ultra-rag-ui"
+    stub.write_text(f"#!/bin/sh\n{stub_body}", encoding="utf-8")
+    stub.chmod(0o755)
+    ensure_ui_launcher(
+        project_root=project,
+        portable_root=portable,
+        state_root=state,
+        project_name=name,
+        ui_command=str(stub),
+    )
+    return (
+        project / "open-ui.sh",
+        state,
+        {
+            **os.environ,
+            "PATH": f"{stub_directory}{os.pathsep}{os.environ['PATH']}",
+        },
+    )
+
+
+def test_a_stale_port_lock_is_taken_over_rather_than_blocking(tmp_path: Path) -> None:
+    """A launcher killed mid-choice must not lock its project out."""
+
+    script, state, environment = _stub_launcher(
+        tmp_path,
+        stub_body="sleep 30\n",
+    )
+    lock = state / "open-ui.lock"
+    lock.mkdir()
+    (lock / "pid").write_text("999999999", encoding="utf-8")
+
+    try:
+        started = subprocess.run(
+            [str(script), "--port", "5097"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert started.returncode == 0, started.stderr
+        assert _alive(int((state / "open-ui.pid").read_text(encoding="utf-8")))
+        assert not lock.exists()
+    finally:
+        subprocess.run(
+            [str(script), "--stop"],
+            env=environment,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+
+
+def test_a_ui_that_exits_immediately_is_retried_and_leaves_no_record(
+    tmp_path: Path,
+) -> None:
+    """A failed start must not leave a pid or a port naming something absent."""
+
+    script, state, environment = _stub_launcher(tmp_path, stub_body="exit 0\n")
+    started = subprocess.run(
+        [str(script), "--port", "5096"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert started.returncode != 0
+    assert "did not stay up" in started.stderr
+    assert not (state / "open-ui.pid").exists()
+    assert not (state / "open-ui.port").exists()
+    assert not (state / "open-ui.lock").exists()
+
+
+def test_two_launchers_serve_two_ports_and_stop_independently(
+    tmp_path: Path,
+) -> None:
+    """The port choice is atomic, so no launcher can take another's URL."""
+
+    binding = (
+        'PORT=""\n'
+        'while [ "$#" -gt 0 ]; do\n'
+        '  case "$1" in\n'
+        '    --port) PORT="$2"; shift ;;\n'
+        "  esac\n"
+        "  shift\n"
+        "done\n"
+        'python3 -c "import socket, sys, time; s = socket.socket(); '
+        "s.bind(('127.0.0.1', int(sys.argv[1]))); s.listen(1); time.sleep(60)\" "
+        '"$PORT" &\n'
+        "wait\n"
+    )
+    first_script, first_state, first_env = _stub_launcher(
+        tmp_path, stub_body=binding, name="first"
+    )
+    second_script, second_state, second_env = _stub_launcher(
+        tmp_path, stub_body=binding, name="second"
+    )
+
+    first = subprocess.Popen(
+        [str(first_script)], env=first_env, stdout=subprocess.PIPE, text=True
+    )
+    second = subprocess.Popen(
+        [str(second_script)], env=second_env, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert first.wait(timeout=60) == 0
+        assert second.wait(timeout=60) == 0
+        first_port = (first_state / "open-ui.port").read_text(encoding="utf-8")
+        second_port = (second_state / "open-ui.port").read_text(encoding="utf-8")
+        assert first_port != second_port
+        assert _alive(int((first_state / "open-ui.pid").read_text(encoding="utf-8")))
+        assert _alive(int((second_state / "open-ui.pid").read_text(encoding="utf-8")))
+    finally:
+        for script, environment in (
+            (first_script, first_env),
+            (second_script, second_env),
+        ):
+            subprocess.run(
+                [str(script), "--stop"],
+                env=environment,
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+
+
+def test_stop_refuses_a_pid_that_is_not_this_projects_ui(tmp_path: Path) -> None:
+    """A reused pid number is not a reason to signal an unrelated process."""
+
+    script, state, environment = _stub_launcher(tmp_path, stub_body="sleep 30\n")
+    bystander = subprocess.Popen(["sleep", "30"])
+    (state / "open-ui.pid").write_text(str(bystander.pid), encoding="utf-8")
+    (state / "open-ui.port").write_text("5095", encoding="utf-8")
+    try:
+        stopped = subprocess.run(
+            [str(script), "--stop"],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert stopped.returncode == 0
+        assert "is not this project's UI" in stopped.stderr
+        assert bystander.poll() is None
+        assert not (state / "open-ui.pid").exists()
+        assert not (state / "open-ui.port").exists()
+    finally:
+        bystander.terminate()
+        bystander.wait(timeout=30)

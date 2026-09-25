@@ -33,6 +33,10 @@ _RUNTIME_MARKER = ".research-ultra-rag-runtime.json"
 # top-level invocation, so no exported setting can turn one server into a chain
 # of them.
 MANAGED_CHILD_ENV = "RESEARCH_ULTRARAG_MANAGED_CHILD"
+# The process that started a child. A child that is orphaned before it can look at
+# its own parent — a client that dies in the moment between spawning and startup —
+# still knows who owned it and can end itself with them.
+OWNER_PID_ENV = "RESEARCH_ULTRARAG_OWNER_PID"
 TOP_LEVEL_ONLY_ENV = ("RESEARCH_ULTRARAG_UI_PORT",)
 
 
@@ -41,14 +45,27 @@ def child_process_environment() -> dict[str, str]:
 
     The child inherits this process's environment except for the variables that
     describe a top-level invocation, and it carries the marker that makes it
-    refuse to host a UI of its own.
+    refuse to host a UI of its own plus the identity of its owner. An inherited
+    owner id is overwritten, because the owner is always the process that starts
+    the child rather than whatever started that one.
     """
 
     environment = dict(os.environ)
     for name in TOP_LEVEL_ONLY_ENV:
         environment.pop(name, None)
     environment[MANAGED_CHILD_ENV] = "1"
+    environment[OWNER_PID_ENV] = str(os.getpid())
     return environment
+
+
+def declared_owner_pid() -> int | None:
+    """Return the process that declared itself this one's owner, if any."""
+
+    raw = os.environ.get(OWNER_PID_ENV)
+    if raw is None or not raw.strip().isdigit():
+        return None
+    owner = int(raw)
+    return owner if owner > 1 else None
 
 
 def is_managed_child() -> bool:

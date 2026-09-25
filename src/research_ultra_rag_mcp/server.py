@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
+import threading
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, TypeAlias, TypeVar
@@ -17,6 +20,7 @@ from .config import (
     ResearchConfig,
     apply_process_priority,
     configured_source_directory,
+    declared_owner_pid,
     is_managed_child,
     resolve_config,
 )
@@ -599,6 +603,51 @@ def _ui_port_decision(raw: Any) -> int | None:
     return port
 
 
+def process_exists(pid: int) -> bool:
+    """Whether one process is still there, without signalling it."""
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def watch_owner(interval: float = 1.0) -> None:
+    """End this server when the process that started it goes away.
+
+    A stdio server normally ends when its client closes the pipe and the read
+    loop sees end-of-file. A server busy in a long ingestion is not reading
+    anything, so a client that dies mid-build leaves the build running for a
+    project nobody is watching, with a gateway below it: a browser UI killed
+    after its launcher's grace period, or an editor that crashed, is enough.
+
+    The owner is the process that started this one, which every spawner in this
+    package names in the child's environment, so a child orphaned before it could
+    even look at its own parent still knows whose it was. The parent is the
+    fallback for a server started by hand. It is re-checked from a daemon thread,
+    so no amount of work on the reading thread can starve the check. SIGTERM goes
+    to this process rather than ``os._exit``, so whatever the framework installed
+    to shut down still runs and the gateway child is not simply abandoned.
+    """
+
+    owner = declared_owner_pid() or os.getppid()
+    if owner <= 1:
+        # Nothing started this process in a way that can own it.
+        return
+
+    def check() -> None:
+        while True:
+            time.sleep(interval)
+            if not process_exists(owner):
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+
+    threading.Thread(target=check, name="owner-watchdog", daemon=True).start()
+
+
 def main() -> None:
     args = _parser().parse_args()
     try:
@@ -627,6 +676,7 @@ def main() -> None:
         print(describe_settings(config.settings, config.settings_provenance))
         return
     apply_process_priority(config.nice)
+    watch_owner()
     create_server(config, ui_port=_ui_port_decision(args.ui_port)).run(
         transport="stdio", show_banner=False
     )

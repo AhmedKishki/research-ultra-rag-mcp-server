@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http.client
 import json
 import os
+import signal
 import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -546,3 +550,83 @@ async def _assert_ui_claim_is_exclusive_and_released(project: Path) -> None:
 
 def test_embedded_ui_claim_is_exclusive_and_released(project: Path) -> None:
     asyncio.run(_assert_ui_claim_is_exclusive_and_released(project))
+
+
+def _process_alive(pid: int) -> bool:
+    """True while one process exists and is not a zombie."""
+
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return stat.rsplit(") ", 1)[1].split()[0] != "Z"
+
+
+def test_a_server_ends_when_its_declared_owner_is_gone() -> None:
+    """A server must not outlive the process that started it.
+
+    A busy stdio server does not read stdin until the phase it is in returns, so
+    a client that dies in the middle of a build used to leave the build running
+    for a project nobody was watching, with a gateway below it. Every spawner in
+    this package names itself the owner in the child's environment, which is what
+    lets the child end itself even when it is orphaned before it can look at its
+    own parent: the parent here exits in the instant after spawning.
+    """
+
+    code = (
+        "from research_ultra_rag_mcp.server import watch_owner; import time; "
+        "watch_owner(0.2); time.sleep(60)"
+    )
+    parent = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import subprocess, sys;"
+                "from research_ultra_rag_mcp.config import child_process_environment;"
+                f"child = subprocess.Popen([sys.executable, '-c', {code!r}],"
+                " env=child_process_environment(),"
+                " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);"
+                "print(child.pid, flush=True)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert parent.returncode == 0, parent.stderr
+    child = int(parent.stdout.strip())
+    try:
+        for _ in range(60):
+            if not _process_alive(child):
+                break
+            time.sleep(0.25)
+        assert not _process_alive(child), "the orphaned server is still running"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(child, signal.SIGKILL)
+
+
+def test_a_server_with_a_living_owner_keeps_running() -> None:
+    """The watchdog watches the owner, not the clock."""
+
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from research_ultra_rag_mcp.server import watch_owner; import time; "
+                "watch_owner(0.2); time.sleep(30)"
+            ),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=child_process_environment(),
+    )
+    try:
+        time.sleep(1.5)
+        assert _process_alive(child.pid), "the watchdog stopped a live server"
+    finally:
+        child.terminate()
+        child.wait(timeout=30)

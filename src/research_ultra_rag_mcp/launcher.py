@@ -58,6 +58,11 @@ UI_COMMAND="@UI_COMMAND@"
 PID_FILE="$STATE_ROOT/open-ui.pid"
 PORT_FILE="$STATE_ROOT/open-ui.port"
 LOG_FILE="$STATE_ROOT/logs/open-ui.log"
+LOCK_DIR="$STATE_ROOT/open-ui.lock"
+# 0.25s steps: how long a launcher waits for another one that is choosing a port.
+LOCK_WAIT=40
+# Attempts at finding a port that this project's UI can actually bind.
+LAUNCH_ATTEMPTS=5
 # The interpreter beside the UI command speaks Python; the port scan needs it.
 PYTHON="$(dirname "$UI_COMMAND")/python3"
 [ -x "$PYTHON" ] || PYTHON=python3
@@ -114,47 +119,113 @@ open_url() {
   fi
 }
 
+take_lock() {
+  # mkdir is atomic, so two launchers can never both be choosing a port. A lock
+  # whose writer is gone is not a claim either: that is what a killed launcher
+  # leaves behind.
+  waited=0
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$LOCK_DIR"
+      continue
+    fi
+    if [ "$waited" -ge "$LOCK_WAIT" ]; then
+      echo "Another launcher is choosing a port for this project; try again." >&2
+      exit 1
+    fi
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  printf '%s' "$$" > "$LOCK_DIR/pid"
+  trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+}
+
+launch() {
+  # One attempt on the current PORT. The child leads its own session, so a later
+  # --stop can signal the UI and everything the UI starts below it.
+  mkdir -p "$STATE_ROOT/logs"
+  if [ -n "$RUNTIME_ROOT" ]; then
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
+        --runtime-root "$RUNTIME_ROOT" --port "$PORT" >>"$LOG_FILE" 2>&1 &
+    else
+      "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
+        --runtime-root "$RUNTIME_ROOT" --port "$PORT" >>"$LOG_FILE" 2>&1 &
+    fi
+  else
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
+        --port "$PORT" >>"$LOG_FILE" 2>&1 &
+    else
+      "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
+        --port "$PORT" >>"$LOG_FILE" 2>&1 &
+    fi
+  fi
+  CANDIDATE=$!
+  sleep 1
+  kill -0 "$CANDIDATE" 2>/dev/null
+}
+
 start() {
   if pid=$(running_pid); then
     echo "The UI is already running for this project (pid $pid)."
     echo "URL: http://127.0.0.1:$(serving_port)"
   else
-    if [ "$PORT_EXPLICIT" = "0" ]; then
-      PORT="$(free_port "$PORT")"
-    fi
-    mkdir -p "$STATE_ROOT/logs"
-    printf '%s' "$PORT" > "$PORT_FILE"
-    if [ -n "$RUNTIME_ROOT" ]; then
-      if command -v setsid >/dev/null 2>&1; then
-        setsid "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
-          --runtime-root "$RUNTIME_ROOT" --port "$PORT" >>"$LOG_FILE" 2>&1 &
-      else
-        "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
-          --runtime-root "$RUNTIME_ROOT" --port "$PORT" >>"$LOG_FILE" 2>&1 &
+    take_lock
+    attempts=0
+    started=0
+    while [ "$attempts" -lt "$LAUNCH_ATTEMPTS" ]; do
+      attempts=$((attempts + 1))
+      if [ "$PORT_EXPLICIT" = "0" ]; then
+        PORT="$(free_port "$PORT")"
       fi
-    else
-      if command -v setsid >/dev/null 2>&1; then
-        setsid "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
-          --port "$PORT" >>"$LOG_FILE" 2>&1 &
-      else
-        "$UI_COMMAND" --project-root "$PROJECT_ROOT" \\
-          --port "$PORT" >>"$LOG_FILE" 2>&1 &
+      if launch; then
+        started=1
+        break
       fi
-    fi
-    echo $! > "$PID_FILE"
-    sleep 1
-    if pid=$(running_pid); then
-      echo "Started the UI for this project (pid $pid)."
-      echo "URL: http://127.0.0.1:$PORT"
-      echo "Log: $LOG_FILE"
-    else
+      # The UI exited straight away. Probing for a free port and binding it are
+      # two steps, so another process can take the port in between and leave this
+      # attempt as the loser: take the next port rather than leave the project
+      # without a UI. An explicit --port is the caller's choice, so it is final.
+      if [ "$PORT_EXPLICIT" = "1" ]; then
+        break
+      fi
+      PORT=$((PORT + 1))
+    done
+    if [ "$started" != "1" ]; then
+      rm -rf "$LOCK_DIR"
       echo "The UI did not stay up; read $LOG_FILE" >&2
       exit 1
     fi
+    # Recorded only once the UI is known to be running, so a failed attempt
+    # cannot leave a pid or a port file naming something that is not there.
+    printf '%s' "$PORT" > "$PORT_FILE"
+    printf '%s' "$CANDIDATE" > "$PID_FILE"
+    rm -rf "$LOCK_DIR"
+    echo "Started the UI for this project (pid $CANDIDATE)."
+    echo "URL: http://127.0.0.1:$PORT"
+    echo "Log: $LOG_FILE"
   fi
   if [ "$OPEN_BROWSER" = "1" ]; then
     open_url
   fi
+}
+
+owns_project() {
+  # Without /proc to read, the pid file is all there is to go on.
+  [ -r "/proc/$1/cmdline" ] || return 0
+  tr '\\0' ' ' < "/proc/$1/cmdline" | grep -F -- "$PROJECT_ROOT" >/dev/null 2>&1
+}
+
+sweep_servers() {
+  # A private server busy in a long build does not read stdin until the phase it
+  # is in returns, so it can outlive the UI that started it. The CLI's own sweep
+  # names this project and is a no-op when nothing is left; a missing entry point
+  # must not fail a stop.
+  SWEEP="$(dirname "$UI_COMMAND")/research-ultra-rag"
+  [ -x "$SWEEP" ] || return 0
+  "$SWEEP" --project-root "$PROJECT_ROOT" stop --servers >>"$LOG_FILE" 2>&1 || true
 }
 
 stop() {
@@ -163,8 +234,18 @@ stop() {
     echo "No UI is running for this project."
     return 0
   fi
-  # The UI starts a private stdio server and its UltraRAG gateway, so stop the
-  # whole process group rather than only the launcher's own child.
+  if ! owns_project "$pid"; then
+    # A pid file outlives its process and the number can be reused, and a port
+    # file can name another project's port when two launchers raced. Neither is a
+    # reason to signal a process that is not this project's UI.
+    rm -f "$PID_FILE" "$PORT_FILE"
+    echo "Pid $pid is not this project's UI; left it alone." >&2
+    return 0
+  fi
+  # The UI starts a private stdio server and its UltraRAG gateway below it, so
+  # stop the whole process group rather than only the launcher's own child. The
+  # private server keeps a session of its own, which is why a server that was
+  # still busy when the UI died is swept separately afterwards.
   kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   waited=0
   while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 20 ]; do
@@ -175,6 +256,7 @@ stop() {
     kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
   fi
   rm -f "$PID_FILE"
+  sweep_servers
   echo "Stopped the UI for this project (pid $pid)."
 }
 
