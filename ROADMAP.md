@@ -2,7 +2,7 @@
 
 Product ideas that are deliberately not being built yet. Nothing here is scheduled, and each would need a decision before it was started. Work that is already in scope is in `TODO.md`, current behaviour is in `README.md`, and current facts and limits are in `MEASUREMENTS.md`.
 
-The server targets English-primary born-digital PDF and EPUB sources of 5,000–50,000 chunks on CPU. Anything outside that envelope — other-language corpora, OCR'd or scanned material, handwriting, formula-heavy documents — is a different product rather than a roadmap step, so it is not listed here.
+The server targets English-primary born-digital PDF and EPUB sources of 5,000–50,000 chunks on CPU. Anything outside that envelope — other-language corpora, OCR'd or scanned material, handwriting, formula-heavy documents — is a different product rather than a roadmap step, so it is not listed here as scheduled work. The one such gap that keeps being reported is recorded at the end of this file, so the decision is visible rather than forgotten.
 
 ## Upstream reuse
 
@@ -26,3 +26,7 @@ The server targets English-primary born-digital PDF and EPUB sources of 5,000–
 
 - Optional backup profiles that exclude originals, for users who already store their PDFs elsewhere.
 - Optional cross-project search that keeps each project's boundary explicit rather than merging indexes into one.
+
+## Outside the documented envelope
+
+- **OCR before ingestion, so a scanned source could be indexed.** Scanned material sits outside the workload this server is built and measured for — English-primary born-digital PDF and EPUB on CPU — so this is a change of product envelope rather than a step. It would need its own accuracy expectations, its own tests, and an answer to whether an OCR'd source can share a project with a digital one, since the two have different evidence quality.

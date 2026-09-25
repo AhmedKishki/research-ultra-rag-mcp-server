@@ -272,11 +272,11 @@ Measured on the current generation with reranked hybrid, 30 of the 32 judged que
 - **Older generations are read as they are.** A schema-1 generation stays BM25-only until it is re-ingested, and a lookup written before the retrieval-verdict column is recomputed on first use rather than regenerated silently.
 - **Generation retention is unbounded.** Nothing prunes generations; `status` reports what each one occupies and removal is manual.
 - **The embedding thread count is left to the runtime.** The measured optimum is machine-specific, and forcing the value measured worse than the default on the reference machine.
-- **Two embedded-backend optimisations are open** — one client per phase, and time-boxed upload batches — and they only matter above the 200,000-chunk threshold.
+- **The embedded backend is unoptimised for corpora far above this one.** One client per phase and time-boxed upload batches are unbuilt, and both only matter above the 200,000-chunk threshold where that backend is selected at all; nothing here measures that size, so the cost above it is arithmetic rather than a reading.
 - **Extraction is English-oriented.** The embedding model, the text-health policy, and the chunker target English-primary prose; other scripts appear as quotations inside it and are marked advisory rather than withheld.
 - **`assembly` cost sits inside the machine's noise.** It stayed under 1.7 s in every measured run, so no claim is made about it.
 
-## What a ranking change costs the corpus (Tier 3)
+## What a ranking change costs the corpus
 
 The reuse snapshot never depended on the ranking policy. `generation_is_reusable` compares the schema, extraction, cleaning and artifact policy versions, the project id, the chunk size and overlap, and the embedding model — and nothing else — so weights, gates, caps and the reranked window cannot affect what a corpus holds. Measured on the German reference corpus, changing `retrieval.rrf_k` from 60 to 30 and re-ingesting:
 
@@ -288,11 +288,11 @@ The reuse snapshot never depended on the ranking policy. `generation_is_reusable
 | vectors reused / created | 9,237 / **0** |
 | phase timings | extraction 9.4 s, chunking 6.0 s, embedding 35.3 s, bm25 2.2 s, assembly 20.6 s |
 
-About two minutes end to end against a full build's seventeen, which is what makes a Tier 1 experiment that reaches a new baseline cheap to apply.
+About two minutes end to end against a full build's seventeen, which is what makes a retrieval experiment that reaches a new baseline cheap to apply.
 
 What *did* depend on the policy was the staging checkpoint identity: it included the retrieval-policy fingerprint, so editing a ranking value discarded a build **in progress**, which is why an interrupted build could not be resumed across a ranking edit. The policy was removed from that identity (`INGESTION_IDENTITY_POLICY_VERSION` 3), which touches only disposable staging — a published generation records its policy in its manifest and was never identified by this fingerprint — and a test now pins that a ranking change reuses every chunk and vector.
 
-## Pseudo-relevance feedback, measured and its shortfall diagnosed (Tier 3)
+## Pseudo-relevance feedback, measured and its shortfall diagnosed
 
 `retrieval.prf` was implemented as the TODO described: search the lexical half once, mine terms from the leading passages, search again with them, and use the second ranking for the fusion. Turned on and off against the same judged set and the same generation, with the harness reporting every mode:
 

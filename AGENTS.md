@@ -48,6 +48,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Commands: `research-ultra-rag` (the core command line), `research-ultra-rag-mcp` (stdio server), `research-ultra-rag-ui` (browser view), and `research-ultra-rag-verify` (MCP-surface check)
 - Version: `0.41.1`
 - `bm25s` is pinned to a fork (`AhmedKishki/bm25s` @ `20f6c02`) carrying a one-line fix for its non-ASCII stopword serialization; `settings` fails fast on a stopword list that cannot round-trip through it, so revert the pin only once upstream fixes it.
+- `pymupdf` raises `IndexError` from `Page.get_label()` when a document's page-label tree starts after the page being asked about, which fails an entire extraction and so an entire ingestion; reported upstream at https://github.com/pymupdf/PyMuPDF/issues/5140. `_pdf_locator` catches it and falls back to the physical page number, and two tests pin that a real label still wins. Narrow the guard when that issue closes.
 - Licence: Apache-2.0 for this repository's own code (`LICENSE`); `NOTICE` records the upstream UltraRAG, model, retrieval-component, and AGPL-3.0 extraction-dependency terms, which stay separate from that grant.
 - Python: `>=3.11,<3.13`
 - FastMCP: `3.4.0`
