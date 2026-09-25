@@ -24,7 +24,6 @@ Cost orders the file. A measurement costs one harness run; a code change costs n
 - [ ] **Prune retained generations.** Feature. Removal is manual and deletes data, so it needs which generation, a confirmation step, and never the current one.
 - [ ] **Roll back to a retained generation deliberately**, instead of only moving forward. Feature.
 - [ ] **An `ingest` dry run** that reports what would change and what would be reused, and writes nothing. Feature.
-- [ ] **Weight pseudo-relevance terms by corpus rarity.** Feature. `retrieval.prf` is implemented and changes no ranking decision, because selection ranks by leader frequency and the stopword filter is bm25s's 33-word English list. Rank by inverse document frequency over a per-generation document-frequency table, cached, then measure.
 - [ ] **Merge the stopword lists of a mixed corpus.** Feature. `language.corpus` can name several languages while BM25 filters the one list in `language.bm25_stopwords`. bm25s accepts a list, so the union is expressible: check that the pinned runtime passes a list through `bm25.lang`, then measure the union against a single list on a mixed corpus.
 - [ ] **An Arabic stopword source.** Feature. bm25s ships no Arabic list, so `language.corpus = "ar"` is refused while settings are read. Add an explicit list option, or an empty list that filters nothing, plus an Arabic-capable model in the pinned table.
 - [ ] **Split the resumable ingestion loop into per-phase handlers, then enable `C901`.** Feature. `_advance_ingestion` is 1,320 lines at complexity 107, against 35 for the next worst function in the package; three of its phase blocks call closures defined inside it and eight read loop-local state, so the split is an ingestion state object that handlers take and return. Accept on a green suite and a re-ingest that reuses every chunk and vector. The map and the transformation rules are in git history.
@@ -41,7 +40,7 @@ These are the levers for the paraphrase gap: three of ten judged paraphrase quer
 
 ## Days: work that no rebuild bounds
 
-- [ ] **Pooled relevance judgments.** Test. The set is known-item — one designated passage per query, one annotator — so a passage making the same point scores as a miss. Collect every candidate from every mode and judge the pool.
+- [ ] **Pooled relevance judgments.** Test. The set is known-item — one designated passage per query, one annotator — so a passage making the same point scores as a miss. Collect every candidate from every mode and judge the pool. This is also what would let the pseudo-relevance expansion be measured: with rarity-weighted terms it mines the corpus's own vocabulary, and a known-item set cannot see that.
 - [ ] **Grow the judged set from real questions**, if the privacy of a query log can be settled. Test.
 - [ ] **Re-measure the `search` row of the tool-answer table** after the next reference build. Test; `MEASUREMENTS.md` carries the pre-trim figure and says why.
 - [ ] **Keep the measurement current and wider.** Test. Re-run `scripts/evaluate_retrieval.py` when the corpus, the extraction policy, or a retrieval default changes, and add a second corpus and filtered queries.

@@ -129,6 +129,7 @@ from .support import (  # noqa: F401
     _source_stat_identity,
     _source_work_key,
     _utc_now,
+    document_frequencies,
     retrieval_policy_fingerprint,
 )
 from .ultrarag import VanillaUltraRAG
@@ -205,6 +206,10 @@ class ResearchService:
             timeout=1800,
         )
         self._loaded_generation: str | None = None
+        # Term rarity for pseudo-relevance feedback, as (generation id, table).
+        # It is built on the first search that asks for one, so a process that
+        # never enables the feature never makes the pass over the corpus.
+        self._document_frequencies: tuple[str, dict[str, int]] | None = None
 
     @asynccontextmanager
     async def _operation(self) -> AsyncIterator[None]:
@@ -3517,6 +3522,29 @@ class ResearchService:
         )
         return ordered, dict(scores)
 
+    async def _generation_document_frequencies(
+        self,
+        generation_id: str,
+        chunks_path: Path,
+    ) -> dict[str, int]:
+        """Return this generation's term frequencies, built once and then kept.
+
+        The table is what lets a feedback term be rare rather than merely
+        frequent. It costs a full pass over the corpus, so it is built on the
+        first search that asks for one and kept while that generation stays
+        loaded; nothing builds it while `retrieval.prf` is off.
+        """
+
+        cached = self._document_frequencies
+        if cached is not None and cached[0] == generation_id:
+            return cached[1]
+        frequencies = await _atomic_to_thread(
+            document_frequencies,
+            (_chunk_text(record) for record in iter_jsonl(chunks_path)),
+        )
+        self._document_frequencies = (generation_id, frequencies)
+        return frequencies
+
     async def search(
         self,
         query: str,
@@ -3734,6 +3762,10 @@ class ResearchService:
             # lexical ranking that the fusion and the payload see.
             prf_terms: list[str] = []
             if use_bm25 and bm25_ranking and self.config.settings.prf:
+                frequencies = await self._generation_document_frequencies(
+                    str(manifest["generation_id"]),
+                    generation_root / str(manifest["files"]["chunks"]),
+                )
                 prf_terms = _pseudo_relevance_terms(
                     query=query,
                     texts=[
@@ -3744,6 +3776,8 @@ class ResearchService:
                         if chunk_id in chunks_by_id
                     ],
                     maximum_terms=self.config.settings.prf_terms,
+                    document_frequencies=frequencies,
+                    corpus_size=total_chunk_count,
                 )
                 if prf_terms:
                     (

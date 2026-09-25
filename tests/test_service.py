@@ -3929,3 +3929,65 @@ def test_pseudo_relevance_feedback_expands_the_lexical_query(project: Path) -> N
         assert not {"commodity", "fetishism"} & set(on["prf_terms"])
 
     asyncio.run(exercise())
+
+
+def test_document_frequencies_count_a_term_once_per_text() -> None:
+    """A passage repeating a word must not make it look common."""
+
+    frequencies = support_module.document_frequencies(
+        ["alpha alpha alpha beta", "beta gamma"]
+    )
+
+    assert frequencies == {"alpha": 1, "beta": 2, "gamma": 1}
+
+
+def test_feedback_ranks_a_rare_term_above_one_every_passage_uses() -> None:
+    """Leader support alone mines the words the leaders share, not the ones that matter."""
+
+    ranked = support_module._pseudo_relevance_terms(
+        query="fetishism",
+        texts=[
+            "commodity fetishism and the data centre",
+            "fetishism, data, and the digital object",
+            "digital data and the object of fetishism",
+        ],
+        maximum_terms=3,
+        document_frequencies={
+            # Corpus-wide counts, so never below the leader support above.
+            "commodity": 6,
+            "data": 40,
+            "digital": 12,
+            "fetishism": 9,
+            "object": 2,
+            "centre": 3,
+        },
+        corpus_size=40,
+    )
+
+    # "data" leads on support in all three leaders and appears in every chunk.
+    assert "data" not in ranked
+    assert ranked == ["object", "digital", "centre"]
+
+
+def test_feedback_without_a_table_ranks_by_leader_support() -> None:
+    ranked = support_module._pseudo_relevance_terms(
+        query="question",
+        texts=["alpha beta beta", "beta gamma"],
+        maximum_terms=2,
+    )
+
+    assert ranked == ["beta", "alpha"]
+
+
+def test_feedback_is_reproducible_for_the_same_input() -> None:
+    arguments: dict[str, object] = {
+        "query": "commodity fetishism",
+        "texts": ["fetishism and the digital object", "the object of fetishism"],
+        "maximum_terms": 3,
+        "document_frequencies": {"digital": 9, "object": 2},
+        "corpus_size": 40,
+    }
+
+    assert support_module._pseudo_relevance_terms(
+        **arguments
+    ) == support_module._pseudo_relevance_terms(**arguments)  # type: ignore[arg-type]

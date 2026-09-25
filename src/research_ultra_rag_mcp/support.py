@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import re
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -229,29 +230,71 @@ def _content_tokens(value: str) -> set[str]:
     }
 
 
+def document_frequencies(texts: Iterable[str]) -> Counter[str]:
+    """Count, for each content token, how many of these texts contain it.
+
+    Distinct tokens per text, so a passage that repeats a word does not make it
+    look common. This is the table a feedback rule weights against, and it costs
+    a full pass over the corpus, so a caller builds it once and keeps it.
+    """
+
+    frequencies: Counter[str] = Counter()
+    for text in texts:
+        frequencies.update(_content_tokens(text))
+    return frequencies
+
+
+def _inverse_document_frequency(
+    frequencies: Mapping[str, int] | None,
+    corpus_size: int,
+    term: str,
+) -> float:
+    """Return a term's rarity weight, smoothed so a ubiquitous term stays positive.
+
+    Without a table the weight is 1, which leaves a caller that has none with the
+    unweighted ranking rather than a wrong one.
+    """
+
+    if not frequencies or corpus_size <= 0:
+        return 1.0
+    return math.log((corpus_size + 1) / (frequencies.get(term, 0) + 1)) + 1.0
+
+
 def _pseudo_relevance_terms(
     *,
     query: str,
     texts: list[str],
     maximum_terms: int,
+    document_frequencies: Mapping[str, int] | None = None,
+    corpus_size: int = 0,
 ) -> list[str]:
     """Mine expansion terms from the first-pass lexical leaders.
 
-    Document frequency rather than raw count, so one long passage cannot decide
-    the expansion, and ordered by frequency then term, so the same query expands
-    the same way on every run — a feedback rule that is not reproducible cannot
-    be measured. Terms the query already contains are skipped: they would change
-    nothing and would hide whether the expansion did anything at all.
+    A candidate is scored by how many leaders use it times how rare it is across
+    the generation. Leader support alone mines the words that appear everywhere —
+    *about*, *between*, *have* — because those are what leaders share, and they
+    discriminate nothing; the rarity weight is what makes a term the author
+    chose beat a term the language supplies.
+
+    Ordered by score then term, so the same query expands the same way on every
+    run: a feedback rule that is not reproducible cannot be measured. Terms the
+    query already contains are skipped, because they would change nothing and
+    would hide whether the expansion did anything at all.
     """
 
     if maximum_terms <= 0:
         return []
     query_tokens = _content_tokens(query)
-    frequency: Counter[str] = Counter()
+    support: Counter[str] = Counter()
     for text in texts:
-        frequency.update(_content_tokens(text) - query_tokens)
-    ordered = sorted(frequency.items(), key=lambda item: (-item[1], item[0]))
-    return [term for term, _count in ordered[:maximum_terms]]
+        support.update(_content_tokens(text) - query_tokens)
+
+    def rank(item: tuple[str, int]) -> tuple[float, int, str]:
+        term, count = item
+        weight = _inverse_document_frequency(document_frequencies, corpus_size, term)
+        return (-count * weight, -count, term)
+
+    return [term for term, _count in sorted(support.items(), key=rank)[:maximum_terms]]
 
 
 def _normalized_filter(values: list[str] | None) -> set[str]:

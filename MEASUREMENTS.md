@@ -292,20 +292,22 @@ About two minutes end to end against a full build's seventeen, which is what mak
 
 What *did* depend on the policy was the staging checkpoint identity: it included the retrieval-policy fingerprint, so editing a ranking value discarded a build **in progress**, which is why an interrupted build could not be resumed across a ranking edit. The policy was removed from that identity (`INGESTION_IDENTITY_POLICY_VERSION` 3), which touches only disposable staging — a published generation records its policy in its manifest and was never identified by this fingerprint — and a test now pins that a ranking change reuses every chunk and vector.
 
-## Pseudo-relevance feedback, measured and its shortfall diagnosed
+## Pseudo-relevance feedback, measured
 
-`retrieval.prf` was implemented as the TODO described: search the lexical half once, mine terms from the leading passages, search again with them, and use the second ranking for the fusion. Turned on and off against the same judged set and the same generation, with the harness reporting every mode:
+`retrieval.prf` searches the lexical half once, mines terms from the leading passages, searches again with the terms added, and ranks with the second result. Selection weights each candidate by how many leaders use it times how rare it is across the generation, from a document-frequency table built on the first query that needs one and kept while that generation stays loaded, so the cost stays off the query path and a process with the feature off never reads the corpus for it.
+
+Turned on and off against the same judged set and the same generation:
 
 | Configuration | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean s |
 |---|---|---|---|---|---|---|---|
-| `prf=false` (shipped default) | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | 2.37 |
-| `prf=true`, 5 leaders, 8 terms | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | 1.62 |
+| `prf=false` (shipped default) | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | 2.34 |
+| `prf=true`, 5 leaders, 8 terms | 83.3% | 86.7% | 90.0% | 0.858 | 0.869 | 93.3% | 2.09 |
 
-No quality metric moved, and the latency difference is run order rather than the feature: the second run followed the first and met warm caches, while the expansion can only add a pass. The feature itself is live — the payload reports what it added, and a direct search with `RESEARCH_ULTRARAG_RETRIEVAL_PRF=true` returned `prf_terms: [about, between, have, can, change, conflicts, data, digital]`.
+No quality metric moves, and the mean is run order rather than the feature: the second run met warm caches, and the expansion can only add a pass.
 
-That list is the finding. Term selection ranks candidates by how many of the leading passages contain them, and the only filter is `_content_tokens`, whose stopword set is bm25s's 33-word English list. Words like *about*, *between*, *have* and *can* clear it, so the expansion adds terms that appear everywhere and discriminate nothing, which is why eight of them changed no ranking decision. The technique has not been shown to be worthless; this *selection rule* has been shown to be too weak, and the fix is a corpus-rarity weight — the classic term-selection criterion — rather than leader frequency alone.
+The terms are the ones the feature was designed to add. A direct search with `RESEARCH_ULTRARAG_RETRIEVAL_PRF=true` returned `prf_terms: [verleugnung, cyberculture, hybridization, object, freud, according, virtual, worlds]`: content words, one of them the corpus's own critical vocabulary. Ranking by leader support alone mines the words every passage shares instead, which is why the rarity weight exists.
 
-Until that is tried, the default stays off and the refinement is recorded in `TODO.md`.
+So the selection rule is doing its job and the judged set cannot see the difference. A known-item set — one designated passage per query, judged by one annotator — scores a passage that makes the same point as a miss, so it can register a change only when the change moves that exact passage. Widening the judgments is what would let this feature be measured; the default stays off until then.
 
 ## What a running project costs the machine
 
