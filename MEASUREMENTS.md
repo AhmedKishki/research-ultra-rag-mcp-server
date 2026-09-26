@@ -402,4 +402,4 @@ Resident memory across every research-rag process, with two projects' UIs and se
 
 `runtime.nice` reaches the whole tree because children inherit it. Measured with the setting at 15: the command line, the vanilla gateway it started, and that gateway's extractor and retriever children all reported 15, while processes started before the setting existed stayed at 0 until they were restarted.
 
-Two facts bound what a long build can do to a machine. An `ingest` call yields between atomic units and returns a checkpointed `in_progress` result when `ingestion.work_budget_seconds` (45) runs out, so cancelling between calls loses nothing. Builds are serialized by the project lock, so two ingests cannot compound.
+Two facts bound what a long build can do to a machine. An `ingest` call yields between atomic units and returns a checkpointed `in_progress` result when the configured `ingestion.work_budget_seconds` runs out, so cancelling between calls loses nothing. Builds are serialized by the project lock, so two ingests cannot compound.

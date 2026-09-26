@@ -4,7 +4,7 @@ Open work, grouped by the problem each item solves. A finished item leaves this 
 
 ## A report that is true
 
-What a caller is told has to match what the server actually holds.
+What a caller is told has to match what the server holds.
 
 - [ ] **Surface the retained-generation inventory in the UI.** Feature. `status` reports `generations` and `retained_generation_bytes`; the pinned status view shows none of them, so a browser cannot see what a prune would consider.
 - [ ] **Warn about a runtime-root mismatch in the standalone UI launcher.** Feature. The launcher starts its own server without reading an MCP client configuration, so a project whose agents use a different `--runtime-root` shows one generation in the browser and another to the agent, with nothing saying so. `--ui-port` is unaffected.
@@ -45,7 +45,7 @@ Three of ten judged paraphrase queries miss the designated passage within the to
 
 ## Keeping the code changeable
 
-- [ ] **Split the resumable ingestion loop into per-phase handlers, then enable `C901`.** Feature. `_advance_ingestion` is 1,320 lines at complexity 107 against 35 for the next worst function in the package; three of its phase blocks call closures defined inside it and eight read loop-local state, so the split is an ingestion state object that handlers take and return. Accept on a green suite and a re-ingest that reuses every chunk and vector. The map and the transformation rules are in git history.
+- [ ] **Split the resumable ingestion loop into per-phase handlers, then enable `C901`.** Feature. `_advance_ingestion` is 1,341 lines at complexity 107 against 35 for the next worst function in the package; three of its phase blocks call closures defined inside it and eight read loop-local state, so the split is an ingestion state object that handlers take and return. Accept on a green suite and a re-ingest that reuses every chunk and vector. The map and the transformation rules are in git history.
 
 ## Verification
 

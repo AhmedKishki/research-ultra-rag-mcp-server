@@ -24,7 +24,7 @@ The judgments are single-annotator and were written from the extracted text of t
 
 The judged set can outlive the corpus it was written from. Target `t12` judges `Hall, Race, Articulation and Societies Structured in Dominance.pdf`, which the reviewer excluded on 2026-09-20 as superseded by the Duke reprint in "STUART HALL, SELECTED WRITINGS ON RACE AND DIFFERENCE.pdf"; the generation behind the current numbers does not hold it, so resolution fails unless the run names it with `--skip-targets t12`. A skip is a reviewer decision recorded on the command line and counted in the report (`evaluated_query_count`) rather than a blanket tolerance: every other target still has to resolve to exactly one chunk, and re-pointing `t12` at the retained reprint or retiring it is a judged-set decision rather than a harness one.
 
-Two further limits are worth stating. Relevance gates can legitimately return fewer than `top_k`, so a miss can mean "rejected by a gate" rather than "ranked low"; the harness records rejected and withheld counts per run for that reason. And the numbers describe the generation the report names, so re-run the harness when the corpus, the extraction policy, or a retrieval default changes.
+Two further limits apply. Relevance gates can legitimately return fewer than `top_k`, so a miss can mean "rejected by a gate" rather than "ranked low"; the harness records rejected and withheld counts per run for that reason. And the numbers describe the generation the report names, so re-run the harness when the corpus, the extraction policy, or a retrieval default changes.
 
 ## Running it
 

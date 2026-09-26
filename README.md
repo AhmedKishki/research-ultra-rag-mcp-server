@@ -160,11 +160,11 @@ scripts/update.sh                         # pull and sync
 scripts/update.sh /path/to/my-project     # … and restart that project's UI first
 ```
 
-A **running** server keeps the code it started with. Its process belongs to your MCP client, so nothing here can reload it: restart the server in the client (MCP panel → restart or toggle it, or reload the window). `status.version` reports `server` (the version that process started with), `installed` (the version installed now), `ui` (the pinned browser-UI package), and `restart_required`, which reads `false` once the two agree. The browser UI shows the server and UI versions under the project name in its header.
+A **running** server keeps the code it started with. Its process belongs to your MCP client, so nothing here can reload it: restart the server in the client (MCP panel → restart or toggle it, or reload the window). The default `status` answer reports `restart_required`, which reads `false` once the running and installed versions agree, and `--tool-detail full` adds the version block naming `server` (the version that process started with), `installed` (the version installed now), and `ui` (the pinned browser-UI package). The browser UI shows the server and UI versions under the project name in its header.
 
 ## Create an isolated research project
 
-A project is just a directory, and the core command line creates one — or attaches the same state to a directory you already have:
+A project is a directory, and the core command line creates one — or attaches the same state to a directory you already have:
 
 ```bash
 # A project that does not exist yet.
@@ -278,7 +278,7 @@ Then open `http://127.0.0.1:5051`. What this does and does not do:
 Two practical notes:
 
 - Running the executable by hand looks like nothing happens. That is correct — it is a stdio server waiting for an MCP client to send protocol messages.
-- Keep `set_source_inclusion` out of automatic approval at first. It persists a reviewed decision, so it is worth confirming once.
+- Keep `set_source_inclusion` out of automatic approval at first. It persists a reviewed decision, so confirm the first one yourself.
 
 ## First use
 
@@ -297,7 +297,7 @@ A prompt you can copy:
 What to expect from a first build:
 
 - It may download the embedding model and can take minutes on a CPU. Time depends mainly on corpus size, because embedding every chunk is the slow part.
-- Work happens in project-local staging. Each call has a soft budget of `work_budget_seconds=45`; when it expires the call returns a checkpointed `in_progress` result and you repeat it. One expensive page, the first model download, or BM25 finalization can exceed that soft budget. A build bigger than one budget therefore needs one call per slice, which an agent whose client stops repeating identical calls cannot finish — the budget goes up to an hour in the project's own config, so one call can carry the whole build, and the client's request timeout has to be longer than the budget you set.
+- Work happens in project-local staging. Each call has a soft budget of `ingestion.work_budget_seconds`; when it expires the call returns a checkpointed `in_progress` result and you repeat it. One expensive page, the first model download, or BM25 finalization can exceed that soft budget. A build bigger than one budget therefore needs one call per slice, which an agent whose client stops repeating identical calls cannot finish — the budget goes up to an hour in the project's own config, so one call can carry the whole build, and the client's request timeout has to be longer than the budget you set.
 - Only one build runs in a project at a time. A call that arrives while another process holds the project is rejected within seconds rather than queued, and its message names that build and its phase, so a caller can see whether the work it is waiting for is moving instead of deciding between waiting blind and killing it.
 - A checkpoint is resumable only while the corpus and the parameters that shaped it are unchanged. Adding, removing, or editing a source between calls discards the staged build and starts a new one, and the answer says so under `superseded_build` with a message: progress that appears to go backwards is a discarded build rather than a fault of the caller. Files the server ignores, such as Markdown notes kept beside the PDFs, do not affect it.
 - `current.json` is switched only after the complete BM25 and dense indexes verify. A cancellation or timeout keeps the last checkpoint. A failure that cannot be resumed leaves the previous generation selected, removes the partial staging data, and writes a small failure record.
@@ -601,7 +601,7 @@ That file is plain JSON and stays authoritative: edit it by hand at any time, or
 
 ### Put derived state on fast local storage
 
-If your project lives on a slow disk, you can point the working files at a fast one. The measured benefit is narrow, and worth stating precisely: the dense index is an exact scan of the portable vectors the generation already stores (0.03 s of index work on the reference corpus, against 3,040.73 s to build an embedded index for the same vectors), so what a rebuild still does on disk is staging writes and reading the sources — grouping durability writes per unit is worth 17–37 s of chunking on the reference HDD, and source reads cost whatever the device costs. Use it when the project's disk is genuinely the bottleneck, not as a routine default.
+If your project lives on a slow disk, you can point the working files at a fast one. The measured benefit is narrow: the dense index is an exact scan of the portable vectors the generation already stores (0.03 s of index work on the reference corpus, against 3,040.73 s to build an embedded index for the same vectors), so what a rebuild still does on disk is staging writes and reading the sources — grouping durability writes per unit is worth 17–37 s of chunking on the reference HDD, and source reads cost whatever the device costs. Use it when the project's disk is genuinely the bottleneck, not as a routine default.
 
 ```bash
 research-ultra-rag-mcp \
@@ -708,7 +708,7 @@ Things to know before you rely on a result:
 - Duplicate sources are a judgement call. The server never deletes an original; you review and exclude.
 - Large CPU ingestions and reranking are slow. Ingestion is resumable, but one expensive page, the first model download, or the BM25 step can exceed the soft per-call budget. Reranking always runs for `search`, so the slow path is the only path; there is no faster switch to remember.
 - Cleaned text is not a quote-verification surface — open the original.
-- A running server keeps the code it started with, because a stdio server's process belongs to your MCP client. `status` reports `restart_required` when the process is older than what is installed, and the full-detail payload names the running and installed versions; restarting the server in the client clears it. The browser UI can be restarted from this side, and `scripts/update.sh <project>` does that for a named project.
+- A running server keeps the code it started with; only a client restart clears `restart_required`. The browser UI can be restarted from this side, and `scripts/update.sh <project>` does that for a named project.
 - Earlier successful generations are kept. Automatic pruning is not implemented, so old generations accumulate until you remove them yourself.
 
 If something looks wrong:
