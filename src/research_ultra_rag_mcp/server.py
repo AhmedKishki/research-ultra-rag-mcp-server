@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import threading
@@ -308,6 +309,21 @@ def create_server(
             )
         except ResearchError as exc:
             raise ToolError(str(exc)) from exc
+    async def _status_payload() -> dict[str, Any]:
+        """Return the `status` answer, including this server's own UI state."""
+
+        payload = _present(
+            "status", await _service_call(lambda instance: instance.status())
+        )
+        embedded = ui_holder.get("ui")
+        if embedded is None:
+            return {**payload, "ui_url": None, "ui_ready": False, "ui_error": None}
+        return {
+            **payload,
+            "ui_url": embedded.url,
+            "ui_ready": embedded.ready,
+            "ui_error": embedded.error,
+        }
 
     @app.tool(
         annotations={
@@ -324,18 +340,36 @@ def create_server(
         No generation means nothing can be searched yet; `stale` and
         `generation_upgrade_required` say what moved and whether to ingest again.
         """
+        return await _status_payload()
+
+    @app.resource(
+        "research://status",
+        name="current generation status",
+        description=(
+            "Readiness, freshness, and the selected generation for this project: "
+            "the same answer the status tool gives."
+        ),
+        mime_type="application/json",
+    )
+    async def status_resource() -> str:
+        return json.dumps(await _status_payload(), ensure_ascii=False, indent=2)
+
+    @app.resource(
+        "research://sources",
+        name="source inventory",
+        description=(
+            "Every discovered source with its review and index state: the same "
+            "answer the list_sources tool gives, and the inventory to read before "
+            "naming a source in set_source_inclusion or set_source_metadata."
+        ),
+        mime_type="application/json",
+    )
+    async def sources_resource() -> str:
         payload = _present(
-            "status", await _service_call(lambda instance: instance.status())
+            "list_sources",
+            await _service_call(lambda instance: instance.list_sources()),
         )
-        embedded = ui_holder.get("ui")
-        if embedded is None:
-            return {**payload, "ui_url": None, "ui_ready": False, "ui_error": None}
-        return {
-            **payload,
-            "ui_url": embedded.url,
-            "ui_ready": embedded.ready,
-            "ui_error": embedded.error,
-        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     @app.tool(
         annotations={

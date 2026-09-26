@@ -453,6 +453,17 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "hybrid",
         ]
 
+        # A resource read is the tool's answer, as JSON, so a client that reads
+        # context as a resource sees exactly what a tool call would have returned.
+        status_resource = await offline_client.read_resource("research://status")
+        status_payload = json.loads(status_resource[0].text)
+        assert status_payload["ready"] is True
+        assert status_payload["generation_id"] == offline_status.data["generation_id"]
+        sources_resource = await offline_client.read_resource("research://sources")
+        sources_payload = json.loads(sources_resource[0].text)
+        assert sources_payload["source_count"] == 1
+        assert sources_payload["sources"][0]["source_relative_path"] == "evidence.pdf"
+
 
 @pytest.mark.integration
 def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
@@ -499,6 +510,10 @@ def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
                 "set_source_metadata",
                 "status",
             }
+            # Resource metadata is static, so a client that probes resources finds
+            # them before any gateway exists; only reading one needs the service.
+            resources = {str(item.uri) for item in await client.list_resources()}
+            assert resources == {"research://status", "research://sources"}
             with pytest.raises(Exception) as failure:
                 await client.call_tool("status", {})
         assert "Research workflow failed" in str(failure.value)

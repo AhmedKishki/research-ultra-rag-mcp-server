@@ -264,6 +264,17 @@ Two details matter for this server:
 - **Pass `--runtime-root` when the project's derived state lives outside the project.** A project that was launched by `open-ui.sh` keeps its generations where that launcher put them (typically `~/.cache/research-ultra-rag-mcp/runtime/<project>`), because the launcher passes `--runtime-root` on every command it runs. Without the same flag here, this server reads the default in-project root — `<project>/.research-rag/runtime` — finds no generation there, and answers `status` with "No knowledge-base generation exists; call ingest" while a complete corpus sits in the other root. Copy the value from `open-ui.sh`, which records it, or from the `state_root` of a `status` call that points at the right place.
 - **The handshake is immediate and the first search is not.** The server answers `initialize` and `tools/list` as soon as it starts — it imports its retrieval stack and starts its gateway on the first tool call instead of before the handshake — so a client's start-up probe cannot time it out (measured at 1.17 s, against 4.93 s idle and 10.36 s on a loaded disk before that change). The first *search* then pays the cold model load: 11.37 s once per server session on the reference machine, 1.06 s for every search after it. Keep the per-call `timeout` generous enough for that one cold call; Kilo Code's `timeout` is in milliseconds.
 
+### Resources
+
+Two read-only resources carry the same answers as two tools, for clients that read context as MCP resources rather than by calling a tool. Both are JSON, both follow the server's configured detail mode, and neither replaces a tool:
+
+| Resource | What it is |
+|---|---|
+| `research://status` | Readiness, freshness, and the selected generation. The same answer `status` gives, including this server's `ui_*` fields when it hosts a UI. |
+| `research://sources` | Every discovered source with its review and index state. The same answer `list_sources` gives — read it before naming a source in `set_source_inclusion` or `set_source_metadata`. |
+
+A client that probes resources — Kilo Code's agent has `list_mcp_resources` and `read_mcp_resource` tools and tries them on every configured server — finds both listed before any gateway exists, because the metadata is static. Reading one connects the gateway exactly as a tool call does, and its cost is the tool's cost (`research://sources` returns what `list_sources` returns, which is 88,819 bytes at the reference corpus's 81 sources in lean detail and 232,293 bytes in full detail). Nothing here can change the corpus: there is no resource that writes, and no resource for a passage, a search, or a generation list, because those are parameterised questions rather than a nameable document.
+
 ### What a tool answer contains
 
 A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `chunk_id`, `source_relative_path` (the filename), `authors`, `locator`, and `text`. The locator is the position alone: a page, with the printed page label only where that label differs from the physical page, or a section for an EPUB. A passage is deliberately not citation-ready and repeats nothing: it carries no title and no citation, and `--tool-detail full` is what returns the citation, the resolved title, the year and DOI, the per-field provenance, the quote-safety flag, the advisory script note, and the ranking accounting.
