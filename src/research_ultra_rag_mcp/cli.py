@@ -267,6 +267,16 @@ def _parser() -> argparse.ArgumentParser:
         help="Keep results written in any of these ISO 639 codes.",
     )
     find.add_argument(
+        "--author",
+        action="append",
+        help="Keep results whose source has one of these names among its authors.",
+    )
+    find.add_argument(
+        "--title",
+        action="append",
+        help="Keep results whose source title contains one of these phrases.",
+    )
+    find.add_argument(
         "--source-id", action="append", help="Search only these stable source ids."
     )
     find.add_argument(
@@ -641,6 +651,8 @@ async def _operate(
             projects_any=args.project,
             keywords=args.keyword,
             languages_any=args.language,
+            authors_any=args.author,
+            titles_any=args.title,
             source_ids=args.source_id,
             exclude_source_ids=args.exclude_source_id,
             retrieval_method=args.method,

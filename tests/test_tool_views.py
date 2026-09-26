@@ -139,6 +139,27 @@ def test_search_reports_rerank_state_and_unknown_ids() -> None:
     assert "unresolved_exclude_source_ids" not in lean
 
 
+def test_search_reports_an_applied_bibliographic_filter() -> None:
+    """A filtered answer says which filter it applied, so an empty one explains itself."""
+
+    unfiltered = present_tool_response(
+        "search", _search_payload(), detail=LEAN_TOOL_DETAIL
+    )
+    assert "applied_filters" not in unfiltered
+
+    filtered = present_tool_response(
+        "search",
+        _search_payload(authors_any=["Crawford"], titles_any=["Atlas of AI"]),
+        detail=LEAN_TOOL_DETAIL,
+    )
+    assert filtered["applied_filters"] == {
+        "authors_any": ["Crawford"],
+        "titles_any": ["Atlas of AI"],
+    }
+    # The rest of the filter block stays a full-detail reader.
+    assert "categories_any" not in filtered
+
+
 def test_search_omits_an_upgrade_note_that_is_not_required() -> None:
     lean = present_tool_response("search", _search_payload(), detail=LEAN_TOOL_DETAIL)
 
@@ -571,6 +592,8 @@ def _search_payload(**overrides: object) -> dict[str, object]:
         "projects_all": [],
         "projects_any": [],
         "keywords_all": [],
+        "authors_any": list(overrides.pop("authors_any", [])),
+        "titles_any": list(overrides.pop("titles_any", [])),
         "document_ids": [],
         "source_ids": [],
         "exclude_source_ids": [],

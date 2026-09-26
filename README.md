@@ -354,6 +354,8 @@ Reviewed source metadata carries three filter layers, and each is independent:
 | `project` | which project a source was gathered for | `ai-and-fetishism` |
 | `categories` | the branch or branches the source belongs to | `marxism`, `critical realism`, `political ecology` |
 | `keywords` | the terms that identify the source, or that it leans on | `fetishism`, `use value` |
+| `authors` | who wrote it, one string per name | `Kate Crawford`, `Vinay Gidwani` |
+| `title` | the work's title | `Atlas of AI` |
 
 `categories`, `categories_any`, `projects`, `projects_any`, and `keywords` all come from reviewed source metadata, so you can define them yourself in the project's `source-metadata.json`; an edit applies immediately and needs no re-ingestion. The strings are free, so they work as corpus partitions — a theoretical branch, a research strand, a sub-project — and one search can cover several parts at once:
 
@@ -367,7 +369,20 @@ Reviewed source metadata carries three filter layers, and each is independent:
 }
 ```
 
-Each filter is all-of at the plural name (`categories`, `projects`, `keywords` require every listed value) and any-of at the `_any` variant (`categories_any`, `projects_any`, `languages_any`). A one-project server normally tags every source with its own project name, so the project layer is a passthrough there; it becomes useful when a corpus is copied into another project or shared. `status` does not inventory them: the vocabulary is reviewed metadata, so read it from the project's `source-metadata.json`, from the UI's partition chips, or from `--tool-detail full`, where `categories` and `projects` are reported with each one's `searchable_source_count` and reviewed exclusions are not counted. The browser UI lists those partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
+`authors_any` and `titles_any` narrow by the names a source carries rather than by tags you invent, and both are matched as case-insensitive substrings of the reviewed value: `"crawford"` finds `Kate Crawford`, and `"atlas of ai"` finds the work without its subtitle. A title and an author are phrases, so a fragment is enough — which is what makes these two the filters to reach for when you know *which source* an argument is in and want the passages from that source only. They are read from the same reviewed metadata as the other layers, so a correction to an author name changes what the filter finds:
+
+```json
+{
+  "query": "labour in the supply chain",
+  "authors_any": ["crawford", "gidwani"],
+  "titles_any": ["atlas of ai"],
+  "top_k": 8
+}
+```
+
+A filter decides which sources count, so an empty answer that reports the filter is a different finding from a corpus that holds nothing: `search` echoes the applied `authors_any` and `titles_any` back in `applied_filters`, and every filter is reported with the number of sources it left eligible in `active_document_count`.
+
+Each filter is all-of at the plural name (`categories`, `projects`, `keywords` require every listed value) and any-of at the `_any` variant (`categories_any`, `projects_any`, `languages_any`, `authors_any`, `titles_any`). All layers must pass together, so an author and a title that no single source carries return nothing rather than either one winning. A one-project server normally tags every source with its own project name, so the project layer is a passthrough there; it becomes useful when a corpus is copied into another project or shared. `status` does not inventory them: the vocabulary is reviewed metadata, so read it from the project's `source-metadata.json`, from the UI's partition chips, or from `--tool-detail full`, where `categories` and `projects` are reported with each one's `searchable_source_count` and reviewed exclusions are not counted. The browser UI lists those partitions as chips beside the status — select one or several to search their union — and can include or exclude named sources from the search panel or straight from a source card.
 
 `language` is the one field extraction fills in for you. It reads the source's own function words against the stopword lists BM25 knows, records how it decided in `metadata_provenance.language` (`pdf_catalog`, `epub_opf`, `text_sample`, or `missing`), and answers nothing rather than guessing when a sample is too short or no list is covered, which is what a source in a language outside that set looks like. Review it to override the detection. A mixed corpus is searchable as separate languages at once through `languages_any`, and `status.languages` reports the inventory with each language's searchable source count. `language.corpus` stays the declaration of what the corpus is written in, and it is still what decides the stopword list BM25 filters with.
 
@@ -640,7 +655,7 @@ Six tools are exposed. All are project-scoped and none of them deletes a source 
 |---|---|
 | `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. It also reports `restart_required` when the running process is older than the installed version. The full-detail payload adds the paths, the version block, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
 | `ingest` | Creates or refreshes a generation with the server's own chunking settings. Resumable, with a soft per-call work budget; `force_recompute` bypasses reuse. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. A rejected call means another process holds the project, and the message names that build; a `superseded_build` entry means the corpus changed, so the staged build was discarded rather than resumed. |
-| `search` | Retrieves evidence candidates with hybrid retrieval and reranking. Optional narrowing by source (`source_ids`, `exclude_source_ids`) and by reviewed metadata (`projects_any`, `categories_any`, and `languages_any` keep a result carrying at least one listed value; `keywords` requires every listed term). Always reports whether the generation is stale. Returns 10 passages by default; when an answer is thin, ask the question again in different words and raise `top_k`, which also widens the window the reranker reorders. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
+| `search` | Retrieves evidence candidates with hybrid retrieval and reranking. Optional narrowing by source (`source_ids`, `exclude_source_ids`) and by reviewed metadata (`projects_any`, `categories_any`, `authors_any` and `titles_any` keep a result whose source carries at least one listed value, matching names as case-insensitive substrings; `languages_any` matches a language code; `keywords` requires every listed term). Always reports whether the generation is stale. Returns 10 passages by default; when an answer is thin, ask the question again in different words and raise `top_k`, which also widens the window the reranker reorders. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Takes no parameters: it is the corpus inventory. Registers discovered IDs in the project catalog. |
 | `get_passage` | Returns one passage with its immediate neighbors and provenance. |
 | `set_source_inclusion` | Excludes or restores one source, named by its filename. Reversible; never deletes the file. |

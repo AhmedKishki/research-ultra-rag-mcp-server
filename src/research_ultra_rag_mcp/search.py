@@ -65,6 +65,8 @@ class SearchWorkflow:
         keywords: set[str],
         projects_any: set[str],
         languages_any: set[str],
+        authors_any: set[str],
+        titles_any: set[str],
         document_filter: set[str],
         excluded_document_ids: set[str],
     ) -> bool:
@@ -78,6 +80,8 @@ class SearchWorkflow:
                 categories_any=categories_any,
                 projects_any=projects_any,
                 languages_any=languages_any,
+                authors_any=authors_any,
+                titles_any=titles_any,
             )
         )
 
@@ -180,6 +184,8 @@ class SearchWorkflow:
         projects_any: set[str],
         keywords: set[str],
         languages_any: set[str],
+        authors_any: set[str],
+        titles_any: set[str],
         document_filter: set[str],
         excluded_document_ids: set[str],
         withheld: dict[str, dict[str, Any]],
@@ -207,6 +213,8 @@ class SearchWorkflow:
             or keywords
             or projects_any
             or languages_any
+            or authors_any
+            or titles_any
             or document_filter
             or excluded_document_ids
         )
@@ -263,6 +271,8 @@ class SearchWorkflow:
                             keywords=keywords,
                             projects_any=projects_any,
                             languages_any=languages_any,
+                            authors_any=authors_any,
+                            titles_any=titles_any,
                             document_filter=document_filter,
                             excluded_document_ids=excluded_document_ids,
                         )
@@ -387,6 +397,8 @@ class SearchWorkflow:
         projects_any: list[str] | None = None,
         keywords: list[str] | None = None,
         languages_any: list[str] | None = None,
+        authors_any: list[str] | None = None,
+        titles_any: list[str] | None = None,
         source_ids: list[str] | None = None,
         exclude_source_ids: list[str] | None = None,
         retrieval_method: str = DEFAULT_RETRIEVAL_METHOD,
@@ -456,6 +468,8 @@ class SearchWorkflow:
             project_any_filter = _normalized_filter(projects_any)
             keyword_filter = _normalized_filter(keywords)
             language_any_filter = _normalized_filter(languages_any)
+            author_any_filter = _normalized_filter(authors_any)
+            title_any_filter = _normalized_filter(titles_any)
             source_include_document_ids, unknown_source_ids = (
                 self._document_ids_for_source_ids(manifest, requested_source_ids)
             )
@@ -482,6 +496,8 @@ class SearchWorkflow:
                 or project_any_filter
                 or keyword_filter
                 or language_any_filter
+                or author_any_filter
+                or title_any_filter
             )
             if metadata_filter_active:
                 dense_document_filter = {
@@ -493,6 +509,8 @@ class SearchWorkflow:
                         categories_any=category_any_filter,
                         projects_any=project_any_filter,
                         languages_any=language_any_filter,
+                        authors_any=author_any_filter,
+                        titles_any=title_any_filter,
                     )
                 }
             if document_filter:
@@ -511,6 +529,8 @@ class SearchWorkflow:
                     categories_any=category_any_filter,
                     projects_any=project_any_filter,
                     languages_any=language_any_filter,
+                    authors_any=author_any_filter,
+                    titles_any=title_any_filter,
                 )
                 and (not document_filter or document_id in document_filter)
             }
@@ -573,6 +593,8 @@ class SearchWorkflow:
                         keywords=keyword_filter,
                         projects_any=project_any_filter,
                         languages_any=language_any_filter,
+                        authors_any=author_any_filter,
+                        titles_any=title_any_filter,
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
@@ -603,6 +625,8 @@ class SearchWorkflow:
                     keywords=keyword_filter,
                     projects_any=project_any_filter,
                     languages_any=language_any_filter,
+                    authors_any=author_any_filter,
+                    titles_any=title_any_filter,
                     document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                     withheld=withheld,
@@ -652,6 +676,8 @@ class SearchWorkflow:
                         keywords=keyword_filter,
                         projects_any=project_any_filter,
                         languages_any=language_any_filter,
+                        authors_any=author_any_filter,
+                        titles_any=title_any_filter,
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
@@ -703,6 +729,8 @@ class SearchWorkflow:
                     keywords=keyword_filter,
                     projects_any=project_any_filter,
                     languages_any=language_any_filter,
+                    authors_any=author_any_filter,
+                    titles_any=title_any_filter,
                     document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                 ):
@@ -910,6 +938,8 @@ class SearchWorkflow:
                     "projects_any": sorted(project_any_filter),
                     "keywords_all": sorted(keyword_filter),
                     "languages_any": sorted(language_any_filter),
+                    "authors_any": sorted(author_any_filter),
+                    "titles_any": sorted(title_any_filter),
                     "source_document_ids": sorted(document_filter),
                     "source_ids": requested_source_ids,
                     "exclude_source_ids": requested_exclude_source_ids,
@@ -918,12 +948,15 @@ class SearchWorkflow:
                     "active_document_count": len(active_document_ids),
                     "note": (
                         "Filters narrow the corpus before ranking, so top_k counts "
-                        "matches inside the selection. Reviewed source exclusions "
-                        "always win: a source_ids entry for an excluded source stays "
-                        "excluded. Unresolved IDs are reported in "
-                        "unknown_source_ids and unknown_exclude_source_ids; an "
-                        "include list that resolves to nothing is an error rather "
-                        "than an unfiltered result."
+                        "matches inside the selection and an empty result reads as "
+                        "'no source matches these filters' rather than 'the corpus "
+                        "is silent'. Reviewed source exclusions always win: a "
+                        "source_ids entry for an excluded source stays excluded. "
+                        "Unresolved IDs are reported in unknown_source_ids and "
+                        "unknown_exclude_source_ids; an include list that resolves "
+                        "to nothing is an error rather than an unfiltered result. "
+                        "authors_any and titles_any match reviewed values by "
+                        "case-insensitive substring."
                     ),
                 },
                 "retrieval_method": retrieval_method,

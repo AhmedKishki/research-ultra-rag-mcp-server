@@ -115,6 +115,33 @@ LanguagesAnyFilter: TypeAlias = Annotated[
         )
     ),
 ]
+AuthorsAnyFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Case-insensitive 'any of' author filters; a result's source must have "
+            "at least one supplied name inside one of its author strings, so a "
+            "surname finds its author without the bibliography's punctuation. Read "
+            "reviewed authors where a review exists and extracted ones otherwise; "
+            "`list_sources` reports the authors each source carries. Combine with "
+            "`titles_any` to pin one work. Omit or pass null for no filter."
+        )
+    ),
+]
+TitlesAnyFilter: TypeAlias = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Case-insensitive 'any of' title filters; a result's source title must "
+            "contain at least one supplied phrase, so a remembered fragment finds "
+            "the work without reproducing its subtitle. Reviewed titles win over "
+            "extracted ones, and `list_sources` reports the title each source "
+            "carries. A filter that matches no source returns no passages and says "
+            "so in `applied_filters` rather than searching everything. Omit or pass "
+            "null for no filter."
+        )
+    ),
+]
 ForceRecompute: TypeAlias = Annotated[
     bool,
     Field(
@@ -301,6 +328,8 @@ def create_server(
         projects_any: ProjectsAnyFilter = None,
         keywords: KeywordFilter = None,
         languages_any: LanguagesAnyFilter = None,
+        authors_any: AuthorsAnyFilter = None,
+        titles_any: TitlesAnyFilter = None,
         source_ids: SourceIdFilter = None,
         exclude_source_ids: ExcludeSourceIdFilter = None,
     ) -> dict[str, Any]:
@@ -324,6 +353,8 @@ def create_server(
                     projects_any=projects_any,
                     keywords=keywords,
                     languages_any=languages_any,
+                    authors_any=authors_any,
+                    titles_any=titles_any,
                     source_ids=source_ids,
                     exclude_source_ids=exclude_source_ids,
                     retrieval_method="hybrid",

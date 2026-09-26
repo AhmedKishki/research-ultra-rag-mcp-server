@@ -14,7 +14,10 @@ Order of work:
    download a model; a long build returns in_progress, so call it again.
 3. search — one query per question. When an answer is thin, ask again in
    different words and raise top_k before reporting that the corpus is silent;
-   narrow the search only when the user asks.
+   narrow the search only when the user asks, with categories_any, authors_any,
+   or titles_any. A filter decides which sources count: an empty answer that
+   carries applied_filters is a filtered answer, which is a different finding
+   from a corpus that holds nothing.
 4. get_passage to read around a hit, list_sources for filenames and inclusion
    state, set_source_inclusion to record a reviewed exclusion or restore it.
 
@@ -26,9 +29,9 @@ What the user is owed:
   original PDF or EPUB at the returned locator, and say which source it came
   from.
 - Bibliography is extracted best-effort, so check it against the original and say
-  when a field looks wrong. Reviewed corrections live in the project's
-  .research-rag review-state files, which the user edits by hand; this server
-  reads them but never writes them.
+  when a field looks wrong. Save a correction with set_source_metadata, which
+  writes the project's .research-rag review state; the user may edit those files
+  by hand instead, and a correction changes later reads without a rebuild.
 - If rerank_fallback appears, the order is unranked: say so rather than implying
   the results were reranked.
 """

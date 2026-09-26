@@ -116,6 +116,19 @@ def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
         "unresolved_exclude_source_ids",
         filters.get("unknown_exclude_source_ids"),
     )
+    # The bibliographic filters travel with the answer, not only in the developer
+    # payload: a filter that removed every source is the reason an answer is empty,
+    # and an agent reading the answer has otherwise no way to tell that apart from
+    # a corpus that holds nothing.
+    _add(
+        result,
+        "applied_filters",
+        {
+            name: filters[name]
+            for name in ("authors_any", "titles_any")
+            if filters.get(name)
+        },
+    )
     result["hits"] = [lean_passage(hit) for hit in payload.get("hits") or []]
     return result
 

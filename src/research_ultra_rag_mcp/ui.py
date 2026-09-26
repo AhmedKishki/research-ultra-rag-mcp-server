@@ -79,6 +79,7 @@ RESEARCH_UI_PROFILE = UIProfile(
         category_partitions=True,
         project_metadata=True,
         metadata_filters=True,
+        bibliographic_filters=True,
         retrieval_modes=False,
         reranking=False,
         chunk_settings=False,

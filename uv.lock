@@ -2140,7 +2140,7 @@ wheels = [
 
 [[package]]
 name = "research-ultra-rag-mcp"
-version = "0.47.0"
+version = "0.48.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -2181,7 +2181,7 @@ requires-dist = [
     { name = "qdrant-client", specifier = "==1.19.1" },
     { name = "tokenizers", specifier = ">=0.20,<1" },
     { name = "tokie", specifier = ">=0.1,<1" },
-    { name = "ui-ultra-rag-mcp", git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=881f6a473b6df33941717c840aae8f258fd38679" },
+    { name = "ui-ultra-rag-mcp", git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=4f3f7b60c258df66b108119c4f6afeab9b25f0c2" },
     { name = "vanilla-ultra-rag-mcp", git = "https://github.com/AhmedKishki/vanilla-ultra-rag-mcp-server.git?rev=05ae4b155d38a294260a36017f6429ce73b1641b" },
 ]
 
@@ -2521,8 +2521,8 @@ wheels = [
 
 [[package]]
 name = "ui-ultra-rag-mcp"
-version = "0.8.0"
-source = { git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=881f6a473b6df33941717c840aae8f258fd38679#881f6a473b6df33941717c840aae8f258fd38679" }
+version = "0.9.0"
+source = { git = "https://github.com/AhmedKishki/ui-ultra-rag-mcp.git?rev=4f3f7b60c258df66b108119c4f6afeab9b25f0c2#4f3f7b60c258df66b108119c4f6afeab9b25f0c2" }
 dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },

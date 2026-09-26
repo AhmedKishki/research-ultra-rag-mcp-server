@@ -111,6 +111,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "projects_any",
                 "keywords",
                 "languages_any",
+                "authors_any",
+                "titles_any",
                 "source_ids",
                 "exclude_source_ids",
             },
@@ -338,6 +340,46 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             },
         )
         assert filtered_out.data["hits"] == []
+
+        # The reviewed author and title are what a name filter matches, through
+        # the real tool surface, and a substring is enough for either.
+        by_name = await client.call_tool(
+            "search",
+            {
+                "query": "cobalt heron amber marsh",
+                "top_k": 1,
+                "authors_any": ["field researcher"],
+                "titles_any": ["marsh evidence"],
+            },
+        )
+        assert by_name.data["hits"][0]["chunk_id"] == hit["chunk_id"]
+
+        # A name no source carries is a filtered answer rather than a silent
+        # corpus, so the answer names the filter it applied.
+        unmatched_name = await client.call_tool(
+            "search",
+            {
+                "query": "cobalt heron amber marsh",
+                "top_k": 1,
+                "authors_any": ["Nobody At All"],
+            },
+        )
+        assert unmatched_name.data["hits"] == []
+        assert unmatched_name.data["applied_filters"] == {
+            "authors_any": ["nobody at all"]
+        }
+
+        # The extracted title is still reachable while a reviewed one exists,
+        # because the filter reads the overlay rather than the source filename.
+        extracted_title = await client.call_tool(
+            "search",
+            {
+                "query": "cobalt heron amber marsh",
+                "top_k": 1,
+                "titles_any": ["citable evidence"],
+            },
+        )
+        assert extracted_title.data["hits"] == []
 
         reranked = await client.call_tool(
             "search",

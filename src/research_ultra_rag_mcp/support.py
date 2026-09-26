@@ -410,6 +410,35 @@ def _requested_ids(values: list[str] | None) -> list[str]:
     return result
 
 
+def _normalized_scalar(value: Any) -> set[str]:
+    """Normalize one scalar metadata value, or nothing when it is empty.
+
+    `title` is a single string where `authors`, `categories`, and the other list
+    fields are lists, and iterating a string yields its characters, so the two
+    shapes cannot share one normalizer.
+    """
+
+    text = normalize_inline_text(str(value or ""))
+    return {text.casefold()} if text else set()
+
+
+def _matches_name_filter(supplied: set[str], values: set[str]) -> bool:
+    """Whether one of the supplied phrases appears inside one of these values.
+
+    Titles and author names are phrases, not controlled tags, so a substring is
+    the honest comparison: a surname finds the author without the caller
+    reproducing a bibliography's punctuation, and a remembered title fragment
+    finds the work without reproducing its subtitle. Both sides arrive casefolded
+    from `_normalized_filter`.
+    """
+
+    if not supplied:
+        return True
+    return any(
+        any(name in document_value for document_value in values) for name in supplied
+    )
+
+
 def _document_matches_metadata(
     document: dict[str, Any],
     *,
@@ -417,6 +446,8 @@ def _document_matches_metadata(
     categories_any: set[str] = frozenset(),
     projects_any: set[str] = frozenset(),
     languages_any: set[str] = frozenset(),
+    authors_any: set[str] = frozenset(),
+    titles_any: set[str] = frozenset(),
 ) -> bool:
     """Match one document against the reviewed-metadata filter layers.
 
@@ -425,17 +456,26 @@ def _document_matches_metadata(
     what it is written in. A source normally carries one project, so that layer is
     a passthrough inside a one-project server and becomes meaningful when a corpus
     is copied or shared.
+
+    `title` and `authors` are read as names rather than as tags, so they match by
+    case-insensitive substring through `_matches_name_filter`. Reviewed values
+    override the extracted ones wherever they exist, which is why these filters
+    read the effective document the query path already holds.
     """
 
     document_categories = _normalized_filter(document.get("categories"))
     document_keywords = _normalized_filter(document.get("keywords"))
     document_projects = _normalized_filter(document.get("project"))
     document_languages = _normalized_filter(document.get("language"))
+    document_authors = _normalized_filter(document.get("authors"))
+    document_titles = _normalized_scalar(document.get("title"))
     return (
         keywords.issubset(document_keywords)
         and (not categories_any or not categories_any.isdisjoint(document_categories))
         and (not projects_any or not projects_any.isdisjoint(document_projects))
         and (not languages_any or not languages_any.isdisjoint(document_languages))
+        and _matches_name_filter(authors_any, document_authors)
+        and _matches_name_filter(titles_any, document_titles)
     )
 
 

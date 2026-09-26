@@ -37,6 +37,8 @@ TOOL_PARAMETERS: dict[str, set[str]] = {
         "categories_any",
         "projects_any",
         "keywords",
+        "authors_any",
+        "titles_any",
         "source_ids",
         "exclude_source_ids",
     },
@@ -246,6 +248,7 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert profile.json()["capabilities"]["category_partitions"] is True
     assert profile.json()["capabilities"]["project_metadata"] is True
     assert profile.json()["capabilities"]["metadata_filters"] is True
+    assert profile.json()["capabilities"]["bibliographic_filters"] is True
     assert profile.json()["capabilities"]["retrieval_modes"] is False
     assert profile.json()["capabilities"]["reranking"] is False
     assert profile.json()["capabilities"]["chunk_settings"] is False
@@ -273,6 +276,8 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
                 "query": "research question",
                 "top_k": 3,
                 "categories_any": ["Commodity fetishism"],
+                "authors_any": ["Crawford"],
+                "titles_any": ["Atlas of AI"],
                 "source_ids": ["src_1"],
                 "exclude_source_ids": ["src_2"],
             },
@@ -324,6 +329,8 @@ def test_ui_forwards_search_and_the_surviving_mutations(project: Path) -> None:
             "query": "research question",
             "top_k": 3,
             "categories_any": ["Commodity fetishism"],
+            "authors_any": ["Crawford"],
+            "titles_any": ["Atlas of AI"],
             "source_ids": ["src_1"],
             "exclude_source_ids": ["src_2"],
         },

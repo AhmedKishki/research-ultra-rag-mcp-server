@@ -339,3 +339,140 @@ def test_three_metadata_layers_combine(project: Path) -> None:
         assert {hit["source_path"] for hit in other["hits"]} == {"sources/waste.pdf"}
 
     asyncio.run(exercise())
+
+
+def test_authors_and_titles_filter_the_corpus_by_name(project: Path) -> None:
+    """An author and a title narrow a corpus by the names they are, not as tags.
+
+    Both are phrases, so they match as case-insensitive substrings of the values
+    the query path already holds: a surname finds its author without the
+    bibliography's punctuation, and a remembered title fragment finds the work
+    without reproducing its subtitle. Reviewed values win over extracted ones,
+    which is what makes the filter useful on a corpus whose extraction is wrong.
+    """
+
+    async def exercise() -> None:
+        service, _source_ids = await _build_project(project)
+
+        # Both test sources extract the same title and author, so an extracted
+        # name cannot separate them and this passes on both.
+        both = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            authors_any=["TEST AUTHOR"],
+        )
+        assert {hit["source_path"] for hit in both["hits"]} == {
+            "sources/cobalt.pdf",
+            "sources/waste.pdf",
+        }
+        assert both["filters"]["authors_any"] == ["test author"]
+        assert both["filters"]["active_document_count"] == 2
+
+        write_reviewed_metadata(
+            service.config,
+            "cobalt.pdf",
+            {"title": "Cobalt extraction labour review", "authors": ["Dana Cobalt"]},
+        )
+
+        # A reviewed author replaces the extracted one rather than joining it.
+        reviewed_author = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            authors_any=["dana"],
+        )
+        assert {hit["source_path"] for hit in reviewed_author["hits"]} == {
+            "sources/cobalt.pdf"
+        }
+        assert reviewed_author["filters"]["active_document_count"] == 1
+
+        # A name no source carries is a filter that matched nothing, not a corpus
+        # that holds nothing.
+        no_such_author = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            authors_any=["Nobody At All"],
+        )
+        assert no_such_author["hits"] == []
+        assert no_such_author["filters"]["active_document_count"] == 0
+        assert no_such_author["filters"]["authors_any"] == ["nobody at all"]
+
+        # A title fragment is enough, and it is matched case-insensitively.
+        fragment = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            titles_any=["EXTRACTION LABOUR"],
+        )
+        assert {hit["source_path"] for hit in fragment["hits"]} == {
+            "sources/cobalt.pdf"
+        }
+        assert fragment["filters"]["titles_any"] == ["extraction labour"]
+
+        # The extracted title is still what the other source carries.
+        extracted_title = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            titles_any=["test pdf"],
+        )
+        assert {hit["source_path"] for hit in extracted_title["hits"]} == {
+            "sources/waste.pdf"
+        }
+
+    asyncio.run(exercise())
+
+
+def test_author_and_title_filters_combine_with_each_other(project: Path) -> None:
+    """Every filter layer has to pass, and an author list is any-of."""
+
+    async def exercise() -> None:
+        service, _source_ids = await _build_project(project)
+        write_reviewed_metadata(
+            service.config,
+            "cobalt.pdf",
+            {"title": "Cobalt extraction", "authors": ["Dana Cobalt"]},
+        )
+        write_reviewed_metadata(
+            service.config,
+            "waste.pdf",
+            {"title": "Waste frontiers", "authors": ["Wendy Waste"]},
+        )
+
+        either_author = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            authors_any=["cobalt", "waste"],
+        )
+        assert {hit["source_path"] for hit in either_author["hits"]} == {
+            "sources/cobalt.pdf",
+            "sources/waste.pdf",
+        }
+
+        one_work = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            authors_any=["cobalt", "waste"],
+            titles_any=["frontiers"],
+        )
+        assert {hit["source_path"] for hit in one_work["hits"]} == {"sources/waste.pdf"}
+        assert one_work["filters"]["authors_any"] == ["cobalt", "waste"]
+        assert one_work["filters"]["titles_any"] == ["frontiers"]
+
+        # An author that excludes the only title match returns nothing, which is
+        # the two layers disagreeing rather than either one failing.
+        disagreeing = await service.search(
+            "labour evidence",
+            top_k=10,
+            rerank=False,
+            authors_any=["dana"],
+            titles_any=["frontiers"],
+        )
+        assert disagreeing["hits"] == []
+        assert disagreeing["filters"]["active_document_count"] == 0
+
+    asyncio.run(exercise())
