@@ -394,6 +394,35 @@ class ScoredDenseBackend(FakeDenseBackend):
         ]
 
 
+class BandedDenseBackend(FakeDenseBackend):
+    """Scores the first chunk above the floor and the rest inside a band below it.
+
+    A one-word query behaves this way: the whole candidate list sits a few
+    hundredths under the floor, so an absolute gate slices it arbitrarily.
+    """
+
+    def __init__(self, strong: float, band: float) -> None:
+        super().__init__()
+        self.strong = strong
+        self.band = band
+
+    def search(
+        self,
+        index_path: Path,
+        query: str,
+        top_k: int,
+        **_filters: object,
+    ) -> list[DenseSearchHit]:
+        assert index_path.is_dir()
+        return [
+            DenseSearchHit(
+                chunk_id=str(chunk["chunk_id"]),
+                score=self.strong if position == 0 else self.band,
+            )
+            for position, chunk in enumerate(self.chunks[:top_k])
+        ]
+
+
 class CancelOnceUltraRAG(FakeUltraRAG):
     def __init__(self) -> None:
         super().__init__()
@@ -1772,6 +1801,74 @@ async def _assert_dense_threshold_boundary(project: Path) -> None:
 
 def test_dense_threshold_boundary(project: Path) -> None:
     asyncio.run(_assert_dense_threshold_boundary(project))
+
+
+async def _assert_a_dense_band_below_the_floor_is_not_arbitrary(project: Path) -> None:
+    """A query whose whole candidate list sits under the floor still finds them.
+
+    A one-word query's best passage can score below the cosine floor while its
+    neighbours sit a few hundredths behind it, and the floor then keeps a handful
+    of candidates and drops passages that match the query about as closely. The
+    margin admits that band, names what it still dropped, and never invents
+    support for a query nothing cleared the floor for.
+    """
+
+    for name, text in (
+        ("a.pdf", "Semantic research material about waste and disposal."),
+        ("b.pdf", "Another passage about waste streams and repair."),
+        ("c.pdf", "A third passage about waste and its afterlives."),
+    ):
+        write_pdf(project / "sources" / name, [text], title=name)
+
+    async def search_with(margin: float, strong: float, band: float) -> dict:
+        dense = BandedDenseBackend(strong=strong, band=band)
+        service = ResearchService(  # type: ignore[arg-type]
+            resolve_config(
+                project,
+                vanilla_executable=sys.executable,
+                settings_overrides=[
+                    f"retrieval.dense_relative_similarity_margin={margin}"
+                ],
+            ),
+            FakeUltraRAG(),
+            dense=dense,
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10, force_recompute=True)
+        return await service.search("waste", retrieval_method="dense", top_k=5)
+
+    # The floor alone keeps only the candidate that cleared it, and the answer
+    # names the sources it removed rather than only counting them.
+    floor_only = await search_with(margin=0.0, strong=0.75, band=0.65)
+    assert floor_only["result_count"] == 1
+    assert floor_only["rejected_candidates"]["dense_below_threshold"] == 2
+    assert floor_only["dense_gate"]["admitted_below_floor"] == 0
+    assert floor_only["dense_gate"]["best_cosine_similarity"] == 0.75
+    examples = floor_only["rejected_candidate_examples"]["reasons"][
+        "dense_below_threshold"
+    ]
+    assert {example["source_relative_path"] for example in examples} == {
+        "b.pdf",
+        "c.pdf",
+    }
+    assert {example["cosine_similarity"] for example in examples} == {0.65}
+
+    # Within the margin of the best score the band is admitted, and the answer
+    # spans the sources the floor had thinned.
+    rescued = await search_with(margin=0.10, strong=0.75, band=0.65)
+    assert rescued["result_count"] == 3
+    assert rescued["distinct_reference_count"] == 3
+    assert rescued["dense_gate"]["admitted_below_floor"] == 2
+    assert rescued["rejected_candidates"]["dense_below_threshold"] == 0
+
+    # With nothing above the floor the margin must not manufacture support.
+    unsupported = await search_with(margin=0.10, strong=0.65, band=0.65)
+    assert unsupported["result_count"] == 0
+    assert unsupported["relevance_limited"] is True
+    assert unsupported["dense_gate"]["admitted_below_floor"] == 0
+
+
+def test_a_dense_band_below_the_floor_is_not_arbitrary(project: Path) -> None:
+    asyncio.run(_assert_a_dense_band_below_the_floor_is_not_arbitrary(project))
 
 
 async def _assert_no_change_ingest_is_noop_and_force_rebuilds(project: Path) -> None:

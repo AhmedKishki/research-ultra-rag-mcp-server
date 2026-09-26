@@ -29,6 +29,7 @@ from .support import (
     _is_extraction_artifact,
     _normalized_filter,
     _pseudo_relevance_terms,
+    _public_document,
     _public_passage,
     _record_withheld,
     _requested_ids,
@@ -540,9 +541,15 @@ class SearchWorkflow:
             )
             chunks_by_id.update(dense_chunks)
             accepted_dense_hits: list[DenseSearchHit] = []
+            dense_margin = self.config.settings.dense_relative_similarity_margin
+            dense_floor = self.config.settings.dense_minimum_cosine_similarity
             dense_below_threshold = 0
+            dense_below_threshold_rescued = 0
             dense_quality_rejected = 0
             dense_corrupt_text_rejected = 0
+            # Every non-score filter runs first, so the score decision below sees
+            # only candidates the corpus can actually offer.
+            eligible_dense_hits: list[tuple[DenseSearchHit, dict[str, Any]]] = []
             for dense_hit in dense_hits:
                 chunk = chunks_by_id.get(dense_hit.chunk_id)
                 if chunk is None:
@@ -574,13 +581,48 @@ class SearchWorkflow:
                     excluded_document_ids=excluded_document_ids,
                 ):
                     continue
-                if (
-                    dense_hit.score
-                    < self.config.settings.dense_minimum_cosine_similarity
-                ):
-                    dense_below_threshold += 1
+                eligible_dense_hits.append((dense_hit, chunk))
+            # The floor is absolute, and a query whose best passage still scores
+            # below it can have its whole candidate list packed into a band under
+            # it: on the reference corpus a one-word query spanned 0.681 to 0.742
+            # across fifty candidates, so a 0.72 floor kept six of them even though
+            # the rest matched it about as closely. The margin admits that band, but
+            # only once something has cleared the floor, so a query the corpus
+            # cannot support still abstains instead of returning its least-bad
+            # passage.
+            best_dense_score: float | None = None
+            for dense_hit, _chunk in eligible_dense_hits:
+                if best_dense_score is None or dense_hit.score > best_dense_score:
+                    best_dense_score = dense_hit.score
+            admission_floor = dense_floor
+            if (
+                dense_margin > 0.0
+                and best_dense_score is not None
+                and best_dense_score >= dense_floor
+            ):
+                admission_floor = min(dense_floor, best_dense_score - dense_margin)
+            dense_rejected_examples: list[dict[str, Any]] = []
+            for dense_hit, chunk in eligible_dense_hits:
+                if dense_hit.score >= admission_floor:
+                    if dense_hit.score < dense_floor:
+                        dense_below_threshold_rescued += 1
+                    accepted_dense_hits.append(dense_hit)
                     continue
-                accepted_dense_hits.append(dense_hit)
+                dense_below_threshold += 1
+                if (
+                    len(dense_rejected_examples)
+                    < self.config.settings.maximum_withheld_examples
+                ):
+                    document = _document_for_chunk(chunk, documents_by_id)
+                    dense_rejected_examples.append(
+                        {
+                            "chunk_id": dense_hit.chunk_id,
+                            "source_relative_path": _public_document(document).get(
+                                "source_relative_path"
+                            ),
+                            "cosine_similarity": round(dense_hit.score, 4),
+                        }
+                    )
             dense_hits = accepted_dense_hits
             dense_ranking = [hit.chunk_id for hit in dense_hits]
             dense_scores = {hit.chunk_id: hit.score for hit in dense_hits}
@@ -792,6 +834,24 @@ class SearchWorkflow:
                         self.config.settings.source_diversity_penalty
                     ),
                 },
+                "dense_gate": {
+                    "minimum_cosine_similarity": dense_floor,
+                    "relative_margin": dense_margin,
+                    "best_cosine_similarity": (
+                        None if best_dense_score is None else round(best_dense_score, 4)
+                    ),
+                    "admitted_below_floor": dense_below_threshold_rescued,
+                    "rejected_below_floor": dense_below_threshold,
+                    "note": (
+                        "Dense candidates are admitted by score. A candidate below "
+                        "the floor is admitted when the query's best candidate "
+                        "cleared the floor and this one is within the margin of it; "
+                        "when nothing clears the floor the query is left with "
+                        "nothing rather than its least-bad passage. A query whose "
+                        "whole candidate list sits in a narrow band under the floor "
+                        "is why the margin exists."
+                    ),
+                },
                 "rejected_candidates": {
                     "bm25_no_query_token_overlap": bm25_rejected[
                         "no_query_token_overlap"
@@ -821,6 +881,19 @@ class SearchWorkflow:
                     "flagged_passages_returned": sum(
                         1 for hit in hits if hit.get("text_notes")
                     ),
+                },
+                "rejected_candidate_examples": {
+                    "policy": "bounded_examples",
+                    "limit_per_reason": self.config.settings.maximum_withheld_examples,
+                    "note": (
+                        "The gate's count says how many candidates it removed; "
+                        "these name the sources they came from, so a thin answer "
+                        "can be read as the corpus being thinned rather than "
+                        "silent."
+                    ),
+                    "reasons": {
+                        "dense_below_threshold": dense_rejected_examples,
+                    },
                 },
                 "dense_fidelity": {
                     "embedding_maximum_tokens": self.config.settings.embedding_maximum_tokens,

@@ -524,6 +524,24 @@ SETTINGS: tuple[Setting, ...] = (
         maximum=1.0,
         env="RESEARCH_ULTRARAG_RETRIEVAL_SOURCE_DIVERSITY_PENALTY",
     ),
+    Setting(
+        key="retrieval.dense_relative_similarity_margin",
+        field="dense_relative_similarity_margin",
+        kind=float,
+        layer="runtime",
+        doc=(
+            "How far below the query's own best dense similarity a candidate may "
+            "score and still be admitted when it misses the cosine floor, so a "
+            "short or abstract query whose whole candidate list sits in a narrow "
+            "band is not left with a handful of passages. The rescue applies only "
+            "when at least one candidate cleared the floor, so a query the corpus "
+            "cannot support still abstains. 0 applies the floor to every "
+            "candidate. Runtime: it re-ranks a query and changes no artifact."
+        ),
+        minimum=0.0,
+        maximum=0.5,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_DENSE_RELATIVE_SIMILARITY_MARGIN",
+    ),
     # --- Chunking: what a chunk is. Recorded per generation. ---
     Setting(
         key="chunking.size",
@@ -823,6 +841,7 @@ class EffectiveSettings:
     prf_terms: int
     maximum_withheld_examples: int
     source_diversity_penalty: float
+    dense_relative_similarity_margin: float
     chunk_size: int
     chunk_overlap: int
     chunk_headers: bool

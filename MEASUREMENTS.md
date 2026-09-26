@@ -138,13 +138,13 @@ The staleness walk is an order of magnitude larger than everything else and is t
 
 Two things dominate. A lean `status` is small because it reports the pending-review count, not the 59 reviewed paths the full payload lists, because it counts added and modified sources instead of listing them while naming only the ones that went missing, and because it describes the selected generation instead of inventorying anything: the retained generations, the categories and the projects are full-detail readers, so no status answer lists them however large the corpus grows. `list_sources` is the largest lean answer and stays largest because `reviewed_metadata_sources` echoes every saved override: that is also the only place the keyword vocabulary is visible, since a status answer inventories no vocabulary at all.
 
-`search` needs a built generation, which the cleared measurement state did not have. Re-run on the reference project once it had one — 79 indexed sources, 16,845 chunks, 11 retained generations, hybrid retrieval with reranking, `top_k=6`, query "the multiplication of labour in the data supply chain":
+`search` needs a built generation, which the cleared measurement state did not have. Re-run on the reference project once it had one — 81 indexed sources, 19,400 chunks, 12 retained generations, hybrid retrieval with reranking, `top_k=6`, query "the multiplication of labour in the data supply chain":
 
 | Tool | Lean answer | Full-detail answer | Ratio |
 |---|---|---|---|
-| `status` | 668 bytes | 15,522 bytes | 0.04 |
-| `list_sources` | 88,819 bytes | 232,293 bytes | 0.38 |
-| `search`, `top_k=6` | 9,888 bytes | 22,671 bytes | 0.44 |
+| `status` | 666 bytes | 16,602 bytes | 0.04 |
+| `list_sources` | 92,103 bytes | 239,710 bytes | 0.38 |
+| `search`, `top_k=6` | 10,488 bytes | 24,144 bytes | 0.43 |
 
 A lean `status` is larger than the cleared-state figure above because it carries the current generation, its counts, and the retained count and bytes. A lean `list_sources` is larger than its cleared-state figure because the reviewed-metadata overlay holds every saved override. A lean `search` at `top_k=6` is mostly the cleaned evidence itself: the accounting around it — component ranks and scores, fusion and reranker values, embedding token counts, candidate and rejection counts, withheld candidates, model identifiers and revision fingerprints, per-field provenance, and the applied-filter echo — is returned only under `--tool-detail full`, and a passage carries only its source, its authors, its position, and its text, so the citation, the resolved title, the stable source ID, a page label that merely repeats the physical page, and the advisory script note are full-detail material too.
 
@@ -307,7 +307,33 @@ Below 0.72 the gate does almost nothing: 0.6 is indistinguishable from off on ev
 
 So 0.72 it is: the shipped path cannot tell the values below it apart, and the value above it is where the gate starts costing answers. The default stays, and the measurement's use is that it bounds the knob rather than crowning a value.
 
-One consequence is worth carrying: the gate is calibrated for a fused ranking, and a dense-only one wants a much lower value — at 0.72 it returns 5.2 results where 10 were asked for. The agent-facing search tool is hybrid-only, so nothing shipped is in that position, and a dense-only method exposed later would have to not apply this gate.
+One consequence is worth carrying: the gate is calibrated for a fused ranking, and a dense-only one wants a much lower value — at 0.72 it returns 5.2 results where 10 were asked for. The agent-facing search tool is hybrid-only, so nothing shipped is in that position, and a dense-only method exposed later would have to not apply this gate. The relative rescue measured below narrows that gap without moving the floor.
+
+## The dense floor's relative rescue, measured
+
+`retrieval.dense_relative_similarity_margin` answers the case the floor alone gets wrong: a query whose whole candidate list sits in a band just under it. A floor decides on score alone, so a one-word query — whose best passage can score below the floor while its neighbours sit a few hundredths behind — loses most of its semantic candidates before fusion sees them. On the reference corpus `waste` had fifty dense candidates spanning 0.681 to 0.742, and the 0.72 floor kept six of them over four sources. The margin admits a below-floor candidate when the query's best candidate cleared the floor and this one is within the margin of it, and admits nothing when nothing cleared the floor, which is what keeps abstention intact.
+
+Swept it with everything else at the shipped values, against the same generation and the same 30 judged queries (81 indexed sources, 19,400 chunks):
+
+| Mode | Margin | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean sources | mean results |
+|---|---|---|---|---|---|---|---|---|---|
+| dense | 0.0 | 26.7% | 40.0% | 53.3% | 0.353 | 0.397 | 60.0% | 1.6 | 4.4 |
+| dense | **0.10 (shipped)** | 26.7% | 43.3% | 60.0% | 0.371 | 0.426 | 63.3% | 2.1 | 7.1 |
+| dense | 0.20 | 26.7% | 43.3% | 60.0% | 0.371 | 0.426 | 63.3% | 2.1 | 7.3 |
+| hybrid | 0.0 | 56.7% | 70.0% | 86.7% | 0.646 | 0.698 | 90.0% | 7.7 | 10.0 |
+| hybrid | **0.10 (shipped)** | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 7.3 | 10.0 |
+| hybrid | 0.20 | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 7.4 | 10.0 |
+| hybrid + rerank | 0.0 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 | 10.0 |
+| hybrid + rerank | **0.10 (shipped)** | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 | 10.0 |
+| hybrid + rerank | 0.20 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 | 10.0 |
+
+The shipped path — hybrid with reranking, which is the only thing the tool does — is unchanged at both values: every column is identical to the floor-only run. What moves is where the floor was starving a mode. Dense-only returns 7.1 passages where it returned 4.4 of the 10 asked for and its succ@k rises from 53.3% to 60.0%; unreranked hybrid gains a query and 0.042 MRR. Ten hundredths is the plateau: 0.20 adds 0.1 of a source and 0.2 of a passage to dense-only and moves nothing else, so the default is the shallower of the two.
+
+On the case that prompted it, `waste` on this corpus: the candidate pool goes from 42 over 7 sources to 73 over 12, with 34 candidates admitted below the floor and none rejected. What still binds the *answer* at the default depth is the reranked window, not the floor: it holds 20 candidates and the reranker's order is concentrated, so a ten-passage answer still comes from six sources. Asked for 25, the same query returns 17 sources, including Gabrys, Kimani, OECD, Crawford, and three Gidwani texts that the floor alone never admitted.
+
+The margin is a runtime setting, like the source-diversity penalty: it enters neither the retrieval-policy fingerprint nor the generation manifest, so generations built before it keep validating. `status` reported `generation_upgrade_required: false` on the generation these runs measured.
+
+Two disclosures accompany it, both full-detail only. `dense_gate` reports the floor, the margin, the query's best cosine similarity, and how many candidates were admitted below the floor or rejected below it. `rejected_candidate_examples` names up to `retrieval.maximum_withheld_examples` sources per reason, so a thin answer reads as thinned rather than silent.
 
 ## The reranked window, calibrated
 

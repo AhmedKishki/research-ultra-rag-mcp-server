@@ -96,6 +96,15 @@ maximum_withheld_examples = 5
 # of those three identical values: 0.4 spreads further, and 0.6 is where the
 # first quality column moves. (runtime)
 source_diversity_penalty = 0.25
+# How far below a query's own best dense similarity a candidate may score and
+# still be admitted when it misses the cosine floor. A one-word query's whole
+# candidate list can sit in a 0.06-wide band under 0.72, where the absolute floor
+# slices arbitrarily: on the reference corpus "waste" kept 6 of 200 candidates and
+# 4 sources, and 0.10 kept 50 candidates over 11 sources. The rescue needs one
+# candidate that cleared the floor, so a query the corpus cannot support still
+# abstains, and it changes no artifact. 0 applies the floor to every candidate.
+# (runtime)
+dense_relative_similarity_margin = 0.10
 
 [chunking]
 # Target chunk length in GPT-2 tokens, and the tokens neighbours share. (identity:
