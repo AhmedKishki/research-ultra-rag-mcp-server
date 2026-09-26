@@ -105,6 +105,17 @@ source_diversity_penalty = 0.25
 # abstains, and it changes no artifact. 0 applies the floor to every candidate.
 # (runtime)
 dense_relative_similarity_margin = 0.10
+# Words a candidate needs before it counts as evidence. Chunks never span
+# extraction units, so a short unit — a five-word index line ("value production
+# chain, 70-71"), a heading, a copyright line — becomes a short chunk that
+# matches a query about its own words while carrying no prose to cite: 16.6% of
+# the reference corpus's chunks are under 12 words and 2.7% of the passages its
+# searches returned were. The reference project sets 12 and no judged target is
+# under 30 words, so the value costs that measured set nothing; 20 also removes
+# 12-to-19-word captions and copyright lines. Off by default, because a corpus
+# of deliberately short passages is a legitimate corpus and this drops them.
+# (runtime)
+minimum_passage_words = 0
 
 [chunking]
 # Target chunk length in GPT-2 tokens, and the tokens neighbours share. (identity:

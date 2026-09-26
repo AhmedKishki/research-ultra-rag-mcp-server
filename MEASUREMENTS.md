@@ -144,7 +144,7 @@ Two things dominate. A lean `status` is small because it reports the pending-rev
 |---|---|---|---|
 | `status` | 666 bytes | 16,602 bytes | 0.04 |
 | `list_sources` | 92,103 bytes | 239,710 bytes | 0.38 |
-| `search`, `top_k=6` | 10,488 bytes | 24,144 bytes | 0.43 |
+| `search`, `top_k=6` | 10,488 bytes | 25,890 bytes | 0.41 |
 
 A lean `status` is larger than the cleared-state figure above because it carries the current generation, its counts, and the retained count and bytes. A lean `list_sources` is larger than its cleared-state figure because the reviewed-metadata overlay holds every saved override. A lean `search` at `top_k=6` is mostly the cleaned evidence itself: the accounting around it — component ranks and scores, fusion and reranker values, embedding token counts, candidate and rejection counts, withheld candidates, model identifiers and revision fingerprints, per-field provenance, and the applied-filter echo — is returned only under `--tool-detail full`, and a passage carries only its source, its authors, its position, and its text, so the citation, the resolved title, the stable source ID, a page label that merely repeats the physical page, and the advisory script note are full-detail material too.
 
@@ -334,6 +334,25 @@ On the case that prompted it, `waste` on this corpus: the candidate pool goes fr
 The margin is a runtime setting, like the source-diversity penalty: it enters neither the retrieval-policy fingerprint nor the generation manifest, so generations built before it keep validating. `status` reported `generation_upgrade_required: false` on the generation these runs measured.
 
 Two disclosures accompany it, both full-detail only. `dense_gate` reports the floor, the margin, the query's best cosine similarity, and how many candidates were admitted below the floor or rejected below it. `rejected_candidate_examples` names up to `retrieval.maximum_withheld_examples` sources per reason, so a thin answer reads as thinned rather than silent.
+
+## The minimum passage length, measured
+
+Chunks never span extraction units — Crawford's *Atlas of AI* yields 3,426 chunks from 3,424 units — so one short unit becomes one short chunk. A book's back matter is made of short units, and an index line is a list of the corpus's own words: `value production chain` returned the five-word entry "value production chain, 70–71" from Crawford's Index, which matches the query and carries nothing to cite. Corpus-wide, 3,229 of 19,400 chunks (16.6%) are under twelve words, 993 of them in Crawford's index and notes alone, and 2.7% of the passages the tool returned across the 30 judged queries were in that class.
+
+`retrieval.minimum_passage_words` drops a candidate whose cleaned text is shorter than the setting, before fusion, in both halves. It ships off, because a corpus of deliberately short passages is a legitimate corpus; the reference project sets 12.
+
+| Mode | Minimum words | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean sources | mean results |
+|---|---|---|---|---|---|---|---|---|---|
+| dense | 0 | 26.7% | 43.3% | 60.0% | 0.371 | 0.426 | 63.3% | 2.1 | 7.1 |
+| dense | **12** | 26.7% | 43.3% | 63.3% | 0.375 | 0.436 | 66.7% | 2.3 | 7.1 |
+| hybrid | 0 | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 7.3 | 10.0 |
+| hybrid | **12** | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 7.3 | 10.0 |
+| hybrid + rerank | 0 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 | 10.0 |
+| hybrid + rerank | **12** | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.4 | 10.0 |
+
+The shipped path is unchanged to four decimals, dense-only improves because a fragment was holding a slot, and no column anywhere falls: no judged target is under 30 words, so nothing the set can measure is lost. `value production chain` with the rule on returns ten passages over nine sources instead of an index entry over one, and the full-detail payload names what it dropped — one BM25 candidate and thirteen dense ones, all from *Atlas of AI*.
+
+Twelve words removes 16.6% of the corpus's chunks; twenty removes 22.9% and also drops 12-to-19-word captions and copyright lines. Like the margin, the setting is runtime and enters neither the fingerprint nor the manifest, so it applies at the next search with no rebuild.
 
 ## The reranked window, calibrated
 

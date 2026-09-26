@@ -1764,9 +1764,11 @@ async def _assert_relevance_gates_allow_abstention(project: Path) -> None:
         "bm25_no_query_token_overlap": 1,
         "bm25_extraction_artifact": 0,
         "bm25_corrupt_text": 0,
+        "bm25_too_short": 0,
         "dense_below_threshold": 1,
         "dense_extraction_artifact": 0,
         "dense_corrupt_text": 0,
+        "dense_too_short": 0,
     }
 
     relevant = await service.search("Lenovo", top_k=8)
@@ -1869,6 +1871,66 @@ async def _assert_a_dense_band_below_the_floor_is_not_arbitrary(project: Path) -
 
 def test_a_dense_band_below_the_floor_is_not_arbitrary(project: Path) -> None:
     asyncio.run(_assert_a_dense_band_below_the_floor_is_not_arbitrary(project))
+
+
+async def _assert_a_short_fragment_is_not_evidence(project: Path) -> None:
+    """An index line matches a query about its own words, so length decides.
+
+    Chunks never span extraction units, so one short unit becomes one short chunk
+    that can outrank prose: a five-word index entry contains the query's words and
+    nothing to cite. The floor admits it, the diversity rule cannot see it, and
+    the reranker scores it as relevant — only a length rule separates it from a
+    passage. The rule ships off, and this is what turning it on does.
+    """
+
+    write_pdf(project / "sources" / "fragment.pdf", ["Waste, 12-14"], title="Index")
+    write_pdf(
+        project / "sources" / "prose.pdf",
+        [
+            (
+                "Waste from data infrastructure accumulates in landfills and in the "
+                "water table around them, and the extraction feeding it leaves "
+                "trails of its own across the regions that host the servers."
+            )
+        ],
+        title="Prose",
+    )
+
+    async def search_with(minimum: int) -> dict:
+        service = ResearchService(  # type: ignore[arg-type]
+            resolve_config(
+                project,
+                vanilla_executable=sys.executable,
+                settings_overrides=[f"retrieval.minimum_passage_words={minimum}"],
+            ),
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10, force_recompute=True)
+        return await service.search("waste", top_k=5)
+
+    everything = await search_with(minimum=0)
+    assert everything["result_count"] == 2
+    assert everything["rejected_candidates"]["bm25_too_short"] == 0
+    assert everything["rejected_candidates"]["dense_too_short"] == 0
+    assert everything["passage_length_policy"]["minimum_words"] == 0
+
+    evidence_only = await search_with(minimum=12)
+    assert [hit["source_relative_path"] for hit in evidence_only["hits"]] == [
+        "prose.pdf"
+    ]
+    assert evidence_only["rejected_candidates"]["bm25_too_short"] == 1
+    assert evidence_only["rejected_candidates"]["dense_too_short"] == 1
+    assert evidence_only["passage_length_policy"]["minimum_words"] == 12
+    examples = evidence_only["rejected_candidate_examples"]["reasons"]
+    assert {
+        example["source_relative_path"]
+        for example in examples["dense_too_short"] + examples["bm25_too_short"]
+    } == {"fragment.pdf"}
+
+
+def test_a_short_fragment_is_not_evidence(project: Path) -> None:
+    asyncio.run(_assert_a_short_fragment_is_not_evidence(project))
 
 
 async def _assert_no_change_ingest_is_noop_and_force_rebuilds(project: Path) -> None:

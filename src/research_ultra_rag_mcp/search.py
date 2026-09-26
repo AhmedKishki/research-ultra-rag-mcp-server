@@ -80,6 +80,37 @@ class SearchWorkflow:
             )
         )
 
+    def _passage_too_short(self, chunk: dict[str, Any]) -> bool:
+        """True when a candidate carries too few words to be cited as evidence."""
+
+        minimum = self.config.settings.minimum_passage_words
+        return minimum > 0 and len(_chunk_text(chunk).split()) < minimum
+
+    def _record_rejected_candidate(
+        self,
+        examples: dict[str, list[dict[str, Any]]],
+        *,
+        reason: str,
+        chunk: dict[str, Any],
+        documents_by_id: dict[str, dict[str, Any]],
+        cosine_similarity: float | None = None,
+    ) -> None:
+        """Name a dropped candidate's source, up to the configured example limit."""
+
+        bucket = examples.setdefault(reason, [])
+        if len(bucket) >= self.config.settings.maximum_withheld_examples:
+            return
+        document = _document_for_chunk(chunk, documents_by_id)
+        entry: dict[str, Any] = {
+            "chunk_id": str(chunk["chunk_id"]),
+            "source_relative_path": _public_document(document).get(
+                "source_relative_path"
+            ),
+        }
+        if cosine_similarity is not None:
+            entry["cosine_similarity"] = cosine_similarity
+        bucket.append(entry)
+
     async def _bm25_ranking(
         self,
         query: str,
@@ -95,7 +126,12 @@ class SearchWorkflow:
         document_filter: set[str],
         excluded_document_ids: set[str],
         withheld: dict[str, dict[str, Any]],
-    ) -> tuple[list[str], dict[str, int], dict[str, dict[str, Any]]]:
+    ) -> tuple[
+        list[str],
+        dict[str, int],
+        dict[str, dict[str, Any]],
+        dict[str, list[dict[str, Any]]],
+    ]:
         if limit <= 0:
             return (
                 [],
@@ -103,7 +139,9 @@ class SearchWorkflow:
                     "no_query_token_overlap": 0,
                     "extraction_artifact": 0,
                     "corrupt_text": 0,
+                    "too_short": 0,
                 },
+                {},
                 {},
             )
         filtered = bool(
@@ -146,7 +184,9 @@ class SearchWorkflow:
                 "no_query_token_overlap": 0,
                 "extraction_artifact": 0,
                 "corrupt_text": 0,
+                "too_short": 0,
             }
+            rejected_examples: dict[str, list[dict[str, Any]]] = {}
             for passage in passages:
                 candidates = by_contents.get(passage)
                 if not candidates:
@@ -201,6 +241,15 @@ class SearchWorkflow:
                 if not query_tokens.intersection(tokens):
                     rejected["no_query_token_overlap"] += 1
                     continue
+                if self._passage_too_short(chunk):
+                    rejected["too_short"] += 1
+                    self._record_rejected_candidate(
+                        rejected_examples,
+                        reason="bm25_too_short",
+                        chunk=chunk,
+                        documents_by_id=documents_by_id,
+                    )
+                    continue
                 ranking.append(chunk_id)
                 if len(ranking) == limit:
                     break
@@ -211,7 +260,7 @@ class SearchWorkflow:
                 or requested >= total_chunk_count
                 or len(passages) < requested
             ):
-                return ranking, rejected, resolved
+                return ranking, rejected, resolved, rejected_examples
             requested = min(total_chunk_count, requested * 2)
 
     @staticmethod
@@ -430,10 +479,12 @@ class SearchWorkflow:
             bm25_ranking: list[str] = []
             dense_hits: list[DenseSearchHit] = []
             withheld: dict[str, dict[str, Any]] = {}
+            bm25_examples: dict[str, list[dict[str, Any]]] = {}
             bm25_rejected = {
                 "no_query_token_overlap": 0,
                 "extraction_artifact": 0,
                 "corrupt_text": 0,
+                "too_short": 0,
             }
 
             async def search_dense() -> list[DenseSearchHit]:
@@ -469,10 +520,20 @@ class SearchWorkflow:
                     ),
                     search_dense(),
                 )
-                bm25_ranking, bm25_rejected, bm25_chunks = bm25_result
+                (
+                    bm25_ranking,
+                    bm25_rejected,
+                    bm25_chunks,
+                    bm25_examples,
+                ) = bm25_result
                 chunks_by_id.update(bm25_chunks)
             elif use_bm25:
-                bm25_ranking, bm25_rejected, bm25_chunks = await self._bm25_ranking(
+                (
+                    bm25_ranking,
+                    bm25_rejected,
+                    bm25_chunks,
+                    bm25_examples,
+                ) = await self._bm25_ranking(
                     query,
                     lookup,
                     total_chunk_count,
@@ -519,6 +580,7 @@ class SearchWorkflow:
                         bm25_ranking,
                         bm25_rejected,
                         bm25_chunks,
+                        bm25_examples,
                     ) = await self._bm25_ranking(
                         f"{query} {' '.join(prf_terms)}",
                         lookup,
@@ -547,6 +609,8 @@ class SearchWorkflow:
             dense_below_threshold_rescued = 0
             dense_quality_rejected = 0
             dense_corrupt_text_rejected = 0
+            dense_too_short = 0
+            dense_rejected_examples: dict[str, list[dict[str, Any]]] = {}
             # Every non-score filter runs first, so the score decision below sees
             # only candidates the corpus can actually offer.
             eligible_dense_hits: list[tuple[DenseSearchHit, dict[str, Any]]] = []
@@ -581,6 +645,15 @@ class SearchWorkflow:
                     excluded_document_ids=excluded_document_ids,
                 ):
                     continue
+                if self._passage_too_short(chunk):
+                    dense_too_short += 1
+                    self._record_rejected_candidate(
+                        dense_rejected_examples,
+                        reason="dense_too_short",
+                        chunk=chunk,
+                        documents_by_id=documents_by_id,
+                    )
+                    continue
                 eligible_dense_hits.append((dense_hit, chunk))
             # The floor is absolute, and a query whose best passage still scores
             # below it can have its whole candidate list packed into a band under
@@ -601,7 +674,6 @@ class SearchWorkflow:
                 and best_dense_score >= dense_floor
             ):
                 admission_floor = min(dense_floor, best_dense_score - dense_margin)
-            dense_rejected_examples: list[dict[str, Any]] = []
             for dense_hit, chunk in eligible_dense_hits:
                 if dense_hit.score >= admission_floor:
                     if dense_hit.score < dense_floor:
@@ -609,20 +681,13 @@ class SearchWorkflow:
                     accepted_dense_hits.append(dense_hit)
                     continue
                 dense_below_threshold += 1
-                if (
-                    len(dense_rejected_examples)
-                    < self.config.settings.maximum_withheld_examples
-                ):
-                    document = _document_for_chunk(chunk, documents_by_id)
-                    dense_rejected_examples.append(
-                        {
-                            "chunk_id": dense_hit.chunk_id,
-                            "source_relative_path": _public_document(document).get(
-                                "source_relative_path"
-                            ),
-                            "cosine_similarity": round(dense_hit.score, 4),
-                        }
-                    )
+                self._record_rejected_candidate(
+                    dense_rejected_examples,
+                    reason="dense_below_threshold",
+                    chunk=chunk,
+                    documents_by_id=documents_by_id,
+                    cosine_similarity=round(dense_hit.score, 4),
+                )
             dense_hits = accepted_dense_hits
             dense_ranking = [hit.chunk_id for hit in dense_hits]
             dense_scores = {hit.chunk_id: hit.score for hit in dense_hits}
@@ -852,15 +917,27 @@ class SearchWorkflow:
                         "is why the margin exists."
                     ),
                 },
+                "passage_length_policy": {
+                    "minimum_words": self.config.settings.minimum_passage_words,
+                    "note": (
+                        "A candidate with fewer words than this is dropped before "
+                        "fusion. Chunks never span extraction units, so an index "
+                        "line, a heading, or a copyright line becomes a chunk that "
+                        "matches a query about its own words while carrying no "
+                        "prose to cite."
+                    ),
+                },
                 "rejected_candidates": {
                     "bm25_no_query_token_overlap": bm25_rejected[
                         "no_query_token_overlap"
                     ],
                     "bm25_extraction_artifact": bm25_rejected["extraction_artifact"],
                     "bm25_corrupt_text": bm25_rejected["corrupt_text"],
+                    "bm25_too_short": bm25_rejected["too_short"],
                     "dense_below_threshold": dense_below_threshold,
                     "dense_extraction_artifact": dense_quality_rejected,
                     "dense_corrupt_text": dense_corrupt_text_rejected,
+                    "dense_too_short": dense_too_short,
                 },
                 "withheld_candidates": {
                     "policy": "corruption_evidence_only",
@@ -892,7 +969,13 @@ class SearchWorkflow:
                         "silent."
                     ),
                     "reasons": {
-                        "dense_below_threshold": dense_rejected_examples,
+                        "bm25_too_short": bm25_examples.get("bm25_too_short", []),
+                        "dense_below_threshold": dense_rejected_examples.get(
+                            "dense_below_threshold", []
+                        ),
+                        "dense_too_short": dense_rejected_examples.get(
+                            "dense_too_short", []
+                        ),
                     },
                 },
                 "dense_fidelity": {

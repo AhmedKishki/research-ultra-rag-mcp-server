@@ -542,6 +542,23 @@ SETTINGS: tuple[Setting, ...] = (
         maximum=0.5,
         env="RESEARCH_ULTRARAG_RETRIEVAL_DENSE_RELATIVE_SIMILARITY_MARGIN",
     ),
+    Setting(
+        key="retrieval.minimum_passage_words",
+        field="minimum_passage_words",
+        kind=int,
+        layer="runtime",
+        doc=(
+            "Words a candidate's cleaned text must have before it can be "
+            "evidence. Chunks never span extraction units, so a short unit — an "
+            "index line, a heading, a copyright line, a caption — becomes a short "
+            "chunk that matches a query about its own words while carrying no "
+            "prose to cite. 0 admits every candidate. Runtime: it filters a query "
+            "and changes no artifact."
+        ),
+        minimum=0,
+        maximum=400,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_MINIMUM_PASSAGE_WORDS",
+    ),
     # --- Chunking: what a chunk is. Recorded per generation. ---
     Setting(
         key="chunking.size",
@@ -842,6 +859,7 @@ class EffectiveSettings:
     maximum_withheld_examples: int
     source_diversity_penalty: float
     dense_relative_similarity_margin: float
+    minimum_passage_words: int
     chunk_size: int
     chunk_overlap: int
     chunk_headers: bool
