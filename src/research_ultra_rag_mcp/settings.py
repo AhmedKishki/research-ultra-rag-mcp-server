@@ -139,6 +139,11 @@ LOG_LEVELS = ("debug", "info", "warn", "error")
 DENSE_BACKENDS = ("auto", "exact", "qdrant")
 DEFAULT_LANGUAGE = "en"
 LANGUAGE_PATTERN = r"^[a-z]{2,3}$"
+# The longest one ingest call may be told to run. A caller driving a build in one
+# call sets the budget below its own client's request timeout; a caller that wraps
+# this server in another process has to allow longer than this, or the wrapper's
+# timeout fires first and the work continues unseen.
+MAXIMUM_WORK_BUDGET_SECONDS = 3600
 
 # bm25s ships a stopword list for exactly these languages and rejects every other
 # name, so a corpus language outside this set has to fail here: the BM25 index is
@@ -555,10 +560,13 @@ SETTINGS: tuple[Setting, ...] = (
         layer="runtime",
         doc=(
             "Soft time budget for one ingest call; exhausting it returns a "
-            "checkpointed in_progress result instead of losing work."
+            "checkpointed in_progress result instead of losing work. A build larger "
+            "than one budget needs one call per slice, which an agent whose client "
+            "stops repeating identical calls cannot finish: set this below that "
+            "client's own request timeout so a single call can carry the build."
         ),
         minimum=10,
-        maximum=300,
+        maximum=MAXIMUM_WORK_BUDGET_SECONDS,
         env="RESEARCH_ULTRARAG_INGESTION_WORK_BUDGET_SECONDS",
     ),
     Setting(

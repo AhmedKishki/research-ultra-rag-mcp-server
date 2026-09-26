@@ -272,7 +272,13 @@ def create_server(
 
         Writes persistent state and may download a model, so get the user's
         agreement first. A long build answers status=in_progress: call it again
-        until it returns ready or unchanged, then report what changed.
+        until it returns ready or unchanged, then report what changed. One call
+        covers at most `ingestion.work_budget_seconds` of work, so a build larger
+        than that budget needs repeated identical calls; a client that stops
+        repeating them cannot finish it, and the project's own config is where the
+        budget is raised. A rejected call means another process holds the project
+        and its message names that build; progress that goes backwards is reported
+        as `superseded_build`, because a changed corpus cannot resume the old one.
         """
 
         return _present(

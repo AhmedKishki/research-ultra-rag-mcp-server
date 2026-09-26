@@ -15,6 +15,7 @@ from research_ultra_rag_mcp.config import (
 )
 from research_ultra_rag_mcp.service import retrieval_policy_fingerprint
 from research_ultra_rag_mcp.settings import (
+    MAXIMUM_WORK_BUDGET_SECONDS,
     SETTINGS,
     SettingsError,
     default_config_path,
@@ -124,6 +125,32 @@ def test_out_of_bounds_and_cross_field_values_are_refused(tmp_path: Path) -> Non
 
     with pytest.raises(SettingsError, match="must be true or false"):
         resolve_settings(tmp_path, overrides=["runtime.offline=maybe"], environ={})
+
+
+def test_the_ingest_budget_can_cover_a_whole_build(tmp_path: Path) -> None:
+    """A caller that can wait has to be able to set a budget that finishes the work.
+
+    With a cap of five minutes, a long build needs one call per slice, and a client
+    that stops repeating identical calls cannot finish it at all: an agent hit that
+    wall, its MCP request timed out after an hour, and the build was finished by
+    hand from the browser instead.
+    """
+
+    settings, _provenance = resolve_settings(
+        tmp_path,
+        overrides=[f"ingestion.work_budget_seconds={MAXIMUM_WORK_BUDGET_SECONDS}"],
+        environ={},
+    )
+    assert settings.work_budget_seconds == MAXIMUM_WORK_BUDGET_SECONDS
+
+    with pytest.raises(SettingsError, match="at most"):
+        resolve_settings(
+            tmp_path,
+            overrides=[
+                f"ingestion.work_budget_seconds={MAXIMUM_WORK_BUDGET_SECONDS + 1}"
+            ],
+            environ={},
+        )
 
 
 def test_a_symlinked_config_layer_is_refused(tmp_path: Path) -> None:

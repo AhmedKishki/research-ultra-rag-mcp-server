@@ -13,8 +13,16 @@ from fastmcp import Client
 
 from .config import configured_source_directory, resolve_config
 from .rerankers import RERANKER_MODEL_CHOICES
-from .settings import FULL_TOOL_DETAIL, describe_settings
+from .settings import (
+    FULL_TOOL_DETAIL,
+    MAXIMUM_WORK_BUDGET_SECONDS,
+    describe_settings,
+)
 from .transport import create_research_transport
+
+# How long the verifier waits for one tool call, for the same reason the UI does:
+# it has to outlast the longest an ingest call may be told to run.
+VERIFY_TOOL_TIMEOUT_SECONDS = MAXIMUM_WORK_BUDGET_SECONDS + 600
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -123,7 +131,7 @@ async def _ingest_until_complete(
             await client.call_tool(
                 "ingest",
                 arguments,
-                timeout=1800,
+                timeout=VERIFY_TOOL_TIMEOUT_SECONDS,
             )
         ).data
         if ingestion.get("status") != "in_progress":
@@ -162,7 +170,11 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         tool_detail=FULL_TOOL_DETAIL,
     )
 
-    async with Client(transport, timeout=1800, init_timeout=1800) as client:
+    async with Client(
+        transport,
+        timeout=VERIFY_TOOL_TIMEOUT_SECONDS,
+        init_timeout=VERIFY_TOOL_TIMEOUT_SECONDS,
+    ) as client:
         tools = {tool.name for tool in await client.list_tools()}
         required = {"status", "ingest", "search"}
         if missing := required - tools:
@@ -185,7 +197,7 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
             await client.call_tool(
                 "search",
                 {"query": args.query, "top_k": args.top_k},
-                timeout=1800,
+                timeout=VERIFY_TOOL_TIMEOUT_SECONDS,
             )
         ).data
     return {

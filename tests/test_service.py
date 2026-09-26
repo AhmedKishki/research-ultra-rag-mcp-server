@@ -5,12 +5,14 @@ import json
 import math
 import os
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 from conftest import write_epub, write_pdf, write_reviewed_metadata
+from filelock import AsyncFileLock
 
 import research_ultra_rag_mcp.service as service_module
 import research_ultra_rag_mcp.support as support_module
@@ -2758,6 +2760,41 @@ def test_cancelled_ingestion_preserves_its_checkpoint(project: Path) -> None:
     asyncio.run(_assert_cancelled_ingestion_preserves_its_checkpoint(project))
 
 
+def test_a_build_replaced_by_a_source_change_says_so(project: Path) -> None:
+    """Progress that restarts has to say why.
+
+    A checkpoint cannot be resumed once the corpus changed, so the build behind it
+    is discarded. Unreported, a caller looping on ingest reads that as its own
+    mistake and repeats the same call, which is exactly what an agent did for ten
+    hours while sources were being added.
+    """
+
+    async def exercise() -> None:
+        write_pdf(project / "sources" / "article.pdf", ["Stable research evidence."])
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config,
+            CancelOnceUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await service.ingest(chunk_size=50, chunk_overlap=10)
+        staged = json.loads(
+            (next(config.staging_root.iterdir()) / "checkpoint.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        write_pdf(project / "sources" / "added.pdf", ["Additional evidence."])
+        result = await service.ingest(chunk_size=50, chunk_overlap=10)
+
+        assert result["superseded_build"]["build_id"] == staged["build_id"]
+        assert result["superseded_build"]["phase"] == staged["phase"]
+        assert "discarded" in str(result["message"])
+
+    asyncio.run(exercise())
+
+
 @pytest.mark.parametrize("reuse_existing", [False, True])
 def test_restart_reconciles_completed_extraction_before_checkpoint(
     project: Path,
@@ -2870,7 +2907,7 @@ async def _assert_incompatible_force_mode_supersedes_checkpoint(
             encoding="utf-8"
         )
     )
-    assert "checkpoint superseded" in failure["error"]
+    assert "could not be resumed" in failure["error"]
 
 
 def test_incompatible_force_mode_supersedes_checkpoint(
@@ -4129,5 +4166,33 @@ def test_reviewed_language_filters_a_search(project: Path) -> None:
             "commodity fetishism labour", top_k=10, languages_any=["en"]
         )
         assert {hit["title"] for hit in english["hits"]} == {"English Article"}
+
+    asyncio.run(exercise())
+
+
+def test_a_busy_project_is_reported_rather_than_waited_for(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller must not sit in silence behind another process's build.
+
+    The project lock serialises builds, which is right, but waiting one out
+    outlasts the client that asked: a long wait turns a busy project into a client
+    timeout while the work the caller was queued behind carries on unseen.
+    """
+
+    async def exercise() -> None:
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        # The wait is a property of the service, so shorten it before construction.
+        monkeypatch.setattr(service_module, "PROJECT_LOCK_TIMEOUT_SECONDS", 0.2)
+        service = ResearchService(  # type: ignore[arg-type]
+            config, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        holder = AsyncFileLock(config.state_root / "project.lock", timeout=1)
+        started = time.perf_counter()
+        async with holder:
+            with pytest.raises(ResearchError, match="Another research process"):
+                await service.ingest(chunk_size=50, chunk_overlap=10)
+        assert time.perf_counter() - started < 5
 
     asyncio.run(exercise())

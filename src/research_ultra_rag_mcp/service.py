@@ -138,6 +138,11 @@ from .version import version_block
 
 INGESTION_CHECKPOINT_VERSION = 1
 PENDING_ACTIVATION_VERSION = 1
+# How long a caller waits for another process's project lock before being told the
+# project is busy. Waiting longer does not help the caller: an MCP client gives up
+# on the request long before a build ends, and the work it was waiting for goes on
+# unseen. Reporting the resident build is more useful than outlasting the client.
+PROJECT_LOCK_TIMEOUT_SECONDS = 20
 # The retrieval policy is fixed here — the tool offers exactly one way to
 # search — while the numbers that shape it live in the settings file, so fusion
 # weights, gates, batch sizes, and budgets are tunable without editing code.
@@ -204,7 +209,12 @@ class ResearchService:
         self._lock = asyncio.Lock()
         self._project_lock = AsyncFileLock(
             config.state_root / "project.lock",
-            timeout=1800,
+            # A caller must not sit in silence behind another build. A long build
+            # is driven by repeated short calls so that one caller never blocks
+            # another for minutes, and waiting here turns a busy project into a
+            # client timeout: the MCP client gives up long before the wait ends,
+            # and the work continues unseen.
+            timeout=PROJECT_LOCK_TIMEOUT_SECONDS,
         )
         self._loaded_generation: str | None = None
         # Term rarity for pseudo-relevance feedback, as (generation id, table).
@@ -222,8 +232,49 @@ class ResearchService:
                     yield
             except FileLockTimeout as exc:
                 raise ResearchError(
-                    "Timed out waiting for another research process to finish"
+                    "Another research process is working on this project"
+                    + self._resident_build_note()
+                    + ". Its work is not lost: call this again once it finishes, or "
+                    "stop that process first."
                 ) from exc
+
+    def _resident_build_note(self) -> str:
+        """Describe the build another process is running, when one is visible.
+
+        Read-only and best-effort: the note exists so that a caller told the
+        project is busy can see whether the resident build is moving, instead of
+        deciding between waiting blind and killing it.
+        """
+
+        try:
+            roots = sorted(
+                self.config.staging_root.iterdir(),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return ""
+        for root in roots:
+            checkpoint_path = root / "checkpoint.json"
+            if not checkpoint_path.is_file():
+                continue
+            try:
+                checkpoint = read_json(checkpoint_path)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(checkpoint, dict):
+                continue
+            phase = str(checkpoint.get("phase") or "an unknown phase")
+            progress = self._ingestion_progress(checkpoint).get("progress") or {}
+            completed = progress.get("completed")
+            total = progress.get("total")
+            if completed is None or not total:
+                return f" (build {checkpoint.get('build_id')}, in {phase})"
+            return (
+                f" (build {checkpoint.get('build_id')}, in {phase}, "
+                f"{completed} of {total})"
+            )
+        return ""
 
     @staticmethod
     def _dense_backend_name(manifest: dict[str, Any] | None) -> str:
@@ -3245,11 +3296,22 @@ class ResearchService:
             if recovered is not None:
                 return recovered
             existing = self._load_ingestion_checkpoint()
+            superseded_build: dict[str, Any] | None = None
             if existing is not None and existing[1].get("identity") != identity:
+                superseded_checkpoint = dict(existing[1])
+                superseded_build = {
+                    "build_id": str(superseded_checkpoint.get("build_id") or ""),
+                    "phase": str(superseded_checkpoint.get("phase") or ""),
+                    "reason": (
+                        "The sources or the ingestion parameters changed since that "
+                        "build was checkpointed, so it could not be resumed and was "
+                        "discarded."
+                    ),
+                }
                 self._discard_checkpoint(
                     existing[0],
-                    existing[1],
-                    reason="Ingestion inputs or parameters changed; checkpoint superseded",
+                    superseded_checkpoint,
+                    reason=str(superseded_build["reason"]),
                 )
                 existing = None
             if existing is None:
@@ -3271,7 +3333,7 @@ class ResearchService:
                 self._write_checkpoint(staging_root, checkpoint)
 
             try:
-                return await self._advance_ingestion(
+                result = await self._advance_ingestion(
                     staging_root=staging_root,
                     checkpoint=checkpoint,
                     scan=scan,
@@ -3346,6 +3408,17 @@ class ResearchService:
                         reason=str(exc),
                     )
                 raise
+            if superseded_build is not None:
+                # Progress that goes backwards has to be explained: a caller looping
+                # on ingest otherwise reads a discarded build as its own mistake and
+                # retries the same call, which is what it will do again.
+                result["superseded_build"] = superseded_build
+                result["message"] = (
+                    f"Build {superseded_build['build_id']} was discarded because the "
+                    "corpus changed since it was checkpointed, so this build starts "
+                    "from the beginning. " + str(result.get("message") or "")
+                ).strip()
+            return result
 
     async def _ensure_loaded(
         self,

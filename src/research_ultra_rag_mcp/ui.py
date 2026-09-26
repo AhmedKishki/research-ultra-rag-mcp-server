@@ -33,7 +33,11 @@ from .config import (
     resolve_source_reference,
 )
 from .rerankers import RERANKER_MODEL_CHOICES
-from .settings import FULL_TOOL_DETAIL, describe_settings
+from .settings import (
+    FULL_TOOL_DETAIL,
+    MAXIMUM_WORK_BUDGET_SECONDS,
+    describe_settings,
+)
 from .sources import SourcePolicyError, scan_sources
 from .transport import create_research_transport
 from .version import version_label
@@ -43,6 +47,10 @@ if TYPE_CHECKING:
 
 UI_NAME = "research-ultra-rag-ui"
 MAX_ERROR_LENGTH = 1200
+# How long the adapter waits for one tool call. It has to outlast the longest an
+# ingest call may be told to run, or this wrapper gives up first and the build it
+# was waiting for carries on with nobody watching.
+UI_TOOL_TIMEOUT_SECONDS = MAXIMUM_WORK_BUDGET_SECONDS + 600
 # Matches uvicorn's own default accept backlog, so a claimed socket is in the
 # state uvicorn would have created for itself.
 _CLAIM_BACKLOG = 2048
@@ -146,7 +154,7 @@ class ResearchUIAdapter:
                 result = await self.client.call_tool(
                     operation,
                     forwarded,
-                    timeout=1800,
+                    timeout=UI_TOOL_TIMEOUT_SECONDS,
                     raise_on_error=True,
                 )
             except Exception as exc:
@@ -197,8 +205,8 @@ def _adapter_factory(config: ResearchConfig) -> AdapterFactory:
         async with Client(
             transport,
             name=UI_NAME,
-            timeout=1800,
-            init_timeout=1800,
+            timeout=UI_TOOL_TIMEOUT_SECONDS,
+            init_timeout=UI_TOOL_TIMEOUT_SECONDS,
         ) as client:
             yield ResearchUIAdapter(config, client)
 

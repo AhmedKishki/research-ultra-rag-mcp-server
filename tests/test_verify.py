@@ -34,7 +34,10 @@ def test_verifier_repeats_checkpointed_ingestion_until_terminal() -> None:
     result = asyncio.run(_ingest_until_complete(client, arguments))
 
     assert result == {"status": "ready", "call": 3}
-    assert client.calls == [("ingest", arguments, 1800)] * 3
+    assert (
+        client.calls
+        == [("ingest", arguments, verify_module.VERIFY_TOOL_TIMEOUT_SECONDS)] * 3
+    )
 
 
 class VerificationClient:
