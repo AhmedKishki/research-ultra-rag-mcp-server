@@ -117,7 +117,7 @@ batch_units = 16
 # in_progress result rather than losing work. A build larger than one budget needs
 # one call per slice, so a client that stops repeating identical calls needs this
 # set below its own request timeout, high enough that one call carries the build.
-work_budget_seconds = 45
+work_budget_seconds = 1800
 # Chunks embedded per gateway call, and PDF pages extracted per call. Throughput only.
 embedding_batch_size = 64
 pdf_page_batch_size = 8
