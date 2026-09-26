@@ -41,7 +41,6 @@ Three of ten judged paraphrase queries miss the designated passage within the to
 - [ ] **Merge the stopword lists of a mixed corpus.** Feature. `language.corpus` can name several languages while BM25 filters the one list in `language.bm25_stopwords`, and per-source `language` metadata now reports which sources are which. bm25s accepts a list, so the union is expressible: check that the pinned runtime passes a list through `bm25.lang`, then measure the union against a single list.
 - [ ] **An Arabic stopword source.** Feature. bm25s ships no Arabic list, so `language.corpus = "ar"` is refused while settings are read even though a source can declare Arabic. Add an explicit list option, or an empty list that filters nothing, plus an Arabic-capable model in the pinned table.
 - [ ] **Keep the measurement current and wider.** Test. Re-run `scripts/evaluate_retrieval.py` when the corpus, the extraction policy, or a retrieval default changes, and add a second corpus and filtered queries.
-- [ ] **Re-measure the `search` row of the tool-answer table.** Test. `MEASUREMENTS.md` carries the pre-trim figure and says why it has to be taken again.
 
 ## Keeping the code changeable
 

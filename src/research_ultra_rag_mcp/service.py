@@ -4235,11 +4235,6 @@ class ResearchService:
                 "distinct_reference_count": distinct_reference_count,
                 "relevance_limited": relevance_limited,
                 "hits": hits,
-                "notice": (
-                    "Returned text is cleaned for semantic retrieval and is not "
-                    "quote-safe. Open the original PDF or EPUB at the supplied "
-                    "locator for direct quotation."
-                ),
             }
 
     async def list_sources(self) -> dict[str, Any]:
@@ -4403,8 +4398,4 @@ class ResearchService:
                 "generation_id": manifest["generation_id"],
                 "requested_chunk_id": chunk_id,
                 "context": context,
-                "notice": (
-                    "Context is cleaned semantic text and is not quote-safe. Open "
-                    "the original source at the supplied locator for quotations."
-                ),
             }

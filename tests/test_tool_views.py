@@ -156,14 +156,12 @@ def test_passage_context_is_lean_and_keeps_no_rank() -> None:
         "generation_id": "20260101T000000Z-abcdef",
         "requested_chunk_id": "chk_one",
         "context": [{key: value for key, value in _hit().items() if key != "rank"}],
-        "notice": "Context is cleaned semantic text and is not quote-safe.",
     }
     lean = present_tool_response("get_passage", payload, detail=LEAN_TOOL_DETAIL)
 
     assert set(lean) == {"generation_id", "requested_chunk_id", "context"}
     assert "rank" not in lean["context"][0]
     assert "direct_quote_safe" not in lean["context"][0]
-    assert "notice" not in lean
 
 
 def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
@@ -612,7 +610,6 @@ def _search_payload(**overrides: object) -> dict[str, object]:
         "distinct_reference_count": 2,
         "relevance_limited": False,
         "hits": [_hit(), _anonymous_hit()],
-        "notice": "Returned text is cleaned for semantic retrieval.",
     }
     payload.update(overrides)
     return payload
@@ -804,7 +801,6 @@ def _every_tool_payload() -> dict[str, dict[str, object]]:
             "generation_id": "20260101T000000Z-abcdef",
             "requested_chunk_id": "chk_one",
             "context": [_hit()],
-            "notice": "Context is cleaned semantic text and is not quote-safe.",
         },
         "set_source_inclusion": {
             "status": "changed",

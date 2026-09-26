@@ -168,7 +168,7 @@ The upstream interface is bound to upstream pipeline and session state, and it e
 These are choices, not missing pieces. Each one would change what the server is:
 
 - **It does not generate answers.** It returns evidence candidates with provenance; the agent and the researcher interpret them.
-- **It does not provide quote-safe transcripts.** Returned text is cleaned for retrieval, so it is never a transcript and never safe to quote; the tool description says that once, and the per-passage flag stays in the full-detail payload. Open the original.
+- **It does not provide quote-safe transcripts.** Text comes back cleaned for retrieval, so a quotation is taken from the original.
 - **It does not decide what is true, and never deletes or excludes sources on its own.** Duplicate and metadata decisions are reviewed and reversible.
 - **It does not run OCR.** Scanned PDFs need OCR first; password-protected PDFs are rejected.
 - **It is English by default, not by design.** Extraction is language-neutral, and the two stages that depend on language are settings: `language.corpus` names the corpus languages — one, or several for a mixed corpus, with `language.bm25_stopwords` choosing the single list BM25 filters — and `dense.embedding_model` chooses the embedding model, with a German-native model and a multilingual one that covers a mixed corpus in the pinned table. The default stays English, retrieval quality has not been measured on another language yet, and a corpus language the chosen model does not cover is reported by `status`.

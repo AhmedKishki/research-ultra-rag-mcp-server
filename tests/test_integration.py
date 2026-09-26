@@ -327,7 +327,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert corrected_passage["authors"] == ["Field Researcher"]
         assert corrected_passage["locator"] == {"page": 1}
         assert "categories" not in corrected_passage
-        assert "notice" not in corrected_context.data
+        assert corrected_context.data["requested_chunk_id"] == hit["chunk_id"]
 
         filtered_out = await client.call_tool(
             "search",

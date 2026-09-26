@@ -69,12 +69,9 @@ RESEARCH_UI_PROFILE = UIProfile(
     ingest_busy_message=(
         "Building BM25 and dense indexes. This can take several minutes…"
     ),
-    footer_text=(
-        "Retrieved text is cleaned for semantic use. Open the original PDF or "
-        "EPUB before quoting."
-    ),
-    result_text_label="Cleaned semantic text — not for direct quotation",
-    copy_text_label="Copy semantic text",
+    # The shared UI's neutral labels apply here: the quote rule is stated once
+    # for a reader in README.md and once for an agent in the tool description,
+    # not on every passage a browser renders.
     capabilities=UICapabilities(
         metadata=True,
         force_recompute=True,

@@ -249,7 +249,9 @@ def test_ui_serves_workspace_and_read_apis(project: Path) -> None:
     assert profile.json()["capabilities"]["retrieval_modes"] is False
     assert profile.json()["capabilities"]["reranking"] is False
     assert profile.json()["capabilities"]["chunk_settings"] is False
-    assert profile.json()["result_text_label"].startswith("Cleaned semantic text")
+    # The adapter leaves the shared UI's neutral result label in place: the quote
+    # rule is stated once for a reader and once for an agent, not per passage.
+    assert "not for direct quotation" not in json.dumps(profile.json()).lower()
     assert status.json()["generation_id"] == "generation-1"
     assert sources.json()["sources"][0]["title"] == "Evidence"
     assert context.json()["requested_chunk_id"] == "chunk-1"
