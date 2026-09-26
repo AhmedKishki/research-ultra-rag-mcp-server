@@ -20,6 +20,7 @@ dependencies = [
     "numpy>=1.26,<3",
     "platformdirs>=4.3,<5",
     "tokenizers>=0.20,<1",
+    "tokie>=0.1,<1",
     "pydantic>=2.12,<3",
     "pymupdf>=1.26,<2",
     "qdrant-client==1.19.1",

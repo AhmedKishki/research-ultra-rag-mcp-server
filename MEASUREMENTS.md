@@ -354,6 +354,98 @@ The shipped path is unchanged to four decimals, dense-only improves because a fr
 
 Twelve words removes 16.6% of the corpus's chunks; twenty removes 22.9% and also drops 12-to-19-word captions and copyright lines. Like the margin, the setting is runtime and enters neither the fingerprint nor the manifest, so it applies at the next search with no rebuild.
 
+### The same floor in the chunker's own unit
+
+`retrieval.minimum_passage_token_fraction` states the floor as a fraction of the generation's recorded `chunking.size`, counted with the tokenizer that generation was chunked by. It exists because "short" is a unit question: a chunk is built to hold `chunking.size` tokens, so a candidate holding a tenth of that is a fragment whatever its word count, while 12 words is a different quantity on every corpus.
+
+What the reference corpus is made of, counted with that tokenizer (19,400 chunks, 81 documents):
+
+| Measure | Value |
+|---|---|
+| tokens per chunk | min 1, p10 10, median 148, mean 185.5, p90 384, max 386 |
+| content kinds | prose 17,325, figure 1,280, list 754, table 41 |
+| chunks under 19 tokens (5% of 384) | 2,929 (15.1%), holding 0.7% of the corpus's tokens |
+| chunks under 38 tokens (10%) | 4,583 (23.6%), holding 1.9% |
+| chunks under 57 tokens (15%) | 5,885 (30.3%), holding 3.6% |
+
+A quarter of the chunks are fragments and they carry under two percent of the text. The count is taken over the returned text, which is cleaned after chunking: re-chunking the corpus's own units at the recorded configuration and counting the result with the same tokenizer gives a maximum of exactly 384, so the stored corpus's 386-token maximum is cleaning rather than a counting mismatch, and a token or two cannot matter at a tenth of the chunk size.
+
+Judged-set rows, 30 queries over 18 resolvable targets at `top_k=10`, same generation, `minimum_passage_words=0` so the fraction is the only length rule:
+
+| Mode | Fraction | Floor | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean sources |
+|---|---|---|---|---|---|---|---|---|---|
+| dense | 0 | 0 | 26.7% | 43.3% | 60.0% | 0.371 | 0.426 | 63.3% | 2.1 |
+| dense | 0.05 | 19 | 26.7% | 43.3% | **63.3%** | **0.375** | **0.436** | **66.7%** | **2.2** |
+| dense | **0.10** | 38 | 26.7% | 43.3% | **63.3%** | **0.375** | **0.437** | **66.7%** | **2.3** |
+| hybrid | 0 | 0 | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 7.3 |
+| hybrid | **0.10** | 38 | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 7.3 |
+| hybrid + rerank | 0 | 0 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 |
+| hybrid + rerank | **0.10** | 38 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 |
+| hybrid + rerank | 0.15 | 57 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.4 |
+| hybrid + rerank, 12 words | 0.10 | 38 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.5 |
+
+Every shipped-path column is the same at every value, at 0.05, 0.10 and 0.15 alike, and the fraction adds nothing to the project's word floor: the last row is the reference project's configuration — 12 words *and* a tenth of the chunk size — and it measures exactly like no floor at all. The word floor and the fraction are not alternatives that need weighing against each other on this corpus; the only thing the fraction does here that 12 words did not is state the rule in the unit the chunks are counted in.
+
+Dense-only is where a floor is visible, and there it is a gain rather than a cost: the baseline never returned target `q07`, and every floor at or above 0.05 puts it at rank 8 or 9 once a fragment stops holding the slot. That is one query's movement in thirty, and it is the only per-query difference anywhere in these six runs.
+
+No column falls at any value. Every judged target is long: the shortest of the 18 is 168 tokens and the next three are 214, 218 and 228, so nothing the set can measure is removed by 38 tokens or even 57.
+
+What the rule does to the two queries that exposed the problem:
+
+| Query | Fraction | Hits | Sources | Shortest passage | Dropped candidates |
+|---|---|---|---|---|---|
+| `value production chain` | 0 | 10 | 8 | **7 tokens** (the Index entry, at rank 1) | — |
+| `value production chain` | 0.05 | 10 | 9 | 43 tokens | 1 lexical, 14 dense |
+| `value production chain` | 0.10 | 10 | 9 | 43 tokens | 2 lexical, 16 dense |
+| `waste` | 0 | 10 | 6 | 115 tokens | — |
+| `waste` | 0.10 | 10 | 6 | 115 tokens | 0 lexical, 2 dense |
+
+The one-word query is the case the word floor was already handling; the fraction reaches the same passages through the corpus's own unit, and `waste` — whose shortest returned passage is 115 tokens — is untouched, which is what a length rule should look like on a query that never had the problem.
+
+Cost and reversibility. The tokenizer loads once per process (0.22 s) and counting costs about 0.05 ms a passage, under the noise of these runs' per-search means (0.49–0.79 s across the six runs here, ordered by machine load rather than by setting). The fraction is runtime like the word floor: it enters neither the retrieval-policy fingerprint nor the generation manifest, and the runs report `generation_upgrade_required: false`, so a project can set it, measure it, and drop it without rebuilding.
+
+What these numbers do not establish. The judged set's shortest target is 168 tokens, so these rows bound the harm to long designated passages and say nothing about a corpus whose evidence is legitimately short. The 38-token floor is not a back-matter filter: it takes 23.4% of the corpus's *prose* chunks (4,057 of 17,325), 56.1% of its lists (423 of 754) and 70.7% of its tables (29 of 41), because a short unit is short whatever it holds. On this corpus that is the intended trade — a five-word index line is exactly as short as a one-line paragraph, and only the query can tell them apart — but a corpus whose answers are table rows, catalogue entries, or bibliography lines would lose evidence that the judged set here could never detect. That is why the packaged default is 0 and the value belongs in a project's own configuration.
+
+## The chunk size and overlap, measured
+
+`chunking.size` is bounded at 384 tokens by its own setting, and that ceiling is the embedding model's: the packaged model reads 512 tokens, so a chunk has to fit inside that with its contextual header. A 512-token chunk is therefore not expressible, which is why this sweep tests *down* from the shipped size and tests the overlap separately.
+
+Three generations were built from the same 81 sources with the same extraction, the same embedding model, and `chunking.headers = true`, differing only in the knob under test. Extraction and chunking are disk-bound: the two experimental builds ran on this machine's 5400 rpm `/mnt/DATA` and spent 3,262 and 3,269 s extracting and 2,096 and 2,091 s chunking, where the reference generation, whose state root is on the NVMe device, spent 459 s and 75 s. Only the two experimental builds are comparable with each other.
+
+| Generation | size/overlap | chunks | median tokens | mean | chunks below a tenth of the size | share | tokens below |
+|---|---|---|---|---|---|---|---|
+| shipped | 384/64 | 19,400 | 148 | 185.5 | 4,583 (<38) | 23.6% | 1.9% |
+| smaller | 256/64 | 24,693 | 197 | 159.2 | 4,583 (<38) | 18.6% | 1.8% |
+| wider overlap | 384/128 | 20,186 | 187.5 | 200.3 | 4,583 (<38) | 22.7% | 1.7% |
+
+**The fragments are the same chunks in all three.** Below 25 tokens, below 38, and below 57, every variant holds 3,488, 4,583 and about 5,885 chunks holding 36,212, 69,841 and about 130,500 tokens — the same counts to within the one or two re-tokenized boundaries that splitting produces. They are extraction units that were already short, and neither the chunk size nor the overlap touches them. What changes is dilution: a smaller chunk size splits long units into 5,293 more chunks, which are almost all above the floor, so the fragment *share* falls from 23.6% to 18.6% while the fragments themselves stay. **A fragment problem is a length-floor problem, not a chunk-size problem**, which is why `retrieval.minimum_passage_token_fraction` is stated in tokens rather than as a hint to re-chunk.
+
+Judged set, the same 21 queries over 13 targets in all three variants, `top_k=10`, the reference project's own policy of 12 words and a tenth of the chunk size. Six of the 19 targets are out of the comparison: five whose snippet straddles a chunk boundary at 256 tokens and so resolves to two overlapping chunks rather than one, and `t12`, whose source the corpus no longer holds.
+
+| Mode | Metric | 384/64 | 256/64 | 384/128 |
+|---|---|---|---|---|
+| hybrid + rerank | succ@1 | 76.2% | 76.2% | 76.2% |
+| | succ@3 | 81.0% | 81.0% | 81.0% |
+| | succ@k | **85.7%** | 81.0% | 81.0% |
+| | MRR | **0.795** | 0.778 | 0.786 |
+| | nDCG | **0.810** | 0.786 | 0.792 |
+| hybrid | succ@1 | **66.7%** | 57.1% | 61.9% |
+| | MRR | **0.722** | 0.631 | 0.692 |
+| bm25 | succ@3 | **76.2%** | 61.9% | 66.7% |
+| | MRR | **0.690** | 0.646 | 0.679 |
+| dense | succ@1 | 23.8% | **33.3%** | 23.8% |
+| | MRR | 0.321 | **0.369** | 0.310 |
+
+Query by query, on the shipped path: at 256 tokens three of the 21 change — `q26` loses its target entirely and `q25` slips one rank, while `q27` improves from rank 5 to rank 1. At 128 overlap one changes: `q27`, which the shipped setting finds at rank 5 and the wider overlap never returns. Every moved query is an entity or a quote query, the kind whose evidence is a name, a phrase, or a term list, and both a shorter chunk and a doubled overlap change where such a passage begins.
+
+So neither alternative is taken:
+
+- **A smaller chunk costs the shipped path** a target at `succ@k` (85.7% to 81.0%), 0.017 MRR and 0.024 nDCG, and costs hybrid 0.091 MRR and BM25 fourteen points of `succ@3`. Its one gain is dense-only `succ@1` (23.8% to 33.3%), the weakest mode and not the default, and its better fragment *share* is dilution rather than removal.
+- **A wider overlap costs the shipped path** the same target at `succ@k` plus 0.009 MRR and 0.018 nDCG, and costs BM25 `succ@3` (76.2% to 66.7%) while adding 786 chunks for the same text. It is the smaller loss of the two and it buys nothing.
+- **The shipped 384/64 wins every column the tool's own path reads**, so the default stays and the sweep's finding is that the knob is already at its best measured setting rather than merely at its ceiling.
+
+What this does not establish. The comparison is small: 21 queries over 13 targets, where one target's rank is worth about four points of `succ@k`, so it bounds a decision rather than crowning a configuration. The entity-and-quote pattern is the explanation to test first on a corpus that disagrees. And the three generations are within 27% of each other in size, so nothing here says what happens to a much larger corpus, where the chunk count is also what decides the dense backend.
+
 ## The reranked window, calibrated
 
 The window is `max(top_k * retrieval.rerank_window_multiple, retrieval.rerank_window_floor)`, capped by `retrieval.rerank_max_candidates` and the fused candidate count — 20 at the default `top_k` of 10. Swept it shallower and deeper with the gate at 0.72:

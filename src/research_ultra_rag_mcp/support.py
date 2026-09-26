@@ -680,6 +680,43 @@ def _chunk_text(chunk: dict[str, Any]) -> str:
     )
 
 
+# The chunker counts a chunk in GPT-2 tokens and the generation records that
+# name, so a length rule stated as a fraction of the chunk size and a token count
+# are the same unit. The counter is imported and loaded on first use, so a query
+# that applies no token floor never pays for the dependency.
+TOKENIZER_REPOSITORIES = {"gpt2": "openai-community/gpt2"}
+
+_TOKENIZERS: dict[str, Any] = {}
+
+
+def passage_token_count(text: str, tokenizer: str) -> int:
+    """Count a passage in the tokens the generation was chunked by."""
+
+    counter = _TOKENIZERS.get(tokenizer)
+    if counter is None:
+        repository = TOKENIZER_REPOSITORIES.get(tokenizer)
+        if repository is None:
+            raise ResearchError(
+                "The current generation records an unknown chunker tokenizer: "
+                f"{tokenizer!r}. Known names: "
+                f"{', '.join(sorted(TOKENIZER_REPOSITORIES))}."
+            )
+        try:
+            from tokie import Tokenizer
+        except ImportError as exc:  # pragma: no cover - a packaging failure
+            raise ResearchError(
+                f"The {tokenizer} tokenizer is unavailable: {exc}"
+            ) from exc
+        try:
+            counter = Tokenizer.from_pretrained(repository)
+        except Exception as exc:
+            raise ResearchError(
+                f"The {tokenizer} tokenizer could not be loaded: {exc}"
+            ) from exc
+        _TOKENIZERS[tokenizer] = counter
+    return int(counter.count_tokens(text))
+
+
 def _embedding_text(chunk: dict[str, Any]) -> str:
     """Return the text a chunk is embedded from, contextual header included.
 

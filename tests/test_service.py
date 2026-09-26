@@ -1896,12 +1896,15 @@ async def _assert_a_short_fragment_is_not_evidence(project: Path) -> None:
         title="Prose",
     )
 
-    async def search_with(minimum: int) -> dict:
+    async def search_with(minimum: int, fraction: float = 0.0) -> dict:
         service = ResearchService(  # type: ignore[arg-type]
             resolve_config(
                 project,
                 vanilla_executable=sys.executable,
-                settings_overrides=[f"retrieval.minimum_passage_words={minimum}"],
+                settings_overrides=[
+                    f"retrieval.minimum_passage_words={minimum}",
+                    f"retrieval.minimum_passage_token_fraction={fraction}",
+                ],
             ),
             FakeUltraRAG(),
             dense=FakeDenseBackend(),
@@ -1914,6 +1917,8 @@ async def _assert_a_short_fragment_is_not_evidence(project: Path) -> None:
     assert everything["rejected_candidates"]["bm25_too_short"] == 0
     assert everything["rejected_candidates"]["dense_too_short"] == 0
     assert everything["passage_length_policy"]["minimum_words"] == 0
+    assert everything["passage_length_policy"]["minimum_tokens"] == 0
+    assert everything["passage_length_policy"]["chunk_size"] is None
 
     evidence_only = await search_with(minimum=12)
     assert [hit["source_relative_path"] for hit in evidence_only["hits"]] == [
@@ -1928,9 +1933,43 @@ async def _assert_a_short_fragment_is_not_evidence(project: Path) -> None:
         for example in examples["dense_too_short"] + examples["bm25_too_short"]
     } == {"fragment.pdf"}
 
+    # The same floor in the unit the chunker counts: half of a 50-token chunk is
+    # 25 tokens, which the index line cannot reach while the prose sentence can.
+    tokens_only = await search_with(minimum=0, fraction=0.5)
+    assert [hit["source_relative_path"] for hit in tokens_only["hits"]] == ["prose.pdf"]
+    assert tokens_only["rejected_candidates"]["bm25_too_short"] == 1
+    assert tokens_only["rejected_candidates"]["dense_too_short"] == 1
+    policy = tokens_only["passage_length_policy"]
+    assert policy["minimum_words"] == 0
+    assert policy["minimum_tokens"] == 25
+    assert policy["chunk_size"] == 50
+    assert policy["tokenizer"] == "gpt2"
+    assert policy["token_fraction"] == 0.5
+
 
 def test_a_short_fragment_is_not_evidence(project: Path) -> None:
     asyncio.run(_assert_a_short_fragment_is_not_evidence(project))
+
+
+def test_the_length_floor_is_counted_in_the_chunkers_tokens() -> None:
+    """A fraction of a chunk size is only a length rule if the unit matches.
+
+    The chunker counts a chunk in GPT-2 tokens and the generation records that
+    name, so the floor is counted in the same tokens over the returned text.
+    """
+
+    index_line = "value production chain, 70-71"
+    prose = (
+        "Waste from data infrastructure accumulates in landfills and in the water "
+        "table around them, and the extraction feeding it leaves trails of its own "
+        "across the regions that host the servers."
+    )
+    assert support_module.passage_token_count(index_line, "gpt2") == 7
+    assert support_module.passage_token_count(prose, "gpt2") > 30
+    assert support_module.passage_token_count("", "gpt2") == 0
+    assert support_module.TOKENIZER_REPOSITORIES["gpt2"] == "openai-community/gpt2"
+    with pytest.raises(support_module.ResearchError, match="unknown chunker tokenizer"):
+        support_module.passage_token_count(prose, "not-a-tokenizer")
 
 
 async def _assert_no_change_ingest_is_noop_and_force_rebuilds(project: Path) -> None:

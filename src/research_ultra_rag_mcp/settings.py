@@ -559,6 +559,25 @@ SETTINGS: tuple[Setting, ...] = (
         maximum=400,
         env="RESEARCH_ULTRARAG_RETRIEVAL_MINIMUM_PASSAGE_WORDS",
     ),
+    Setting(
+        key="retrieval.minimum_passage_token_fraction",
+        field="minimum_passage_token_fraction",
+        kind=float,
+        layer="runtime",
+        doc=(
+            "Smallest candidate a query may return, as a fraction of the "
+            "generation's recorded `chunking.size`. A chunk is built to hold "
+            "`chunking.size` tokens, so a candidate holding a small fraction of "
+            "that is a fragment — an index line, a heading, a caption — whatever "
+            "its word count happens to be. Counted in the tokens the generation "
+            "was chunked with, over the returned text, so a contextual header "
+            "cannot make a fragment look long. 0 admits every candidate. Runtime: "
+            "it filters a query and changes no artifact."
+        ),
+        minimum=0.0,
+        maximum=1.0,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_MINIMUM_PASSAGE_TOKEN_FRACTION",
+    ),
     # --- Chunking: what a chunk is. Recorded per generation. ---
     Setting(
         key="chunking.size",
@@ -860,6 +879,7 @@ class EffectiveSettings:
     source_diversity_penalty: float
     dense_relative_similarity_margin: float
     minimum_passage_words: int
+    minimum_passage_token_fraction: float
     chunk_size: int
     chunk_overlap: int
     chunk_headers: bool

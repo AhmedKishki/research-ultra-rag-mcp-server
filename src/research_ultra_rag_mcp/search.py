@@ -36,6 +36,7 @@ from .support import (
     _reranker_revision,
     _source_diverse_selection,
     document_frequencies,
+    passage_token_count,
 )
 
 
@@ -80,11 +81,67 @@ class SearchWorkflow:
             )
         )
 
-    def _passage_too_short(self, chunk: dict[str, Any]) -> bool:
-        """True when a candidate carries too few words to be cited as evidence."""
+    def _passage_token_policy(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        """Return the token floor this query applies, and what it was read from.
 
+        The floor is a fraction of the chunk size the generation was built to,
+        read from the generation rather than from the current settings, so the
+        rule follows the corpus it filters. The tokenizer is the one the chunker
+        counted with, which is what makes a floor and a chunk size one unit.
+        """
+
+        fraction = self.config.settings.minimum_passage_token_fraction
+        if fraction <= 0:
+            return {"minimum_tokens": 0, "tokenizer": None, "chunk_size": None}
+        chunking = manifest.get("chunking")
+        if not isinstance(chunking, dict):
+            raise ResearchError(
+                "Current generation records no chunking block, so "
+                "retrieval.minimum_passage_token_fraction has no chunk size to "
+                "measure against. Set it to 0, or ingest to build a generation "
+                "that records one."
+            )
+        chunk_size = chunking.get("chunk_size")
+        tokenizer = chunking.get("tokenizer")
+        if not isinstance(chunk_size, int) or chunk_size <= 0:
+            raise ResearchError(
+                "Current generation records no chunk size, so "
+                "retrieval.minimum_passage_token_fraction has nothing to measure "
+                "against. Set it to 0, or ingest to build a generation that "
+                "records one."
+            )
+        if not isinstance(tokenizer, str) or not tokenizer:
+            raise ResearchError(
+                "Current generation records no chunker tokenizer, so "
+                "retrieval.minimum_passage_token_fraction cannot count in the "
+                "unit the chunks were built in. Set it to 0, or ingest to build a "
+                "generation that records one."
+            )
+        return {
+            "minimum_tokens": max(1, int(fraction * chunk_size)),
+            "tokenizer": tokenizer,
+            "chunk_size": chunk_size,
+        }
+
+    def _passage_too_short(
+        self,
+        chunk: dict[str, Any],
+        *,
+        token_policy: dict[str, Any] | None = None,
+    ) -> bool:
+        """True when a candidate is too short to be cited as evidence."""
+
+        text = _chunk_text(chunk)
         minimum = self.config.settings.minimum_passage_words
-        return minimum > 0 and len(_chunk_text(chunk).split()) < minimum
+        if minimum > 0 and len(text.split()) < minimum:
+            return True
+        if not token_policy:
+            return False
+        floor = int(token_policy.get("minimum_tokens") or 0)
+        tokenizer = token_policy.get("tokenizer")
+        if floor <= 0 or not isinstance(tokenizer, str):
+            return False
+        return passage_token_count(text, tokenizer) < floor
 
     def _record_rejected_candidate(
         self,
@@ -126,6 +183,7 @@ class SearchWorkflow:
         document_filter: set[str],
         excluded_document_ids: set[str],
         withheld: dict[str, dict[str, Any]],
+        token_policy: dict[str, Any] | None = None,
     ) -> tuple[
         list[str],
         dict[str, int],
@@ -241,7 +299,7 @@ class SearchWorkflow:
                 if not query_tokens.intersection(tokens):
                     rejected["no_query_token_overlap"] += 1
                     continue
-                if self._passage_too_short(chunk):
+                if self._passage_too_short(chunk, token_policy=token_policy):
                     rejected["too_short"] += 1
                     self._record_rejected_candidate(
                         rejected_examples,
@@ -369,6 +427,7 @@ class SearchWorkflow:
             if current is None:
                 raise ResearchError("No knowledge base exists; call ingest first")
             generation_root, manifest = current
+            passage_token_policy = self._passage_token_policy(manifest)
             lookup = await self._ensure_artifact_lookup(generation_root, manifest)
             total_chunk_count = await asyncio.to_thread(lookup.chunk_count)
             if not total_chunk_count:
@@ -517,6 +576,7 @@ class SearchWorkflow:
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
+                        token_policy=passage_token_policy,
                     ),
                     search_dense(),
                 )
@@ -546,6 +606,7 @@ class SearchWorkflow:
                     document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                     withheld=withheld,
+                    token_policy=passage_token_policy,
                 )
                 chunks_by_id.update(bm25_chunks)
             else:
@@ -594,6 +655,7 @@ class SearchWorkflow:
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
+                        token_policy=passage_token_policy,
                     )
                     chunks_by_id.update(bm25_chunks)
 
@@ -645,7 +707,7 @@ class SearchWorkflow:
                     excluded_document_ids=excluded_document_ids,
                 ):
                     continue
-                if self._passage_too_short(chunk):
+                if self._passage_too_short(chunk, token_policy=passage_token_policy):
                     dense_too_short += 1
                     self._record_rejected_candidate(
                         dense_rejected_examples,
@@ -919,12 +981,20 @@ class SearchWorkflow:
                 },
                 "passage_length_policy": {
                     "minimum_words": self.config.settings.minimum_passage_words,
+                    "minimum_tokens": passage_token_policy["minimum_tokens"],
+                    "token_fraction": self.config.settings.minimum_passage_token_fraction,
+                    "chunk_size": passage_token_policy["chunk_size"],
+                    "tokenizer": passage_token_policy["tokenizer"],
                     "note": (
-                        "A candidate with fewer words than this is dropped before "
-                        "fusion. Chunks never span extraction units, so an index "
-                        "line, a heading, or a copyright line becomes a chunk that "
-                        "matches a query about its own words while carrying no "
-                        "prose to cite."
+                        "A candidate below either floor is dropped before fusion: "
+                        "fewer words than minimum_words, or fewer tokens than "
+                        "token_fraction of the generation's chunk size. Chunks never "
+                        "span extraction units, so an index line, a heading, or a "
+                        "copyright line becomes a chunk that matches a query about "
+                        "its own words while carrying no prose to cite. The token "
+                        "floor is counted over the returned text with the tokenizer "
+                        "the generation was chunked by, so a header cannot make a "
+                        "fragment look long."
                     ),
                 },
                 "rejected_candidates": {

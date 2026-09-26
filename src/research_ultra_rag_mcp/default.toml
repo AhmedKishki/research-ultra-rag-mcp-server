@@ -116,6 +116,15 @@ dense_relative_similarity_margin = 0.10
 # of deliberately short passages is a legitimate corpus and this drops them.
 # (runtime)
 minimum_passage_words = 0
+# The same floor in the unit a chunk is built in: a fraction of the generation's
+# recorded `chunking.size`, counted with the tokenizer the generation was chunked
+# by and over the returned text only, so a contextual header cannot enlarge a
+# fragment. A tenth of the packaged 384 tokens is 38, and on the reference corpus
+# that drops 23.6% of the chunks while removing 1.9% of its text; every judged
+# target there is above 168 tokens, so the rule costs the measured set nothing.
+# It is a corpus judgement rather than an improvement, which is why the packaged
+# value is off. (runtime)
+minimum_passage_token_fraction = 0.0
 
 [chunking]
 # Target chunk length in GPT-2 tokens, and the tokens neighbours share. (identity:
