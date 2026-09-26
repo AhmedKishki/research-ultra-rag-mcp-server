@@ -82,6 +82,20 @@ prf_documents = 5
 prf_terms = 8
 # Withheld candidates quoted per gate reason in a search answer. (identity)
 maximum_withheld_examples = 5
+# Share of a candidate's normalized relevance charged for each candidate
+# already selected from the same source. The charge is taken once per repeat at
+# the final top_k pick, over candidates fusion and reranking already ranked, so
+# it can reorder a result but never add or drop a candidate: 0 keeps the ranked
+# order exactly, and 1 takes every other source before it repeats one. A BM25 or
+# dense ranking without reranking carries no score to charge a repeat against,
+# so it keeps its own order too. On the reference corpus 0.15, 0.25, and 0.4
+# score identically on success, MRR, nDCG, and document success, each costing one
+# query's target a slide from rank 4 to 5, and differ only in spread: mean
+# distinct sources in a top-10 rise from 3.9 to 7.4 at the default, 8.0 at 0.4,
+# and 8.4 at 0.6, where that target slides to rank 9. The default is the middle
+# of those three identical values: 0.4 spreads further, and 0.6 is where the
+# first quality column moves. (runtime)
+source_diversity_penalty = 0.25
 
 [chunking]
 # Target chunk length in GPT-2 tokens, and the tokens neighbours share. (identity:

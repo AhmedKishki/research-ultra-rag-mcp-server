@@ -54,6 +54,12 @@ def retrieval_policy_fingerprint(settings: EffectiveSettings) -> str:
     so their values are part of what a generation *is*: a generation that
     recorded a different policy than this process runs is not reusable, and the
     next ingestion builds a new generation instead of mixing two.
+
+    A value stays out when it only reorders what those already return. The
+    source-diversity penalty is taken at the final top_k pick over candidates
+    fusion and reranking ranked first, so it changes no stored artifact, and
+    fingerprinting it would report every existing generation as needing a
+    rebuild that reproduces the same index byte for byte.
     """
 
     return value_fingerprint(
@@ -80,6 +86,87 @@ def retrieval_policy_fingerprint(settings: EffectiveSettings) -> str:
             },
         }
     )
+
+
+def _selection_relevance(
+    ordered_ids: Sequence[str],
+    scores: Mapping[str, float],
+) -> dict[str, float]:
+    """Normalize the score an order was built from onto ``0.0..1.0``.
+
+    The best-scored candidate is 1.0 and the worst-scored is 0.0, so the
+    diversity penalty is a share of this ranking's own confidence instead of a
+    share of the candidate list, which would grow with however deep the pool
+    happens to be. A candidate the order carries without a score -- the
+    unranked tail appended after a reranked window -- is 0.0, because it is
+    already ranked last and yields to every scored candidate first.
+    """
+
+    relevance = dict.fromkeys(ordered_ids, 0.0)
+    scored = [scores[chunk_id] for chunk_id in ordered_ids if chunk_id in scores]
+    if not scored:
+        return relevance
+    low = min(scored)
+    high = max(scored)
+    if high <= low:
+        # A flat score band says nothing about relative order, so every scored
+        # candidate counts as equally relevant and the order itself stands.
+        for chunk_id in ordered_ids:
+            if chunk_id in scores:
+                relevance[chunk_id] = 1.0
+        return relevance
+    span = high - low
+    for chunk_id in ordered_ids:
+        if chunk_id in scores:
+            relevance[chunk_id] = (scores[chunk_id] - low) / span
+    return relevance
+
+
+def _source_diverse_selection(
+    ordered_ids: Sequence[str],
+    *,
+    source_id_by_chunk: Mapping[str, str],
+    scores: Mapping[str, float],
+    top_k: int,
+    penalty: float,
+) -> list[str]:
+    """Pick ``top_k`` candidates, charging a source for each of its repeats.
+
+    Greedy maximal-marginal-relevance selection over a fused order: a
+    candidate's adjusted score is its relevance minus ``penalty`` for every
+    candidate already taken from the same source. The best adjusted score wins,
+    with the fused position and then the chunk ID settling ties, so one query
+    always yields one order.
+
+    A penalty at or below zero, a pool no deeper than the request, or a pool
+    where no candidate carries a score returns the plain slice and leaves the
+    ranking exactly as it was. Unscored means an unreranked BM25 or dense
+    ranking, which offers no relevance to charge against: the penalty would
+    otherwise be the only signal left and would replace that ranking with a
+    round-robin over sources. A source that is the only one with relevant
+    candidates still fills the answer: its repeats are charged like any other,
+    but nothing else is left to outrank them.
+    """
+
+    if penalty <= 0.0 or len(ordered_ids) <= top_k or not scores:
+        return list(ordered_ids[:top_k])
+    relevance = _selection_relevance(ordered_ids, scores)
+    base_rank = {chunk_id: index for index, chunk_id in enumerate(ordered_ids)}
+    remaining = list(ordered_ids)
+    selected: list[str] = []
+    repeats: Counter[str] = Counter()
+
+    def ordering_key(chunk_id: str) -> tuple[float, int, str]:
+        source = source_id_by_chunk.get(chunk_id, chunk_id)
+        adjusted = relevance.get(chunk_id, 0.0) - penalty * repeats[source]
+        return (-adjusted, base_rank[chunk_id], chunk_id)
+
+    while remaining and len(selected) < top_k:
+        chosen = min(remaining, key=ordering_key)
+        remaining.remove(chosen)
+        selected.append(chosen)
+        repeats[source_id_by_chunk.get(chosen, chosen)] += 1
+    return selected
 
 
 async def _atomic_to_thread(function: Any, /, *args: Any, **kwargs: Any) -> Any:

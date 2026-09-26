@@ -64,6 +64,7 @@ DIAGNOSTIC_KEYS = {
     "retrieval",
     "retrieval_method",
     "retrieval_rank",
+    "selection_policy",
     "source_path",
     "text_fidelity",
     "withheld_candidates",
@@ -596,6 +597,10 @@ def _search_payload(**overrides: object) -> dict[str, object]:
         "requested_top_k": 6,
         "fusion": {"method": "weighted_reciprocal_rank_fusion", "rrf_k": 60},
         "relevance_policy": {"dense_minimum_cosine_similarity": 0.72},
+        "selection_policy": {
+            "method": "greedy_source_diversity",
+            "source_diversity_penalty": 0.25,
+        },
         "rejected_candidates": {"dense_below_threshold": 11},
         "withheld_candidates": {"policy": "corruption_evidence_only", "total": 0},
         "dense_fidelity": {"embedding_maximum_tokens": 512},

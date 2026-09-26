@@ -126,6 +126,7 @@ from .support import (  # noqa: F401
     _record_withheld,
     _requested_ids,
     _reranker_revision,
+    _source_diverse_selection,
     _source_inventory,
     _source_stat_identity,
     _source_work_key,
@@ -4046,17 +4047,22 @@ class ResearchService:
             reranked_applied = bool(rerank_scores)
 
             candidate_count = len(ordered_ids)
-            candidate_distinct_reference_count = len(
-                {
-                    str(
-                        _document_for_chunk(chunks_by_id[item], documents_by_id)[
-                            "source_id"
-                        ]
-                    )
-                    for item in ordered_ids
-                }
+            source_id_by_chunk = {
+                item: str(
+                    _document_for_chunk(chunks_by_id[item], documents_by_id)[
+                        "source_id"
+                    ]
+                )
+                for item in ordered_ids
+            }
+            candidate_distinct_reference_count = len(set(source_id_by_chunk.values()))
+            selected_ids = _source_diverse_selection(
+                ordered_ids,
+                source_id_by_chunk=source_id_by_chunk,
+                scores=rerank_scores or fusion_scores,
+                top_k=top_k,
+                penalty=self.config.settings.source_diversity_penalty,
             )
-            selected_ids = ordered_ids[:top_k]
 
             hits: list[dict[str, Any]] = []
             for rank, chunk_id in enumerate(selected_ids, 1):
@@ -4160,6 +4166,12 @@ class ResearchService:
                     "bm25_requires_query_token_overlap": True,
                     "dense_minimum_cosine_similarity": (
                         self.config.settings.dense_minimum_cosine_similarity
+                    ),
+                },
+                "selection_policy": {
+                    "method": "greedy_source_diversity",
+                    "source_diversity_penalty": (
+                        self.config.settings.source_diversity_penalty
                     ),
                 },
                 "rejected_candidates": {

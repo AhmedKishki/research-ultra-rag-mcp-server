@@ -4034,6 +4034,208 @@ def test_feedback_is_reproducible_for_the_same_input() -> None:
     ) == support_module._pseudo_relevance_terms(**arguments)  # type: ignore[arg-type]
 
 
+def test_diversity_relevance_normalizes_the_scored_band() -> None:
+    """The charge is a share of this ranking's own confidence, not of the pool."""
+
+    relevance = support_module._selection_relevance(
+        ["a1", "a2", "tail"],
+        {"a1": 4.0, "a2": 2.0},
+    )
+
+    # A candidate the order carries without a score is last already, so it sits
+    # at 0.0 next to the worst score rather than anywhere the band could raise.
+    assert relevance == {"a1": 1.0, "a2": 0.0, "tail": 0.0}
+
+
+def test_diversity_relevance_treats_a_flat_band_as_equal() -> None:
+    """Equal scores say nothing about relative order, so the order must stand."""
+
+    relevance = support_module._selection_relevance(
+        ["a1", "b1"], {"a1": 0.5, "b1": 0.5}
+    )
+
+    assert relevance == {"a1": 1.0, "b1": 1.0}
+
+
+def test_diversity_relevance_without_a_score_is_zero() -> None:
+    relevance = support_module._selection_relevance(["a1", "b1"], {})
+
+    assert relevance == {"a1": 0.0, "b1": 0.0}
+
+
+def test_an_unscored_ranking_keeps_its_own_order() -> None:
+    """BM25 or dense without reranking has no relevance to charge a repeat against.
+
+    Charging anyway would leave the penalty as the only signal in the pool and
+    replace that mode's ranking with a round-robin over sources, which is a
+    different search rather than a reordering of this one.
+    """
+
+    selected = support_module._source_diverse_selection(
+        ["a1", "a2", "b1"],
+        source_id_by_chunk={"a1": "a", "a2": "a", "b1": "b"},
+        scores={},
+        top_k=2,
+        penalty=1.0,
+    )
+
+    assert selected == ["a1", "a2"]
+
+
+def test_source_diversity_brings_another_source_forward() -> None:
+    """A second passage from one source loses to a first from another."""
+
+    selected = support_module._source_diverse_selection(
+        ["a1", "a2", "b1", "b2"],
+        source_id_by_chunk={"a1": "a", "a2": "a", "b1": "b", "b2": "b"},
+        scores={"a1": 1.0, "a2": 1.0, "b1": 1.0, "b2": 1.0},
+        top_k=3,
+        penalty=0.5,
+    )
+
+    # Equal scores leave ties to the fused position, so b1 beats a2 once a2 is
+    # charged, and the earlier-positioned a2 then beats b2 for the third slot.
+    assert selected == ["a1", "b1", "a2"]
+
+
+def test_zero_diversity_penalty_keeps_the_ranked_order() -> None:
+    arguments: dict[str, object] = {
+        "ordered_ids": ["a1", "a2", "b1", "b2"],
+        "source_id_by_chunk": {"a1": "a", "a2": "a", "b1": "b", "b2": "b"},
+        "scores": {"a1": 3.0, "a2": 2.0, "b1": 1.0, "b2": 0.0},
+        "top_k": 3,
+    }
+
+    for penalty in (0.0, -0.5):
+        assert support_module._source_diverse_selection(
+            **arguments,
+            penalty=penalty,  # type: ignore[arg-type]
+        ) == ["a1", "a2", "b1"]
+
+
+def test_a_pool_no_deeper_than_the_request_is_returned_as_ranked() -> None:
+    """Nothing can be swapped for anything, so the ranked order is the answer."""
+
+    selected = support_module._source_diverse_selection(
+        ["a1", "a2"],
+        source_id_by_chunk={"a1": "a", "a2": "a"},
+        scores={"a1": 1.0, "a2": 0.0},
+        top_k=2,
+        penalty=1.0,
+    )
+
+    assert selected == ["a1", "a2"]
+
+
+def test_a_single_source_pool_still_fills_the_answer() -> None:
+    """A project whose relevant material is one source is not answered around."""
+
+    selected = support_module._source_diverse_selection(
+        ["a1", "a2", "a3"],
+        source_id_by_chunk={"a1": "a", "a2": "a", "a3": "a"},
+        scores={"a1": 3.0, "a2": 2.0, "a3": 1.0},
+        top_k=2,
+        penalty=1.0,
+    )
+
+    assert selected == ["a1", "a2"]
+
+
+def test_an_unranked_tail_yields_to_a_charged_repeat() -> None:
+    """The appended tail is 0.0, so a full charge is what pushes a repeat below it."""
+
+    selected = support_module._source_diverse_selection(
+        ["a1", "a2", "tail"],
+        source_id_by_chunk={"a1": "a", "a2": "a", "tail": "b"},
+        scores={"a1": 2.0, "a2": 0.0},
+        top_k=2,
+        penalty=1.0,
+    )
+
+    assert selected == ["a1", "tail"]
+
+
+def test_diversity_selection_is_reproducible_for_the_same_input() -> None:
+    arguments: dict[str, object] = {
+        "ordered_ids": ["a1", "b1", "a2", "b2", "c1"],
+        "source_id_by_chunk": {
+            "a1": "a",
+            "a2": "a",
+            "b1": "b",
+            "b2": "b",
+            "c1": "c",
+        },
+        "scores": {"a1": 5.0, "b1": 4.0, "a2": 3.0, "b2": 2.0, "c1": 1.0},
+        "top_k": 4,
+        "penalty": 0.25,
+    }
+
+    first = support_module._source_diverse_selection(**arguments)  # type: ignore[arg-type]
+    second = support_module._source_diverse_selection(**arguments)  # type: ignore[arg-type]
+
+    assert first == second
+
+
+def test_a_diversity_penalty_is_reported_but_rebuilds_nothing(
+    project: Path,
+) -> None:
+    """A reordering of ranked candidates is not a reason to rebuild a generation.
+
+    The penalty applies to what a generation already ranked, so it changes none
+    of its files and is no part of what a generation is: one build answers two
+    penalties, each answer names the one it used, and the manifest is untouched.
+    """
+
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "article.pdf",
+            ["Cobalt labour in the mine.", "Wages and the working day."],
+        )
+        write_pdf(
+            project / "sources" / "second.pdf",
+            ["Cobalt, labour, and the machinery of extraction."],
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(  # type: ignore[arg-type]
+            config, FakeUltraRAG(), dense=FakeDenseBackend()
+        )
+        ingested = await service.ingest(chunk_size=50, chunk_overlap=10)
+        manifest = json.loads(
+            (Path(ingested["generation_root"]) / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert "selection" not in manifest["retrieval"]
+
+        answer = await service.search("cobalt labour", top_k=2, include_staleness=False)
+        assert answer["generation_upgrade_required"] is False
+        assert answer["selection_policy"] == {
+            "method": "greedy_source_diversity",
+            "source_diversity_penalty": 0.25,
+        }
+
+        spread = ResearchService(  # type: ignore[arg-type]
+            resolve_config(
+                project,
+                vanilla_executable=sys.executable,
+                settings_overrides=["retrieval.source_diversity_penalty=0.6"],
+            ),
+            FakeUltraRAG(),
+            dense=FakeDenseBackend(),
+        )
+        respread = await spread.search(
+            "cobalt labour", top_k=2, include_staleness=False
+        )
+        assert respread["generation_id"] == answer["generation_id"]
+        assert respread["generation_upgrade_required"] is False
+        assert respread["selection_policy"] == {
+            "method": "greedy_source_diversity",
+            "source_diversity_penalty": 0.6,
+        }
+
+    asyncio.run(exercise())
+
+
 def test_contextual_headers_reach_the_embedding_and_never_the_passage(
     project: Path,
 ) -> None:

@@ -55,6 +55,27 @@ def test_defaults_reproduce_the_published_fingerprint(tmp_path: Path) -> None:
     assert retrieval_policy_fingerprint(settings) == PUBLISHED_FINGERPRINT
 
 
+def test_a_query_time_ranking_knob_keeps_the_published_fingerprint(
+    tmp_path: Path,
+) -> None:
+    """A penalty over ranked candidates must not tell every project to rebuild.
+
+    The source-diversity reordering is applied to the candidates fusion and
+    reranking already returned, so it changes nothing a generation stores. In
+    the fingerprint it would flag every existing generation as needing an
+    upgrade that would reproduce the same index byte for byte.
+    """
+
+    spread, _ = resolve_settings(
+        tmp_path,
+        overrides=["retrieval.source_diversity_penalty=0.6"],
+        environ={},
+    )
+
+    assert spread.source_diversity_penalty == 0.6
+    assert retrieval_policy_fingerprint(spread) == PUBLISHED_FINGERPRINT
+
+
 def test_a_layer_names_only_what_it_changes(tmp_path: Path) -> None:
     project = tmp_path / "project"
     _write(
@@ -125,6 +146,13 @@ def test_out_of_bounds_and_cross_field_values_are_refused(tmp_path: Path) -> Non
 
     with pytest.raises(SettingsError, match="must be true or false"):
         resolve_settings(tmp_path, overrides=["runtime.offline=maybe"], environ={})
+
+    with pytest.raises(SettingsError, match="at most 1"):
+        resolve_settings(
+            tmp_path,
+            overrides=["retrieval.source_diversity_penalty=1.5"],
+            environ={},
+        )
 
 
 def test_the_ingest_budget_can_cover_a_whole_build(tmp_path: Path) -> None:

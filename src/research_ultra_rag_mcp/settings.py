@@ -74,8 +74,10 @@ class Setting:
       the retrieval-policy fingerprint and a change invalidates reuse.
     * ``engine`` — the value chooses an engine component (a backend, a model)
       whose identity is recorded in the generation manifest and in answers.
-    * ``runtime`` — the value shapes this process only (threads, budgets, logging,
-      where the shared model cache lives) and cannot affect an artifact.
+    * ``runtime`` — the value shapes this process and its answers only (threads,
+      budgets, logging, tool detail, where the shared model cache lives, and the
+      source-diversity penalty, which reorders an answer after ranking) and
+      cannot affect an artifact.
     """
 
     key: str
@@ -503,6 +505,25 @@ SETTINGS: tuple[Setting, ...] = (
         maximum=100,
         env="RESEARCH_ULTRARAG_RETRIEVAL_MAXIMUM_WITHHELD_EXAMPLES",
     ),
+    Setting(
+        key="retrieval.source_diversity_penalty",
+        field="source_diversity_penalty",
+        kind=float,
+        layer="runtime",
+        doc=(
+            "Share of a candidate's normalized relevance charged for each "
+            "candidate already selected from the same source, so one prolific "
+            "source cannot fill the answer. Applied to the final top_k pick "
+            "over candidates that were already ranked: it reorders what the "
+            "fusion and the reranker returned, and can neither add nor remove "
+            "a candidate. Zero returns the ranked order unchanged, and so does "
+            "an unreranked BM25 or dense ranking, which has no score to charge "
+            "a repeat against."
+        ),
+        minimum=0.0,
+        maximum=1.0,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_SOURCE_DIVERSITY_PENALTY",
+    ),
     # --- Chunking: what a chunk is. Recorded per generation. ---
     Setting(
         key="chunking.size",
@@ -801,6 +822,7 @@ class EffectiveSettings:
     prf_documents: int
     prf_terms: int
     maximum_withheld_examples: int
+    source_diversity_penalty: float
     chunk_size: int
     chunk_overlap: int
     chunk_headers: bool

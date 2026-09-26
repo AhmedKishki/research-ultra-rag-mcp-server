@@ -7,7 +7,8 @@ which mode is best for which kind of question?
 It runs a judged query set (``evaluation/ai-and-fetishism-queries.json`` by
 default) through the **public** MCP ``search`` tool of a real project, for
 BM25, dense, hybrid, and reranked hybrid, and reports success@k, MRR, nDCG@10,
-and document-level success. Retrieval goes exclusively through the public tool
+document-level success, and the mean number of distinct sources a result spans.
+Retrieval goes exclusively through the public tool
 surface, so gates, disclosures, and ranking are whatever an agent would see.
 Every mode passes ``rerank`` explicitly, so these numbers do not depend on the
 tool default; the ``hybrid+rerank`` row is what a default search now does.
@@ -386,6 +387,9 @@ def _aggregate(runs: list[dict[str, Any]], k: int) -> dict[str, Any]:
         ),
         "mean_lexical_overlap": _mean([run["lexical_overlap"] for run in runs]),
         "mean_result_count": _mean([float(run["result_count"]) for run in runs]),
+        "mean_distinct_sources": _mean(
+            [float(run["distinct_source_count"]) for run in runs]
+        ),
         "mean_withheld": _mean([float(run["withheld_total"]) for run in runs]),
         "top_k": k,
     }
@@ -429,7 +433,7 @@ def print_summary(section: str, summary: dict[str, Any]) -> None:
     width = max(15, *(len(mode) for mode in summary)) if summary else 15
     header = (
         f"{'mode':<{width}}{'n':>4}{'succ@1':>8}{'succ@3':>8}{'succ@k':>8}"
-        f"{'MRR':>7}{'nDCG':>7}{'doc@k':>7}{'overlap':>9}{'ret':>5}"
+        f"{'MRR':>7}{'nDCG':>7}{'doc@k':>7}{'overlap':>9}{'ret':>5}{'srcs':>6}"
     )
     print(header)
     print("-" * len(header))
@@ -442,6 +446,7 @@ def print_summary(section: str, summary: dict[str, Any]) -> None:
             f"{row['mrr']:>7.3f}{row['ndcg_at_k']:>7.3f}"
             f"{_percent(row['document_success_at_k']):>7}"
             f"{row['mean_lexical_overlap']:>9.3f}{row['mean_result_count']:>5.1f}"
+            f"{row['mean_distinct_sources']:>6.1f}"
         )
     for mode, payload in summary.items():
         for query_class, row in payload["per_class"].items():
@@ -451,6 +456,7 @@ def print_summary(section: str, summary: dict[str, Any]) -> None:
                 f"{_percent(row['success_at_k']):>8}{row['mrr']:>7.3f}"
                 f"{row['ndcg_at_k']:>7.3f}{_percent(row['document_success_at_k']):>7}"
                 f"{row['mean_lexical_overlap']:>9.3f}{row['mean_result_count']:>5.1f}"
+                f"{row['mean_distinct_sources']:>6.1f}"
             )
 
 
@@ -649,6 +655,7 @@ async def _run_one(
         in set(ranked_document_ids[:top_k]),
         "lexical_overlap": lexical_overlap(query, str(target["chunk_text"])),
         "result_count": int(payload.get("result_count") or 0),
+        "distinct_source_count": int(payload.get("distinct_reference_count") or 0),
         "candidate_count": int(payload.get("candidate_count") or 0),
         "rerank_window": int(payload.get("rerank_window") or 0),
         "withheld_total": int(withheld.get("total") or 0),
@@ -760,6 +767,13 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "top_k": args.top_k,
             "deep_top_k": args.deep_top_k,
             "include_staleness": False,
+            # The penalty is applied at query time over candidates the
+            # generation already ranked, so the generation's recorded policy
+            # cannot carry it and a report that measures it must name it here.
+            "selection_policy": {
+                "method": "greedy_source_diversity",
+                "source_diversity_penalty": config.settings.source_diversity_penalty,
+            },
         },
         "notice": (
             "Judgment resolution reads the generation's canonical chunks.jsonl "
@@ -817,7 +831,9 @@ async def evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
         print(
             f"Project {status.get('project_name')} generation {status.get('generation_id')} "
-            f"with {len(chunks)} chunks; {len(queries)} queries over {len(resolved)} targets."
+            f"with {len(chunks)} chunks; {len(queries)} queries over {len(resolved)} targets; "
+            f"source diversity penalty "
+            f"{config.settings.source_diversity_penalty:g}."
         )
         if args.validate_only:
             if skip_targets:

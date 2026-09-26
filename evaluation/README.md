@@ -44,9 +44,9 @@ The harness never writes inside the project. It calls `status` and `search` over
 
 ## Output
 
-The console prints two aligned tables (primary depth and deep pass) with, per mode and per class: `succ@1`, `succ@3`, `succ@k`, `MRR`, `nDCG@k`, `doc@k`, mean query-to-target overlap, and mean returned passages.
+The console prints two aligned tables (primary depth and deep pass) with, per mode and per class: `succ@1`, `succ@3`, `succ@k`, `MRR`, `nDCG@k`, `doc@k`, mean query-to-target overlap, mean returned passages, and `srcs` — the mean number of distinct sources those passages come from. `srcs` is what a source-diversity reordering is expected to move, so it is reported beside the quality columns rather than instead of them.
 
-A full JSON report is written beside the judged set as `ai-and-fetishism-queries-report.json` with every per-query run, the resolved targets, the retrieval configuration recorded in the generation, the timing, and the run's own settings — the modes measured, the reranker models, `evaluated_query_count`, and any `skipped_targets`. Reports are generated artifacts and are ignored by git; regenerate one instead of editing it.
+A full JSON report is written beside the judged set as `ai-and-fetishism-queries-report.json` with every per-query run, the resolved targets, the retrieval configuration recorded in the generation, the timing, and the run's own settings — the modes measured, the reranker models, `evaluated_query_count`, `skipped_targets`, and `selection_policy`, which names the source-diversity penalty the run used because the generation's recorded policy cannot carry a value that is applied after ranking. Reports are generated artifacts and are ignored by git; regenerate one instead of editing it.
 
 ## Extending the set
 

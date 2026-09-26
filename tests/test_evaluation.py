@@ -230,6 +230,7 @@ def _run(mode: str, query_class: str, *, hit: bool, rank: float) -> dict:
         "document_success_at_k": True,
         "lexical_overlap": 0.5,
         "result_count": 10,
+        "distinct_source_count": 4,
         "withheld_total": 0,
     }
 
@@ -246,6 +247,9 @@ def test_summarize_reports_modes_and_classes_separately(evaluation) -> None:
     assert summary["bm25"]["overall"]["query_count"] == 2
     assert summary["bm25"]["overall"]["success_at_1"] == pytest.approx(0.5)
     assert summary["bm25"]["overall"]["mrr"] == pytest.approx(0.5)
+    # Source spread is reported beside the quality columns, because a reordering
+    # change that holds success flat is only interesting if it moves this one.
+    assert summary["bm25"]["overall"]["mean_distinct_sources"] == pytest.approx(4.0)
     assert summary["bm25"]["per_class"]["quote"]["query_count"] == 1
     assert summary["bm25"]["per_class"]["quote"]["success_at_1"] == pytest.approx(1.0)
     assert summary["dense"]["per_class"]["paraphrase"]["success_at_1"] == pytest.approx(

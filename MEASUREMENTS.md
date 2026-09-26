@@ -360,6 +360,30 @@ Latency is not comparable across sessions, and this run had no same-session cont
 
 The default stays off. A project that wants the header opts in with `chunking.headers = true`, which is what the reference corpus now does. It is an identity setting, so the next ingestion of that project rebuilds — and a re-ingest without it would silently drop the headers, which is why the choice belongs in the project's config rather than on one command line.
 
+## The source-diversity penalty, measured
+
+`retrieval.source_diversity_penalty` reorders the final `top_k` pick. A candidate's adjusted score is its normalized relevance in the ranking that fusion and the reranker produced — 1.0 at the top, 0.0 at the bottom and for the unreranked tail — charged once for every candidate already taken from the same source, and the best adjusted score wins. It can only reorder candidates that were already ranked, so it adds and removes nothing, and a ranking with no score to charge against keeps its own order.
+
+Swept on the current generation (16,778 chunks, 77 indexed sources, 8 reviewed exclusions) over 30 judged queries, hybrid and reranked, `top_k=10`, one run per value, target `t12` skipped:
+
+| Penalty | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean sources | min | median | max |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0.0 | 80.0% | 83.3% | 86.7% | 0.825 | 0.835 | 90.0% | 3.9 | 1 | 3.5 | 8 |
+| 0.15 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 6.4 | 2 | 6 | 10 |
+| **0.25 (shipped)** | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 7.4 | 2 | 8 | 10 |
+| 0.4 | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 8.0 | 2 | 9 | 10 |
+| 0.6 | 80.0% | 83.3% | 86.7% | 0.820 | 0.831 | 93.3% | 8.4 | 2 | 9 | 10 |
+
+The case for the setting is the 0.0 row: four of the thirty ten-passage answers came from a single source, and every penalty value removes that case — no value leaves a one-source answer.
+
+The cost is one query's rank. Query 27's target sits at rank 4 after fusion and reranking, and the reordering moves it to rank 5 at 0.15, 0.25 and 0.4, which is the entire MRR difference (0.825 to 0.823 is one rank-4 becoming a rank-5 in thirty queries), and to rank 9 at 0.6 (0.820). Every success column is identical at every value. At 0.6 a second query, query 14, gains its target *document* at a rank its own passage did not reach, which is what raises doc@k to 93.3%.
+
+The shipped default is 0.25 because 0.15, 0.25 and 0.4 are indistinguishable on every quality column here and differ only in spread, and the middle value leaves both directions open. A stronger charge displaces more of a source's own relevant passages, which a known-item judged set cannot score: it registers that the designated passage moved, never that a run of adjacent passages became less useful. 0.4 is there for a project that would rather have nine sources of ten than eight, and 0.6 is where a quality column first moves.
+
+The reordering costs no measurable time: the greedy pass runs over candidates that were already scored and returns `top_k` of them, so the per-search means of these runs (1.6–2.1 s) track machine state rather than the value, as in the sweeps above.
+
+Section 4's tables were taken before this setting existed, which is the 0.0 row: the same engine with the reordering off. Absolute numbers are comparable only within one sweep, and these rows are the sweep to read.
+
 ## What a running project costs the machine
 
 Measured on the reference machine (AMD Ryzen 7 4800H: 8 physical cores, 16 threads, 15 GB) with both corpora's UIs and servers running.
