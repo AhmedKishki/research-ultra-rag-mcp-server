@@ -32,6 +32,14 @@ EXACT_INDEX_FILENAME = "index.json"
 EXACT_DOCUMENTS_FILENAME = "documents.json"
 _EXACT_VECTORS_RELATIVE = Path("portable") / "embeddings.npy"
 
+# The generation-relative directory each dense backend writes its index into.
+# The service and its ingestion workflow both read this mapping, so it lives with
+# the backends it names rather than in either caller.
+DENSE_INDEX_PATHS = {
+    QDRANT_BACKEND_NAME: "indexes/qdrant",
+    EXACT_BACKEND_NAME: "indexes/vectors",
+}
+
 
 class DenseTokenAuditUnavailable(RuntimeError):
     """Raised when the embedding tokenizer cannot be inspected safely."""

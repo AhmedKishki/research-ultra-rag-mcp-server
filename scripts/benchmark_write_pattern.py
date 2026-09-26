@@ -38,7 +38,7 @@ from typing import Any
 import pymupdf
 from fastmcp import Client
 
-import research_ultra_rag_mcp.service as service_module
+import research_ultra_rag_mcp.ingestion as ingestion_module
 from research_ultra_rag_mcp.config import resolve_config
 from research_ultra_rag_mcp.service import ResearchService
 from research_ultra_rag_mcp.ultrarag import VanillaUltraRAG, create_vanilla_transport
@@ -113,7 +113,7 @@ class durable_writes:
             "fsync_directories",
         )
         self._originals: dict[str, Any] = {
-            name: getattr(service_module, name) for name in names
+            name: getattr(ingestion_module, name) for name in names
         }
         real_json = self._originals["atomic_write_json"]
         real_jsonl = self._originals["atomic_write_jsonl"]
@@ -124,14 +124,14 @@ class durable_writes:
         def durable_jsonl(path: Path, records: Any, **kwargs: Any) -> None:
             real_jsonl(path, records, fsync_parent=True)
 
-        service_module.atomic_write_json = durable_json
-        service_module.atomic_write_jsonl = durable_jsonl
-        service_module.write_handoff_jsonl = durable_jsonl
-        service_module.fsync_directories = lambda paths: None
+        ingestion_module.atomic_write_json = durable_json
+        ingestion_module.atomic_write_jsonl = durable_jsonl
+        ingestion_module.write_handoff_jsonl = durable_jsonl
+        ingestion_module.fsync_directories = lambda paths: None
 
     def __exit__(self, *exc_info: object) -> None:
         for name, original in self._originals.items():
-            setattr(service_module, name, original)
+            setattr(ingestion_module, name, original)
 
 
 class chunk_batch:

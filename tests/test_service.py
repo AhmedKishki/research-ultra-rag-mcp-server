@@ -14,7 +14,9 @@ import pytest
 from conftest import write_epub, write_pdf, write_reviewed_metadata
 from filelock import AsyncFileLock
 
+import research_ultra_rag_mcp.ingestion as ingestion_module
 import research_ultra_rag_mcp.service as service_module
+import research_ultra_rag_mcp.status as status_module
 import research_ultra_rag_mcp.support as support_module
 from research_ultra_rag_mcp.config import (
     ConfigurationError,
@@ -784,7 +786,7 @@ async def _assert_search_can_skip_the_staleness_walk(
     def unexpected_walk(_config: ResearchConfig) -> None:
         raise AssertionError("search walked the source tree")
 
-    monkeypatch.setattr(service_module, "scan_sources", unexpected_walk)
+    monkeypatch.setattr(status_module, "scan_sources", unexpected_walk)
     with pytest.raises(AssertionError):
         await service.search("cobalt labour", top_k=1)
     no_walk = await service.search("cobalt labour", top_k=1, include_staleness=False)
@@ -2248,7 +2250,7 @@ async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
     class SimulatedProcessExit(BaseException):
         pass
 
-    original_atomic_write = service_module.atomic_write_json
+    original_atomic_write = ingestion_module.atomic_write_json
     crashed = False
 
     def fail_during_first_scan_batch(
@@ -2266,7 +2268,7 @@ async def _assert_partial_pdf_batch_is_replayed_after_hard_crash(
 
     with monkeypatch.context() as patcher:
         patcher.setattr(
-            service_module,
+            ingestion_module,
             "atomic_write_json",
             fail_during_first_scan_batch,
         )
@@ -2505,9 +2507,9 @@ def test_vector_outputs_are_fsynced_before_atomic_replace(
         file_syncs += 1
         real_fsync(descriptor)
 
-    monkeypatch.setattr(service_module.os, "fsync", tracking_fsync)
+    monkeypatch.setattr(os, "fsync", tracking_fsync)
     monkeypatch.setattr(
-        service_module,
+        ingestion_module,
         "fsync_directory",
         lambda path: directory_syncs.append(path),
     )
@@ -3118,7 +3120,7 @@ def test_pending_activation_recovers_crash_window(
             class SimulatedProcessExit(BaseException):
                 pass
 
-            original_atomic_write = service_module.atomic_write_json
+            original_atomic_write = ingestion_module.atomic_write_json
 
             def fail_journal(path: Path, value: object, **kwargs: object) -> None:
                 if path == config.state_root / "pending-activation.json":
@@ -3126,13 +3128,13 @@ def test_pending_activation_recovers_crash_window(
                 original_atomic_write(path, value, **kwargs)
 
             with monkeypatch.context() as patcher:
-                patcher.setattr(service_module, "atomic_write_json", fail_journal)
+                patcher.setattr(ingestion_module, "atomic_write_json", fail_journal)
                 with pytest.raises(SimulatedProcessExit):
                     await service.ingest(chunk_size=50, chunk_overlap=10)
             staging_root = next(config.staging_root.iterdir())
             assert (staging_root / "work").is_dir()
         elif failure_point == "before_move":
-            original_replace = service_module.os.replace
+            original_replace = os.replace
 
             def fail_generation_move(source: object, destination: object) -> None:
                 if Path(destination).parent == config.generations_root:
@@ -3140,11 +3142,11 @@ def test_pending_activation_recovers_crash_window(
                 original_replace(source, destination)
 
             with monkeypatch.context() as patcher:
-                patcher.setattr(service_module.os, "replace", fail_generation_move)
+                patcher.setattr(os, "replace", fail_generation_move)
                 with pytest.raises(OSError, match="before generation move"):
                     await service.ingest(chunk_size=50, chunk_overlap=10)
         else:
-            original_atomic_write = service_module.atomic_write_json
+            original_atomic_write = ingestion_module.atomic_write_json
 
             def fail_pointer(path: Path, value: object, **kwargs: object) -> None:
                 if path == config.current_path:
@@ -3152,7 +3154,7 @@ def test_pending_activation_recovers_crash_window(
                 original_atomic_write(path, value, **kwargs)
 
             with monkeypatch.context() as patcher:
-                patcher.setattr(service_module, "atomic_write_json", fail_pointer)
+                patcher.setattr(ingestion_module, "atomic_write_json", fail_pointer)
                 with pytest.raises(OSError, match="before pointer write"):
                     await service.ingest(chunk_size=50, chunk_overlap=10)
 

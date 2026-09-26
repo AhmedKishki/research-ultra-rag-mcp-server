@@ -160,7 +160,11 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools.
 - `transport.py`: the single research stdio transport builder used by UI and terminal clients.
-- `service.py`: generation, indexing, status, filtering, and evidence workflow.
+- `service.py`: the project-scoped service itself — the four workflow mixins combined into `ResearchService`, the project lock, the project paths, and the module's public names.
+- `ingestion.py`: resumable ingestion — staging, checkpoints, activation, and recovery.
+- `search.py`: ranked retrieval — BM25, fusion, reranking, and evidence assembly.
+- `status.py`: readiness, staleness, upgrade reasons, and the generation inventory.
+- `review.py`: source inventory, reviewed metadata, and reversible exclusions.
 - `tool_views.py`: the projection from service payloads to MCP tool answers.
 - `instructions.py`: guidance returned to MCP agents, without upstream credit text.
 - `ui.py`: shared-UI profile, private MCP client, public-tool mapping, and safe original-source authorization.
