@@ -564,7 +564,7 @@ def _process_alive(pid: int) -> bool:
     return stat.rsplit(") ", 1)[1].split()[0] != "Z"
 
 
-def test_a_server_ends_when_its_declared_owner_is_gone() -> None:
+def test_a_server_ends_when_its_declared_owner_is_gone(tmp_path: Path) -> None:
     """A server must not outlive the process that started it.
 
     A busy stdio server does not read stdin until the phase it is in returns, so
@@ -573,11 +573,23 @@ def test_a_server_ends_when_its_declared_owner_is_gone() -> None:
     this package names itself the owner in the child's environment, which is what
     lets the child end itself even when it is orphaned before it can look at its
     own parent: the parent here exits in the instant after spawning.
+
+    The wait is generous and the marker tells the two possible failures apart.
+    Reaching the watchdog means importing the whole server, which on a loaded
+    machine reads hundreds of files off the disk it shares with every other
+    process, so a child can take tens of seconds to get there; that is a slow
+    start, not a broken watchdog, and the marker says which one happened.
     """
 
+    started = tmp_path / "watchdog-started"
     code = (
-        "from research_ultra_rag_mcp.server import watch_owner; import time; "
-        "watch_owner(0.2); time.sleep(60)"
+        "from pathlib import Path;"
+        "from research_ultra_rag_mcp.server import watch_owner;"
+        "import time;"
+        f"marker = Path({str(started)!r});"
+        "watch_owner(0.2);"
+        "marker.write_text('started');"
+        "time.sleep(300)"
     )
     parent = subprocess.run(
         [
@@ -600,11 +612,17 @@ def test_a_server_ends_when_its_declared_owner_is_gone() -> None:
     assert parent.returncode == 0, parent.stderr
     child = int(parent.stdout.strip())
     try:
-        for _ in range(60):
-            if not _process_alive(child):
-                break
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and _process_alive(child):
             time.sleep(0.25)
-        assert not _process_alive(child), "the orphaned server is still running"
+        if _process_alive(child):
+            if not started.is_file():
+                pytest.fail(
+                    "the child never reached watch_owner within 120 s, so its "
+                    "interpreter was still starting rather than its watchdog "
+                    "failing to end it"
+                )
+            pytest.fail("the orphaned server is still running after its owner exited")
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(child, signal.SIGKILL)

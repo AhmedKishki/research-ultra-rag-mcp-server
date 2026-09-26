@@ -8,12 +8,14 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 from conftest import write_epub, write_pdf, write_reviewed_metadata
 from filelock import AsyncFileLock
 
+import research_ultra_rag_mcp.artifact_lookup as artifact_lookup_module
 import research_ultra_rag_mcp.ingestion as ingestion_module
 import research_ultra_rag_mcp.service as service_module
 import research_ultra_rag_mcp.status as status_module
@@ -3614,18 +3616,12 @@ async def _assert_query_paths_use_generation_lookup(
     lookup_path = generation_root / "indexes" / "artifact-lookup.sqlite3"
     chunks_path = generation_root / "chunks" / "chunks.jsonl"
     assert lookup_path.is_file()
+    assert chunks_path.is_file()
 
-    # A generation created before the sidecar existed is upgraded lazily. Query
-    # paths then seek only selected records rather than materializing JSONL.
+    # A generation created before the sidecar existed is upgraded lazily: the
+    # first query after the sidecar is gone rescans the artifact files once and
+    # writes it.
     lookup_path.unlink()
-    original_read_jsonl = service_module.read_jsonl
-
-    def reject_corpus_materialization(path: Path) -> list[dict[str, object]]:
-        if path == chunks_path:
-            raise AssertionError("query path materialized the complete chunk store")
-        return original_read_jsonl(path)
-
-    monkeypatch.setattr(service_module, "read_jsonl", reject_corpus_materialization)
     search = await service.search(
         "cobalt",
         top_k=1,
@@ -3634,11 +3630,36 @@ async def _assert_query_paths_use_generation_lookup(
     assert search["hits"]
     assert lookup_path.is_file()
 
+    # Every later query seeks the records it returns instead of scanning the
+    # store again. The property is enforced where the scan actually happens: the
+    # query path reads byte ranges through the lookup, so a rescanned chunk store
+    # can only mean `build_artifact_lookup` ran for a current generation.
+    def refuse_rescan(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a query path rescanned the complete chunk store")
+
+    monkeypatch.setattr(artifact_lookup_module, "_index_chunks", refuse_rescan)
+    monkeypatch.setattr(artifact_lookup_module, "_index_units", refuse_rescan)
+    steady = await service.search(
+        "cobalt",
+        top_k=1,
+        retrieval_method="dense",
+    )
+    assert steady["hits"]
     passage = await service.get_passage(
-        search["hits"][0]["chunk_id"],
+        steady["hits"][0]["chunk_id"],
         context_chunks=1,
     )
     assert passage["context"]
+
+    # The guard proves itself: with the sidecar gone, the same patch has to fire,
+    # which is what makes the steady-state silence above mean anything.
+    lookup_path.unlink()
+    with pytest.raises(AssertionError, match="rescanned the complete chunk store"):
+        await service.search(
+            "cobalt",
+            top_k=1,
+            retrieval_method="dense",
+        )
 
 
 def test_query_paths_use_generation_lookup(
