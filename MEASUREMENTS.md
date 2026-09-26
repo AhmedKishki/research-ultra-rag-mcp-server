@@ -111,6 +111,23 @@ A chunk's usability verdict is a property of the chunk, not of the query, so it 
 
 That is 10.3× cheaper at the 200 candidates a reference-view query can reach, and about 1.4 ms instead of 15 ms at the default depth of 32. One shared function computes the bitmask for both the build and the query-time fallback, so a rejection decision and the counter that reports it cannot drift. Reason codes are recomputed only for a chunk the verdict flags as corrupt, because the response discloses them, and a generation whose lookup predates the column recomputes the verdict from text.
 
+### What a client waits for
+
+A client will not call a tool until the handshake answers, so the handshake is the one latency a client cannot choose to pay later. Measured on the reference project with a stdio client, from spawning the server to the `initialize` response, and then for the calls themselves:
+
+| What | Cost |
+|---|---|
+| handshake: spawn to `initialize` | **1.17 s** (4.93 s idle and 10.36 s under load before the change below) |
+| `tools/list` | 0.01 s |
+| first tool call, which connects the gateway | 2.16 s for `status`, once per server session |
+| first `search`, which loads the embedding and reranking models | **11.37 s**, once per server session |
+| every later `search` | 1.06 s |
+| `list_sources` | 0.08 s |
+
+The handshake used to include two things no tool had asked for: the whole retrieval stack's imports (2.77 s, dominated by the qdrant and fastembed import chains) and the vanilla gateway process (1.10 s). It now imports what the tool schemas need, starts the gateway on the first tool call, and answers a client immediately. The consequence is worth stating: a client whose start-up probe expires in seconds used to report this server as unavailable while it was still loading, and now connects; a gateway that cannot start is reported by the tool that needed it instead of by a server that never appeared.
+
+The first search is the honest cold cost of the engines this server runs — a query embedding model and a cross-encoder are loaded from disk on first use, and nothing downloads because the models are cached. It is once per server session, and the per-call timeout a client sets has to cover it; after that a search is about a second.
+
 ### Fixed overhead per query
 
 Measured on the reference project, medians:

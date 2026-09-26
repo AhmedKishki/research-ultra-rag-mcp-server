@@ -235,6 +235,35 @@ The same installation can serve two isolated projects, which is why `--project-r
 
 A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.example.json).
 
+### Kilo Code
+
+Kilo Code keeps its servers in `~/.config/kilo/kilo.jsonc` (the `KILO_CONFIG_DIR` directory, `~/.config/kilo` by default) under an `mcp` key, one entry per server. Its shape differs from the `mcpServers` block above: `command` is one array that carries the arguments, the arguments live in that array rather than in `args`, and a local server is declared with `type: "local"`. A `command` *string* plus an `args` array is rejected by Kilo's schema, and a rejected file takes down every server in it, so the whole config loads or none of it does. A ready-to-copy entry is in [`kilo-mcp.example.jsonc`](kilo-mcp.example.jsonc):
+
+```jsonc
+{
+  "mcp": {
+    "research-ultra-rag-ai-and-fetishism": {
+      "type": "local",
+      "command": [
+        "/ABSOLUTE/PATH/TO/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+        "--project-root",
+        "/ABSOLUTE/PATH/TO/MY-RESEARCH-PROJECT",
+        "--runtime-root",
+        "/ABSOLUTE/PATH/TO/derived-state/MY-RESEARCH-PROJECT"
+      ],
+      "environment": {},
+      "enabled": true,
+      "timeout": 3600000
+    }
+  }
+}
+```
+
+Two details matter for this server:
+
+- **Pass `--runtime-root` when the project's derived state lives outside the project.** A project that was launched by `open-ui.sh` keeps its generations where that launcher put them (typically `~/.cache/research-ultra-rag-mcp/runtime/<project>`), because the launcher passes `--runtime-root` on every command it runs. Without the same flag here, this server reads the default in-project root — `<project>/.research-rag/runtime` — finds no generation there, and answers `status` with "No knowledge-base generation exists; call ingest" while a complete corpus sits in the other root. Copy the value from `open-ui.sh`, which records it, or from the `state_root` of a `status` call that points at the right place.
+- **The handshake is immediate and the first search is not.** The server answers `initialize` and `tools/list` as soon as it starts — it imports its retrieval stack and starts its gateway on the first tool call instead of before the handshake — so a client's start-up probe cannot time it out (measured at 1.17 s, against 4.93 s idle and 10.36 s on a loaded disk before that change). The first *search* then pays the cold model load: 11.37 s once per server session on the reference machine, 1.06 s for every search after it. Keep the per-call `timeout` generous enough for that one cold call; Kilo Code's `timeout` is in milliseconds.
+
 ### What a tool answer contains
 
 A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `chunk_id`, `source_relative_path` (the filename), `authors`, `locator`, and `text`. The locator is the position alone: a page, with the printed page label only where that label differs from the physical page, or a section for an EPUB. A passage is deliberately not citation-ready and repeats nothing: it carries no title and no citation, and `--tool-detail full` is what returns the citation, the resolved title, the year and DOI, the per-field provenance, the quote-safety flag, the advisory script note, and the ranking accounting.

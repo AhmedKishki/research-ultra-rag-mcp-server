@@ -455,5 +455,57 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
 
 @pytest.mark.integration
+def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
+    """A client must see the tools before any retrieval work is attempted.
+
+    The handshake used to wait for the vanilla gateway to start and for the whole
+    retrieval stack to import, which is seconds of work no tool had asked for and
+    longer than some clients wait before they report a server as unavailable. With
+    a gateway that cannot start at all, the property is easy to see: connecting and
+    listing tools must succeed, and the failure must arrive as the answer to the
+    tool that needed the gateway rather than as a client that never connected.
+    """
+
+    async def exercise() -> None:
+        write_pdf(
+            project / "sources" / "evidence.pdf",
+            ["The cobalt heron is evidence."],
+        )
+        # A gateway that exists and cannot serve: configuration resolution accepts
+        # it, so the failure can only appear when a tool asks for it.
+        broken = project / "broken-vanilla-gateway"
+        broken.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        broken.chmod(0o755)
+        transport = StdioTransport(
+            command=str(Path(sys.executable).parent / "research-ultra-rag-mcp"),
+            args=[
+                "--project-root",
+                str(project),
+                "--vanilla-executable",
+                str(broken),
+            ],
+            log_file=project / "broken-gateway-stderr.log",
+        )
+
+        async with Client(transport, timeout=300, init_timeout=300) as client:
+            assert client.initialize_result is not None
+            tools = {tool.name for tool in await client.list_tools()}
+            assert tools == {
+                "get_passage",
+                "ingest",
+                "list_sources",
+                "search",
+                "set_source_inclusion",
+                "set_source_metadata",
+                "status",
+            }
+            with pytest.raises(Exception) as failure:
+                await client.call_tool("status", {})
+        assert "Research workflow failed" in str(failure.value)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.integration
 def test_real_vanilla_ultrarag_research_flow(project: Path) -> None:
     asyncio.run(_assert_real_stdio_research_flow(project))

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import signal
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
-from typing import Annotated, Any, TypeAlias, TypeVar
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, TypeVar
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -25,12 +26,10 @@ from .config import (
     resolve_config,
 )
 from .instructions import SERVER_INSTRUCTIONS
-from .rerankers import RERANKER_MODEL_CHOICES
-from .service import ResearchError, ResearchService
-from .settings import TOOL_DETAIL_MODES, describe_settings
-from .tool_views import present_tool_response
-from .ultrarag import VanillaUltraRAG, create_vanilla_transport
 from .version import SERVER_VERSION
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .service import ResearchService
 
 SERVER_NAME = "research-ultra-rag-mcp"
 T = TypeVar("T")
@@ -191,6 +190,8 @@ ExclusionReason: TypeAlias = Annotated[
 
 
 async def _tool_call(operation: Callable[[], Awaitable[T]]) -> T:
+    from .service import ResearchError
+
     try:
         return await operation()
     except ResearchError as exc:
@@ -206,20 +207,51 @@ def create_server(
 ) -> FastMCP[Any]:
     holder: dict[str, ResearchService] = {}
     ui_holder: dict[str, Any] = {}
+    connector: dict[str, Callable[[], Awaitable[ResearchService]]] = {}
 
     @asynccontextmanager
     async def lifespan(_: FastMCP[Any]) -> AsyncIterator[dict[str, Any]]:
-        transport = create_vanilla_transport(config)
-        async with Client(
-            transport,
-            name=SERVER_NAME,
-            timeout=1800,
-            init_timeout=1800,
-        ) as client:
-            holder["service"] = ResearchService(config, VanillaUltraRAG(client))
+        async with AsyncExitStack() as stack:
+            lock = asyncio.Lock()
+
+            async def connect() -> ResearchService:
+                """Connect the retrieval gateway once, on the first tool call.
+
+                A client waits for the handshake before it will call anything, so
+                the handshake must not depend on work no tool has asked for. Both
+                the retrieval stack's imports and the gateway process used to be
+                spent before `initialize` answered, which is about ten seconds on
+                a loaded machine and longer than some clients wait before they
+                report the server as unavailable. The imports stay inside the
+                first call for the same reason, so the schema a client probes is
+                answered immediately.
+                """
+
+                from .service import ResearchService
+                from .ultrarag import VanillaUltraRAG, create_vanilla_transport
+
+                async with lock:
+                    instance = holder.get("service")
+                    if instance is not None:
+                        return instance
+                    client = await stack.enter_async_context(
+                        Client(
+                            create_vanilla_transport(config),
+                            name=SERVER_NAME,
+                            timeout=1800,
+                            init_timeout=1800,
+                        )
+                    )
+                    instance = ResearchService(config, VanillaUltraRAG(client))
+                    holder["service"] = instance
+                    return instance
+
+            connector["connect"] = connect
             if ui_port is not None:
                 # Imported lazily so a server that serves no UI never loads the
-                # browser stack (uvicorn and starlette).
+                # browser stack (uvicorn and starlette), and started here rather
+                # than on first use so a taken port is reported by `status`
+                # instead of by a failed tool call.
                 from .ui import EmbeddedUi
 
                 embedded = EmbeddedUi(config, port=ui_port)
@@ -231,6 +263,7 @@ def create_server(
                 active_ui = ui_holder.pop("ui", None)
                 if active_ui is not None:
                     await active_ui.stop()
+                connector.clear()
                 holder.clear()
 
     app = FastMCP(
@@ -240,14 +273,32 @@ def create_server(
         lifespan=lifespan,
     )
 
-    def service() -> ResearchService:
-        instance = holder.get("service")
-        if instance is None:
+    async def service() -> ResearchService:
+        connect = connector.get("connect")
+        if connect is None:
             raise ToolError("Research server is not initialized")
-        return instance
+        return await connect()
+
+    async def _service_call(
+        operation: Callable[[ResearchService], Awaitable[T]],
+    ) -> T:
+        """Run one service operation, connecting the gateway if it is not up yet.
+
+        Connection failures are translated like any other workflow failure, so a
+        gateway that cannot start is reported by the tool the user called rather
+        than by a server that never answered its handshake.
+        """
+
+        async def run() -> T:
+            return await operation(await service())
+
+        return await _tool_call(run)
 
     def _present(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Return a tool answer in this server's configured detail mode."""
+
+        from .service import ResearchError
+        from .tool_views import present_tool_response
 
         try:
             return present_tool_response(
@@ -273,7 +324,9 @@ def create_server(
         No generation means nothing can be searched yet; `stale` and
         `generation_upgrade_required` say what moved and whether to ingest again.
         """
-        payload = _present("status", await _tool_call(service().status))
+        payload = _present(
+            "status", await _service_call(lambda instance: instance.status())
+        )
         embedded = ui_holder.get("ui")
         if embedded is None:
             return {**payload, "ui_url": None, "ui_ready": False, "ui_error": None}
@@ -310,7 +363,9 @@ def create_server(
 
         return _present(
             "ingest",
-            await _tool_call(lambda: service().ingest(force_recompute=force_recompute)),
+            await _service_call(
+                lambda instance: instance.ingest(force_recompute=force_recompute)
+            ),
         )
 
     @app.tool(
@@ -345,8 +400,8 @@ def create_server(
 
         return _present(
             "search",
-            await _tool_call(
-                lambda: service().search(
+            await _service_call(
+                lambda instance: instance.search(
                     query,
                     top_k=top_k,
                     categories_any=categories_any,
@@ -381,7 +436,7 @@ def create_server(
 
         return _present(
             "list_sources",
-            await _tool_call(lambda: service().list_sources()),
+            await _service_call(lambda instance: instance.list_sources()),
         )
 
     @app.tool(
@@ -402,7 +457,7 @@ def create_server(
         """
         return _present(
             "get_passage",
-            await _tool_call(lambda: service().get_passage(chunk_id)),
+            await _service_call(lambda instance: instance.get_passage(chunk_id)),
         )
 
     @app.tool(
@@ -427,8 +482,8 @@ def create_server(
 
         return _present(
             "set_source_inclusion",
-            await _tool_call(
-                lambda: service().set_source_inclusion(
+            await _service_call(
+                lambda instance: instance.set_source_inclusion(
                     source_path=source_path,
                     included=included,
                     reason=reason,
@@ -461,8 +516,8 @@ def create_server(
 
         return _present(
             "set_source_metadata",
-            await _tool_call(
-                lambda: service().set_source_metadata(
+            await _service_call(
+                lambda instance: instance.set_source_metadata(
                     metadata=metadata,
                     source_path=source_path,
                 )
@@ -473,6 +528,9 @@ def create_server(
 
 
 def _parser() -> argparse.ArgumentParser:
+    from .rerankers import RERANKER_MODEL_CHOICES
+    from .settings import TOOL_DETAIL_MODES
+
     parser = argparse.ArgumentParser(
         prog=SERVER_NAME,
         description=(
@@ -710,6 +768,8 @@ def main() -> None:
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
     if args.print_config:
+        from .settings import describe_settings
+
         print(describe_settings(config.settings, config.settings_provenance))
         return
     apply_process_priority(config.nice)

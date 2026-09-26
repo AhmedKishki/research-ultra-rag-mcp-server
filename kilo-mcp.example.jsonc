@@ -1,0 +1,17 @@
+{
+  "mcp": {
+    "research-ultra-rag-mcp": {
+      "type": "local",
+      "command": [
+        "/ABSOLUTE/PATH/TO/research-ultra-rag-mcp-server/.venv/bin/research-ultra-rag-mcp",
+        "--project-root",
+        "/ABSOLUTE/PATH/TO/MY-RESEARCH-PROJECT",
+        "--runtime-root",
+        "/ABSOLUTE/PATH/TO/derived-state/MY-RESEARCH-PROJECT"
+      ],
+      "environment": {},
+      "enabled": true,
+      "timeout": 3600000
+    }
+  }
+}

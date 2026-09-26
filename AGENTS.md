@@ -278,6 +278,7 @@ Do not move the dense backend implementations into the vanilla gateway or patch 
 
 - Use `pathlib.Path`, type hints, and JSON-serializable tool results.
 - Answer through the core, never around it: the core command line, the MCP tools, and the browser UI all call a `ResearchService` method and project the result with `tool_views`, so one capability has one implementation and the surfaces cannot disagree about it.
+- Keep the stdio handshake independent of work no tool has asked for. A client will not call a tool until `initialize` answers, so the server imports what its schemas need, resolves its configuration, and answers — and only then, on the first tool call, imports the retrieval stack and starts the vanilla gateway. A gateway that cannot start is reported by the tool that needed it, not by a server that never appeared. `tests/test_integration.py` pins this with a gateway that exits immediately.
 - Keep blocking extraction and filesystem scans outside the event loop.
 - Set process-level resource policy once, at start: `runtime.nice` is applied by the server, the UI, and the core command line before anything is spawned, so children inherit it and one setting reaches the whole process tree without a second copy of the logic.
 - Signal only a process this project can prove it owns. The stop sweep requires a research entry point in the command line *and* this project as `--project-root`, so it cannot touch a shell, an editor, or another project's server, and it never signals the process doing the sweep.
