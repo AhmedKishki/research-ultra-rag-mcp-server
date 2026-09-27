@@ -47,10 +47,15 @@ from research_ultra_rag_mcp.service import (
     _enrich_chunks,
     _public_document,
 )
+from research_ultra_rag_mcp.settings import resolve_gate_stopwords
 from research_ultra_rag_mcp.storage import read_jsonl, write_jsonl
 
 # The default model's own facts, resolved rather than hard-coded.
 DEFAULT_EMBEDDING_FACTS = resolve_embedding_model(DEFAULT_EMBEDDING_MODEL)
+
+# The function words the English lexical gate ignores, resolved the way a
+# search resolves them, so the helper tests exercise the real rule.
+ENGLISH_GATE_STOPWORDS = resolve_gate_stopwords(("en",))
 
 CORRUPT_TEXT = (
     "��ѪҶޜഝǄ䘉Ӌਁ ⧠ᢃ⹤Ҷἅ ൠ؞༽൷㜭ᡀ࣏ "
@@ -1780,6 +1785,46 @@ async def _assert_relevance_gates_allow_abstention(project: Path) -> None:
 
 def test_relevance_gates_allow_zero_results(project: Path) -> None:
     asyncio.run(_assert_relevance_gates_allow_abstention(project))
+
+
+async def _assert_contentless_queries_abstain(project: Path) -> None:
+    """A question word carries no topic, so the lexical half must reject it."""
+
+    write_pdf(
+        project / "sources" / "questions.pdf",
+        ["How does the analysis work, and what does it show?"],
+    )
+    config = resolve_config(project, vanilla_executable=sys.executable)
+    service = ResearchService(  # type: ignore[arg-type]
+        config,
+        FakeUltraRAG(),
+        dense=FakeDenseBackend(),
+    )
+    await service.ingest(chunk_size=50, chunk_overlap=10)
+
+    for query in ("how?", "what?", "why not?", "what does it do?"):
+        answer = await service.search(
+            query,
+            top_k=5,
+            retrieval_method="bm25",
+            include_staleness=False,
+        )
+        assert answer["result_count"] == 0, query
+        assert answer["relevance_limited"] is True, query
+        # The gateway still returned the chunk; the gate is what dropped it.
+        assert answer["rejected_candidates"]["bm25_no_query_token_overlap"] == 1, query
+
+    anchored = await service.search(
+        "analysis",
+        top_k=5,
+        retrieval_method="bm25",
+        include_staleness=False,
+    )
+    assert anchored["result_count"] == 1
+
+
+def test_contentless_queries_abstain(project: Path) -> None:
+    asyncio.run(_assert_contentless_queries_abstain(project))
 
 
 async def _assert_dense_threshold_boundary(project: Path) -> None:
@@ -4197,7 +4242,8 @@ def test_document_frequencies_count_a_term_once_per_text() -> None:
     """A passage repeating a word must not make it look common."""
 
     frequencies = support_module.document_frequencies(
-        ["alpha alpha alpha beta", "beta gamma"]
+        ["alpha alpha alpha beta", "beta gamma"],
+        ENGLISH_GATE_STOPWORDS,
     )
 
     assert frequencies == {"alpha": 1, "beta": 2, "gamma": 1}
@@ -4214,6 +4260,7 @@ def test_feedback_ranks_a_rare_term_above_one_every_passage_uses() -> None:
             "digital data and the object of fetishism",
         ],
         maximum_terms=3,
+        stopwords=ENGLISH_GATE_STOPWORDS,
         document_frequencies={
             # Corpus-wide counts, so never below the leader support above.
             "commodity": 6,
@@ -4236,6 +4283,7 @@ def test_feedback_without_a_table_ranks_by_leader_support() -> None:
         query="question",
         texts=["alpha beta beta", "beta gamma"],
         maximum_terms=2,
+        stopwords=ENGLISH_GATE_STOPWORDS,
     )
 
     assert ranked == ["beta", "alpha"]
@@ -4246,6 +4294,7 @@ def test_feedback_is_reproducible_for_the_same_input() -> None:
         "query": "commodity fetishism",
         "texts": ["fetishism and the digital object", "the object of fetishism"],
         "maximum_terms": 3,
+        "stopwords": ENGLISH_GATE_STOPWORDS,
         "document_frequencies": {"digital": 9, "object": 2},
         "corpus_size": 40,
     }

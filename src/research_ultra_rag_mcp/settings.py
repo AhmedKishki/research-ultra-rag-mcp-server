@@ -178,6 +178,79 @@ def bm25_stopwords(language: str) -> frozenset[str] | None:
         return None
 
 
+# The gate's own floor: the function words this project stops when bm25s
+# supplies no list for a corpus language. It holds the question words and
+# do-support forms no query is anchored by, so a contentless query abstains in
+# any corpus.
+FALLBACK_GATE_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "how",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+    }
+)
+
+
+def _english_plus_stopwords() -> frozenset[str]:
+    """Return bm25s's fuller English list, or nothing when bm25s is absent.
+
+    bm25s filters with the shorter list when it is asked for ``en``, and that
+    list keeps question words and do-support forms. The lexical gate needs the
+    fuller list, because those words anchor no query.
+    """
+
+    try:
+        from bm25s.stopwords import STOPWORDS_EN_PLUS
+    except ImportError:
+        return frozenset()
+    return frozenset(str(item).casefold() for item in STOPWORDS_EN_PLUS)
+
+
+def resolve_gate_stopwords(languages: Sequence[str]) -> frozenset[str]:
+    """Return the function words the lexical abstention gate ignores.
+
+    The gate stops at least what the index stops, so a query cannot be admitted
+    on a token BM25 never scored, and it stops what carries no topic. English
+    takes bm25s's fuller list, every other corpus language takes its own, and
+    the fallback words are always stopped.
+    """
+
+    words: set[str] = set(FALLBACK_GATE_STOPWORDS)
+    for item in dict.fromkeys(languages):
+        code = str(item).strip().casefold()
+        words.update(bm25_stopwords(code) or ())
+        if code == "en":
+            words.update(_english_plus_stopwords())
+    return frozenset(words)
+
+
 def normalize_corpus_languages(value: Any) -> tuple[str, ...]:
     """Parse `language.corpus` into the languages a corpus is written in.
 
@@ -985,6 +1058,20 @@ class EffectiveSettings:
         """
 
         return self.bm25_stopwords or self.corpus_languages[0]
+
+    @property
+    def gate_stopwords(self) -> frozenset[str]:
+        """The function words the lexical abstention gate ignores.
+
+        Built from every corpus language plus the one BM25 filters with, so a
+        contentless query abstains in any language of the corpus. English uses
+        bm25s's fuller list because the index's own list keeps question words
+        and do-support forms, which anchor no query.
+        """
+
+        return resolve_gate_stopwords(
+            (*self.corpus_languages, self.bm25_stopwords_language)
+        )
 
     @property
     def embedding_language_warning(self) -> str | None:

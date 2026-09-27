@@ -54,7 +54,6 @@ from .storage import (  # noqa: F401
 # The pure helpers moved to `support`; re-exported so every existing import
 # path, including the tests that read them from this module, keeps working.
 from .support import (  # noqa: F401
-    _STOPWORDS,
     _WORD,
     ARTIFACT_POLICY_VERSION,
     CLEANING_POLICY_VERSION,
@@ -177,10 +176,13 @@ class ResearchService(
             timeout=PROJECT_LOCK_TIMEOUT_SECONDS,
         )
         self._loaded_generation: str | None = None
-        # Term rarity for pseudo-relevance feedback, as (generation id, table).
-        # It is built on the first search that asks for one, so a process that
-        # never enables the feature never makes the pass over the corpus.
-        self._document_frequencies: tuple[str, dict[str, int]] | None = None
+        # Term rarity for pseudo-relevance feedback, as (generation id,
+        # function-word set, table). It is built on the first search that asks
+        # for one, so a process that never enables the feature never makes the
+        # pass over the corpus.
+        self._document_frequencies: (
+            tuple[str, frozenset[str], dict[str, int]] | None
+        ) = None
 
     @asynccontextmanager
     async def _operation(self) -> AsyncIterator[None]:

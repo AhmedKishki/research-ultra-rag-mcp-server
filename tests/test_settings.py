@@ -296,6 +296,43 @@ def test_a_corpus_can_name_several_languages(tmp_path: Path) -> None:
     assert mixed.embedding_language_warning is None
 
 
+def test_the_gate_stopwords_stop_question_and_do_support_words(
+    tmp_path: Path,
+) -> None:
+    """A query no topic is attached to has no content token to be admitted by."""
+    english, _ = resolve_settings(tmp_path, environ={})
+    assert {"how", "what", "when", "where", "which", "who", "why"} <= (
+        english.gate_stopwords
+    )
+    assert {"do", "does", "did", "not", "will"} <= english.gate_stopwords
+
+    german, _ = resolve_settings(tmp_path, overrides=["language.corpus=de"], environ={})
+    assert {"wie", "und", "nicht"} <= german.gate_stopwords
+
+
+def test_the_gate_stopwords_cover_every_language_of_a_mixed_corpus(
+    tmp_path: Path,
+) -> None:
+    """One contentless query has to abstain in any language the corpus names."""
+    mixed, _ = resolve_settings(
+        tmp_path, overrides=["language.corpus=de,en"], environ={}
+    )
+    assert {"wie", "und"} <= mixed.gate_stopwords
+    assert {"how", "does"} <= mixed.gate_stopwords
+
+
+def test_the_gate_stopwords_keep_their_own_words_without_bm25s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken bm25s environment must not turn the gate into no gate at all."""
+    import research_ultra_rag_mcp.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "bm25_stopwords", lambda language: None)
+    monkeypatch.setattr(settings_module, "_english_plus_stopwords", lambda: frozenset())
+    resolved, _ = resolve_settings(tmp_path, environ={})
+    assert {"how", "what", "why", "be", "with"} <= resolved.gate_stopwords
+
+
 def test_a_mixed_corpus_filters_the_first_language_named(tmp_path: Path) -> None:
     """BM25 filters one language: the first named, unless another is chosen."""
     first, _ = resolve_settings(

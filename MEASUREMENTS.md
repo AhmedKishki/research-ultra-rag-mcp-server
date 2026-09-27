@@ -423,6 +423,21 @@ Cost and reversibility. The tokenizer loads once per process (0.22 s) and counti
 
 What these numbers do not establish. The judged set's shortest target is 168 tokens, so these rows bound the harm to long designated passages and say nothing about a corpus whose evidence is legitimately short. The 38-token floor is not a back-matter filter: it takes 23.4% of the corpus's *prose* chunks (4,057 of 17,325), 56.1% of its lists (423 of 754) and 70.7% of its tables (29 of 41), because a short unit is short whatever it holds. On this corpus that is the intended trade — a five-word index line is exactly as short as a one-line paragraph, and only the query can tell them apart — but a corpus whose answers are table rows, catalogue entries, or bibliography lines would lose evidence that the judged set here could never detect. That is why the packaged default is 0 and the value belongs in a project's own configuration.
 
+## The lexical abstention gate, measured
+
+The gate drops a lexical candidate that shares no query token outside the corpus language's function-word set. English takes bm25s's fuller list, which also stops question and do-support words, so `how?`, `why not?`, and `what does it do?` share nothing with any candidate and abstain instead of matching whatever passage contains the word they asked with. A corpus in several languages unions every named language's list, and the fallback words stay stopped even when bm25s is unavailable.
+
+The judged set holds no contentless query, so it cannot measure the new behaviour; `tests/test_service.py::test_contentless_queries_abstain` and the settings tests pin it. What the set measures is the cost to content-bearing questions. Run on the current generation (81 sources, 19,400 chunks, 30 queries, `--skip-targets t12`, `top_k=10`), 150 searches in 101.7 s:
+
+| Mode | succ@1 | succ@3 | succ@k | MRR | nDCG | doc@k | mean returned | mean sources |
+|---|---|---|---|---|---|---|---|---|
+| bm25 | 60.0% | 76.7% | 83.3% | 0.677 | 0.715 | 90.0% | 10.0 | 4.5 |
+| dense | 26.7% | 43.3% | 63.3% | 0.375 | 0.437 | 66.7% | 7.1 | 2.3 |
+| hybrid | 63.3% | 73.3% | 86.7% | 0.688 | 0.730 | 90.0% | 10.0 | 7.3 |
+| hybrid + rerank | 80.0% | 83.3% | 86.7% | 0.823 | 0.834 | 90.0% | 10.0 | 7.5 |
+
+Every column of every row matches this generation's recorded rows at the same gate and floor configuration — the dense and hybrid rows in "The same floor in the chunker's own unit", and hybrid + rerank in both that table and "The minimum passage length" — so the gate change costs the judged set nothing.
+
 ## The chunk size and overlap, measured
 
 `chunking.size` is bounded at 384 tokens by its own setting, and that ceiling is the embedding model's: the packaged model reads 512 tokens, so a chunk has to fit inside that with its contextual header. A 512-token chunk is therefore not expressible, which is why this sweep tests *down* from the shipped size and tests the overlap separately.

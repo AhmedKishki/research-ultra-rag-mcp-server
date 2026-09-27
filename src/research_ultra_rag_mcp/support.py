@@ -312,17 +312,25 @@ def _citation(document: dict[str, Any], locator: dict[str, Any]) -> str:
     return f"{lead}, {location}"
 
 
-def _content_tokens(value: str) -> set[str]:
-    """Return meaningful Unicode word tokens used for lexical abstention."""
+def _content_tokens(value: str, stopwords: frozenset[str]) -> set[str]:
+    """Return meaningful Unicode word tokens used for lexical abstention.
+
+    ``stopwords`` is the gate's resolved function-word set, which stops at
+    least what the index stops and also the question and do-support words no
+    query is anchored by.
+    """
 
     return {
         token
         for match in _WORD.finditer(value.casefold())
-        if (token := match.group(0)) not in _STOPWORDS
+        if (token := match.group(0)) not in stopwords
     }
 
 
-def document_frequencies(texts: Iterable[str]) -> Counter[str]:
+def document_frequencies(
+    texts: Iterable[str],
+    stopwords: frozenset[str],
+) -> Counter[str]:
     """Count, for each content token, how many of these texts contain it.
 
     Distinct tokens per text, so a passage that repeats a word does not make it
@@ -332,7 +340,7 @@ def document_frequencies(texts: Iterable[str]) -> Counter[str]:
 
     frequencies: Counter[str] = Counter()
     for text in texts:
-        frequencies.update(_content_tokens(text))
+        frequencies.update(_content_tokens(text, stopwords))
     return frequencies
 
 
@@ -357,6 +365,7 @@ def _pseudo_relevance_terms(
     query: str,
     texts: list[str],
     maximum_terms: int,
+    stopwords: frozenset[str],
     document_frequencies: Mapping[str, int] | None = None,
     corpus_size: int = 0,
 ) -> list[str]:
@@ -376,10 +385,10 @@ def _pseudo_relevance_terms(
 
     if maximum_terms <= 0:
         return []
-    query_tokens = _content_tokens(query)
+    query_tokens = _content_tokens(query, stopwords)
     support: Counter[str] = Counter()
     for text in texts:
-        support.update(_content_tokens(text) - query_tokens)
+        support.update(_content_tokens(text, stopwords) - query_tokens)
 
     def rank(item: tuple[str, int]) -> tuple[float, int, str]:
         term, count = item
@@ -989,41 +998,6 @@ ARTIFACT_POLICY_VERSION = 3
 INGESTION_IDENTITY_POLICY_VERSION = 3
 
 METADATA_STORAGE_POLICY = "automatic_only_runtime_overlay_v1"
-
-_STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "how",
-        "in",
-        "is",
-        "it",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "this",
-        "to",
-        "was",
-        "were",
-        "what",
-        "when",
-        "where",
-        "which",
-        "who",
-        "why",
-        "with",
-    }
-)
 
 _WORD = re.compile(r"[^\W_]+", re.UNICODE)
 

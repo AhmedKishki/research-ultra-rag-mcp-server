@@ -189,6 +189,7 @@ class SearchWorkflow:
         document_filter: set[str],
         excluded_document_ids: set[str],
         withheld: dict[str, dict[str, Any]],
+        stopwords: frozenset[str],
         token_policy: dict[str, Any] | None = None,
     ) -> tuple[
         list[str],
@@ -222,7 +223,7 @@ class SearchWorkflow:
             total_chunk_count,
             max(limit * 4, self.config.settings.minimum_candidates),
         )
-        query_tokens = _content_tokens(query)
+        query_tokens = _content_tokens(query, stopwords)
         by_contents: dict[str, list[dict[str, Any]]] = {}
         loaded_contents: set[str] = set()
         # A candidate's verdict depends only on the chunk, so a repeat in a
@@ -304,7 +305,7 @@ class SearchWorkflow:
                     continue
                 tokens = tokens_cache.get(chunk_id)
                 if tokens is None:
-                    tokens = frozenset(_content_tokens(_chunk_text(chunk)))
+                    tokens = frozenset(_content_tokens(_chunk_text(chunk), stopwords))
                     tokens_cache[chunk_id] = tokens
                 if not query_tokens.intersection(tokens):
                     rejected["no_query_token_overlap"] += 1
@@ -369,23 +370,26 @@ class SearchWorkflow:
         self,
         generation_id: str,
         chunks_path: Path,
+        stopwords: frozenset[str],
     ) -> dict[str, int]:
         """Return this generation's term frequencies, built once and then kept.
 
         The table is what lets a feedback term be rare rather than merely
         frequent. It costs a full pass over the corpus, so it is built on the
-        first search that asks for one and kept while that generation stays
-        loaded; nothing builds it while `retrieval.prf` is off.
+        first search that asks for one and kept while that generation and that
+        function-word set stay current; nothing builds it while `retrieval.prf`
+        is off.
         """
 
         cached = self._document_frequencies
-        if cached is not None and cached[0] == generation_id:
-            return cached[1]
+        if cached is not None and cached[0] == generation_id and cached[1] == stopwords:
+            return cached[2]
         frequencies = await _atomic_to_thread(
             document_frequencies,
             (_chunk_text(record) for record in iter_jsonl(chunks_path)),
+            stopwords,
         )
-        self._document_frequencies = (generation_id, frequencies)
+        self._document_frequencies = (generation_id, stopwords, frequencies)
         return frequencies
 
     async def search(
@@ -440,6 +444,7 @@ class SearchWorkflow:
                 raise ResearchError("No knowledge base exists; call ingest first")
             generation_root, manifest = current
             passage_token_policy = self._passage_token_policy(manifest)
+            gate_stopwords = self.config.settings.gate_stopwords
             lookup = await self._ensure_artifact_lookup(generation_root, manifest)
             total_chunk_count = await asyncio.to_thread(lookup.chunk_count)
             if not total_chunk_count:
@@ -598,6 +603,7 @@ class SearchWorkflow:
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
+                        stopwords=gate_stopwords,
                         token_policy=passage_token_policy,
                     ),
                     search_dense(),
@@ -630,6 +636,7 @@ class SearchWorkflow:
                     document_filter=document_filter,
                     excluded_document_ids=excluded_document_ids,
                     withheld=withheld,
+                    stopwords=gate_stopwords,
                     token_policy=passage_token_policy,
                 )
                 chunks_by_id.update(bm25_chunks)
@@ -646,6 +653,7 @@ class SearchWorkflow:
                 frequencies = await self._generation_document_frequencies(
                     str(manifest["generation_id"]),
                     generation_root / str(manifest["files"]["chunks"]),
+                    gate_stopwords,
                 )
                 prf_terms = _pseudo_relevance_terms(
                     query=query,
@@ -657,6 +665,7 @@ class SearchWorkflow:
                         if chunk_id in chunks_by_id
                     ],
                     maximum_terms=self.config.settings.prf_terms,
+                    stopwords=gate_stopwords,
                     document_frequencies=frequencies,
                     corpus_size=total_chunk_count,
                 )
@@ -681,6 +690,7 @@ class SearchWorkflow:
                         document_filter=document_filter,
                         excluded_document_ids=excluded_document_ids,
                         withheld=withheld,
+                        stopwords=gate_stopwords,
                         token_policy=passage_token_policy,
                     )
                     chunks_by_id.update(bm25_chunks)
