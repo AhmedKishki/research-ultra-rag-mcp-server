@@ -12,13 +12,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from config_ultra_rag_mcp import SettingsError, resolve_settings
 from platformdirs import user_cache_path
 
 from .launcher import ensure_ui_launcher
 from .settings import (
+    SETTINGS,
     EffectiveSettings,
-    SettingsError,
-    resolve_settings,
+    sources_for,
 )
 
 # The console script that runs this project without an MCP client, named here
@@ -620,12 +621,14 @@ def resolve_config(
         overrides.append("runtime.offline=true")
 
     try:
-        settings, _provenance = resolve_settings(
-            project,
+        values, provenance = resolve_settings(
+            SETTINGS,
+            sources_for(project),
             config_path=config_path,
             overrides=overrides,
             environ=environ,
         )
+        settings = EffectiveSettings.from_values(values)
     except SettingsError as exc:
         # One error type for the caller: a settings layer problem is a
         # configuration problem, whether it came from a file, the environment,
@@ -700,7 +703,7 @@ def resolve_config(
         runtime_cache_root=cache,
         model_cache_root=configured_model_cache,
         settings=settings,
-        settings_provenance=dict(_provenance),
+        settings_provenance=dict(provenance),
         runtime_root=custom_state if relocated else None,
     )
 

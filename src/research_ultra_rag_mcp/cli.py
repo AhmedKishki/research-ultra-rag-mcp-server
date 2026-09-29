@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from config_ultra_rag_mcp import describe_settings
+
 from .config import (
     CLI_COMMAND,
     ConfigurationError,
@@ -47,7 +49,7 @@ from .config import (
 from .launcher import launcher_path, ui_launcher_state
 from .rerankers import RERANKER_MODEL_CHOICES
 from .service import ResearchService
-from .settings import FULL_TOOL_DETAIL, TOOL_DETAIL_MODES, describe_settings
+from .settings import FULL_TOOL_DETAIL, SETTINGS, TOOL_DETAIL_MODES
 from .support import DEFAULT_RETRIEVAL_METHOD, RETRIEVAL_METHODS, ResearchError
 from .tool_views import present_tool_response
 from .ultrarag import VanillaUltraRAG, vanilla_client
@@ -745,7 +747,11 @@ async def _run(args: argparse.Namespace) -> CommandResult:
     config = _resolve(args)
     apply_process_priority(config.nice)
     if args.command == "config":
-        print(describe_settings(config.settings, config.settings_provenance))
+        print(
+            describe_settings(
+                SETTINGS, config.settings.as_values(), config.settings_provenance
+            )
+        )
         return CommandResult()
     if args.command == "ui":
         _ui(args, config)

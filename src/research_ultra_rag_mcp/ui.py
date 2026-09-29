@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 import uvicorn
+from config_ultra_rag_mcp import describe_settings
 from fastmcp import Client
 from ui_ultra_rag_mcp import (
     AdapterFactory,
@@ -36,7 +37,7 @@ from .rerankers import RERANKER_MODEL_CHOICES
 from .settings import (
     FULL_TOOL_DETAIL,
     MAXIMUM_WORK_BUDGET_SECONDS,
-    describe_settings,
+    SETTINGS,
 )
 from .sources import SourcePolicyError, scan_sources
 from .transport import create_research_transport
@@ -514,7 +515,11 @@ def main() -> None:
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
     if args.print_config:
-        print(describe_settings(config.settings, config.settings_provenance))
+        print(
+            describe_settings(
+                SETTINGS, config.settings.as_values(), config.settings_provenance
+            )
+        )
         return
     apply_process_priority(config.nice)
     run_ui(

@@ -13,6 +13,7 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "bm25s @ git+https://github.com/AhmedKishki/bm25s.git@20f6c02612b8114dca4662131ba09d5102c53308",
     "beautifulsoup4>=4.13,<5",
+    "config-ultra-rag-mcp @ git+https://github.com/AhmedKishki/config-ultra-rag-mcp.git@cbd47bb46efe85340de34f8f8f13fc6516e7fecb",
     "ebooklib>=0.20,<1",
     "fastembed==0.8.0",
     "fastmcp==3.4.0",

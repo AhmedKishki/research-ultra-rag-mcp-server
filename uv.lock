@@ -401,6 +401,14 @@ wheels = [
 ]
 
 [[package]]
+name = "config-ultra-rag-mcp"
+version = "0.1.0"
+source = { git = "https://github.com/AhmedKishki/config-ultra-rag-mcp.git?rev=cbd47bb46efe85340de34f8f8f13fc6516e7fecb#cbd47bb46efe85340de34f8f8f13fc6516e7fecb" }
+dependencies = [
+    { name = "platformdirs" },
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2145,6 +2153,7 @@ source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "bm25s" },
+    { name = "config-ultra-rag-mcp" },
     { name = "ebooklib" },
     { name = "fastembed" },
     { name = "fastmcp" },
@@ -2170,6 +2179,7 @@ dev = [
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.13,<5" },
     { name = "bm25s", git = "https://github.com/AhmedKishki/bm25s.git?rev=20f6c02612b8114dca4662131ba09d5102c53308" },
+    { name = "config-ultra-rag-mcp", git = "https://github.com/AhmedKishki/config-ultra-rag-mcp.git?rev=cbd47bb46efe85340de34f8f8f13fc6516e7fecb" },
     { name = "ebooklib", specifier = ">=0.20,<1" },
     { name = "fastembed", specifier = "==0.8.0" },
     { name = "fastmcp", specifier = "==3.4.0" },

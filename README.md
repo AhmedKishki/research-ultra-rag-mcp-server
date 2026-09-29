@@ -59,6 +59,8 @@ Nothing that decides an outcome is compiled in. `default.toml` ships inside the 
 
 Inspect the result instead of guessing: `research-ultra-rag-mcp --project-root <project> --print-config` prints every key, its effective value, and the layer that supplied it. A key that is not declared is refused in every layer, so a mistyped name is an error rather than a silent default, and a value outside its bounds is refused with the key and the bound named.
 
+The stack itself — the registry type, the merge, the coercion every layer shares, the provenance, and the three path helpers — is the pinned `config-ultra-rag-mcp` library, which the memory server uses too. This server keeps its own keys, its own `default.toml`, its own account and project directory names, and its own effective settings, so a change to one server's tunables never reaches the other.
+
 Settings come in three classes, marked in `default.toml`:
 
 - **identity** — the value decides what a generation contains. The fusion weights, the RRF constant, the dense cosine gate, and the candidate counts enter the retrieval-policy fingerprint, and the chunking values are recorded with the generation. Change one and the next ingestion builds a new generation instead of quietly mixing two; a generation that recorded a different policy is reported as needing an upgrade, never reused as if it matched.

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from config_ultra_rag_mcp import describe_settings
 from fastmcp import Client
 
 from .config import configured_source_directory, resolve_config
@@ -16,7 +17,7 @@ from .rerankers import RERANKER_MODEL_CHOICES
 from .settings import (
     FULL_TOOL_DETAIL,
     MAXIMUM_WORK_BUDGET_SECONDS,
-    describe_settings,
+    SETTINGS,
 )
 from .transport import create_research_transport
 
@@ -160,7 +161,11 @@ async def _verify(args: argparse.Namespace) -> dict[str, Any]:
         settings_overrides=args.set_overrides,
     )
     if args.print_config:
-        print(describe_settings(config.settings, config.settings_provenance))
+        print(
+            describe_settings(
+                SETTINGS, config.settings.as_values(), config.settings_provenance
+            )
+        )
         return None
     log_path = config.logs_root / "verify-stderr.log"
     transport = create_research_transport(

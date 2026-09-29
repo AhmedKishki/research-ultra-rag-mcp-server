@@ -97,3 +97,40 @@ def test_no_core_module_imports_the_surface() -> None:
         and _package_imports(path) & SURFACE_MODULES
     }
     assert offenders == {}, f"core modules importing the surface: {offenders}"
+
+
+# The layer stack, the registry's `Setting` type, the coercion, the provenance,
+# and the three path helpers live in the pinned `config-ultra-rag-mcp` library.
+# This server keeps its keys, its packaged default, and its effective settings.
+LAYER_MACHINERY = frozenset(
+    {
+        "LAYER_DEFAULT",
+        "Setting",
+        "SettingsError",
+        "SettingsSources",
+        "default_config_path",
+        "describe_settings",
+        "environment_settings",
+        "merge_settings",
+        "override_settings",
+        "project_config_path",
+        "read_config_document",
+        "resolve_settings",
+        "user_config_path",
+    }
+)
+
+
+def test_the_settings_module_defines_no_layer_machinery() -> None:
+    """A second copy of the stack is a second set of bugs, and it has happened once."""
+
+    defined = {
+        node.name
+        for node in _parse(PACKAGE / "settings.py").body
+        if isinstance(node, ast.FunctionDef | ast.ClassDef)
+    }
+
+    assert not defined & LAYER_MACHINERY, (
+        "settings.py defines layer machinery that belongs to the pinned library: "
+        f"{sorted(defined & LAYER_MACHINERY)}"
+    )

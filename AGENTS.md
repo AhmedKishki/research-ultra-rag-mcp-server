@@ -64,6 +64,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - FastMCP: `3.4.0`
 - Vanilla gateway commit: `fc339c259a672ca4dacb525840eba851d01c4b75`
 - Shared UI commit: `f001f90798f9d2db63d239d1c6b2516ab7b62e99`
+- Shared settings-core commit: `cbd47bb46efe85340de34f8f8f13fc6516e7fecb`
 - Upstream UltraRAG: `0.3.0.2` at `3a709a2aea3fbe46acca59c422621c94b6e86857`
 
 ## Non-negotiable research contract
@@ -88,6 +89,7 @@ Any question that needs a user choice must be presented as a numbered list of co
 - Record the dense backend in each generation manifest and dispatch retrieval from that record. Never rebuild an existing generation with a different backend, and never assume a fixed dense index directory name.
 - Search results present `text` as cleaned semantic text and never as a transcript, and direct quotations must come from the original. State that once for a reader in `README.md`, once for an agent in the tool description and `SERVER_INSTRUCTIONS`, and once as the field's own description in `AGENT_GUIDE.md`; never as a per-answer field, a UI label, or a footer, and never per passage. The `direct_quote_safe` flag stays in the full-detail payload.
 - Keep every tunable in the registry in `settings.py`, and every default value in the packaged `default.toml`. Code reads a value from the resolved settings; it never keeps a second copy of a default. A layer names only the keys it changes, an undeclared key is refused in every layer, and `--print-config` reports each effective value with the layer that supplied it.
+- The layer machinery is not this repository's. `Setting`, the merge, the coercion, the provenance, the three path helpers, and `describe_settings` live in the separately versioned `config-ultra-rag-mcp` library, pinned by commit, which the memory server uses as well. This repository owns `SETTINGS` and its three derived maps, `EffectiveSettings` and the rules only its values can break, the packaged `default.toml`, and the three directory names it resolves its own layers by. It imports the rest; `tests/test_architecture.py` fails if a copy of the machinery reappears here. Skew between this server's pin and the other server's is allowed and is not a bug: a floating or vendored dependency is what would break the collection's rule that each server is independently installable.
 - Keep schema versions, policy versions, the retrieval-method set, and the boundary names in code. Those define what a generation is, or where the server may write, and a settings file must not be able to forge either. The test for a tunable is the identity rule: if its value decides what a generation contains, it enters the retrieval-policy fingerprint or the recorded chunk settings; if it cannot change an artifact, it is a runtime setting.
 - Every MCP tool answers with the lean projection in `tool_views.py`. `--tool-detail full` is the developer debugging mode and returns the service payload unchanged. Never widen the lean projection for a diagnostic need and never add a tool surface that bypasses it.
 - Every tool takes only the parameters a caller must decide: no retrieval modes, no output views, no quality or latency switches, and no chunk tuning. A capability that the measurements already answer (hybrid retrieval, reranking, the freshness check, chunking) stays an engine setting that the tool fixes, and the engine keeps it for the harness and tests.
@@ -160,7 +162,7 @@ Do not blur this boundary in documentation. Adding server-side answer generation
 - `dense.py`: pinned FastEmbed models, both local dense backends (exact scan and embedded ANN) with document filtering, and the CPU cross-encoder that reranks every search.
 - `rerankers.py`: the pinned reranker-model table and its revision resolver, so a model choice is a lookup rather than a download by name.
 - `embeddings.py`: the pinned embedding-model table, including each model's dimension, token limit, covered languages, and required prefixes.
-- `settings.py`: the tunable registry, the five-layer merge, and the effective settings it validates.
+- `settings.py`: the tunable registry and the effective settings it validates, resolved over the shared layer stack.
 - `default.toml`: the packaged default for every tunable, one commented entry per setting.
 - `generation.py`: exact compatibility checks and validated reuse snapshots.
 - `ultrarag.py`: persistent client for vanilla UltraRAG tools, and the log a failed start or a timed-out call names.

@@ -801,9 +801,15 @@ def main() -> None:
     except ConfigurationError as exc:
         raise SystemExit(str(exc)) from exc
     if args.print_config:
-        from .settings import describe_settings
+        from config_ultra_rag_mcp import describe_settings
 
-        print(describe_settings(config.settings, config.settings_provenance))
+        from .settings import SETTINGS
+
+        print(
+            describe_settings(
+                SETTINGS, config.settings.as_values(), config.settings_provenance
+            )
+        )
         return
     apply_process_priority(config.nice)
     watch_owner()
