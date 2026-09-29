@@ -89,6 +89,54 @@ INGESTION_CHECKPOINT_VERSION = 1
 PENDING_ACTIVATION_VERSION = 1
 
 
+def _near_duplicate_positions(
+    vectors: np.ndarray,
+    threshold: float,
+    block: int = 256,
+) -> dict[int, tuple[int, float]]:
+    """Return the rows that repeat an earlier one, and the row they repeat.
+
+    A corpus can hold the same text twice — an essay on its own and the same essay
+    inside a book — and both texts are wanted, so a source cannot simply be
+    excluded: the other source still stands. The later of the two is the one
+    dropped, which keeps the first occurrence in a build and makes the result
+    depend on the corpus order rather than on which file happened to be read.
+
+    The comparison is a block of rows against everything, so the working set is
+    bounded by the block rather than by the square of the corpus, and each row is
+    only compared forwards, which is what makes one report per duplicate.
+    """
+
+    found: dict[int, tuple[int, float]] = {}
+    if threshold > 1.0 or vectors.shape[0] < 2:
+        return found
+    count = int(vectors.shape[0])
+    norms = np.linalg.norm(np.asarray(vectors), axis=1)
+    norms[norms == 0.0] = 1.0
+    normalised = np.asarray(vectors) / norms[:, None]
+    for start in range(0, count, block):
+        stop = min(start + block, count)
+        window = normalised[start:stop]
+        similarity = window @ normalised[start:].T
+        for offset in range(window.shape[0]):
+            matches = similarity[offset]
+            # Only rows later in the corpus are candidates, so the earliest
+            # occurrence of a passage is the one kept and every repeat of it is
+            # the one dropped.
+            matches[: offset + 1] = -1.0
+            while True:
+                best = int(np.argmax(matches))
+                score = float(matches[best])
+                if score <= threshold:
+                    break
+                found[start + best] = (start + offset, score)
+                # A row that repeats something already reported is not reported
+                # again, so a passage appearing three times is two drops and not
+                # a web of pairs.
+                matches[best] = -1.0
+    return found
+
+
 class _SourceChangedDuringIngest(RuntimeError):
     """Internal signal that a staged input snapshot is no longer current."""
 
@@ -291,8 +339,7 @@ class IngestionWorkflow:
                 root.unlink(missing_ok=True)
         fsync_directory(self.config.staging_root)
 
-    @staticmethod
-    def _ingestion_progress(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    def _ingestion_progress(self, checkpoint: dict[str, Any]) -> dict[str, Any]:
         phase = str(checkpoint.get("phase") or "source_hashing")
         inventory = checkpoint.get("source_inventory", [])
         selected = checkpoint.get("selected_source_paths", [])
@@ -349,6 +396,27 @@ class IngestionWorkflow:
             "parameters": dict(checkpoint.get("parameters") or {}),
             "created_at": checkpoint.get("created_at"),
             "checkpointed_at": checkpoint.get("updated_at"),
+            **self._duplicate_disclosure(checkpoint),
+        }
+
+    @staticmethod
+    def _duplicate_disclosure(checkpoint: dict[str, Any]) -> dict[str, Any]:
+        """Report the chunks a build did not index because they repeated another.
+
+        Two sources can hold the same text, and both texts are wanted, so
+        excluding a source does not remove the overlap: the build keeps one of the
+        two and says so. The pair is the actionable part — the dropped chunk, the
+        one it repeated, and the source of each — because a person who sees the same
+        essay arriving from two files can retire a source, and one who does not
+        would keep an overlap they cannot see.
+        """
+
+        dropped = list(checkpoint.get("duplicate_chunks") or [])
+        if not dropped:
+            return {}
+        return {
+            "duplicate_chunk_count": len(dropped),
+            "duplicate_chunks": dropped,
         }
 
     @staticmethod
@@ -728,6 +796,78 @@ class IngestionWorkflow:
             fsync_directory(path.parent)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _drop_near_duplicate_chunks(
+        self, staging_root: Path, checkpoint: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Drop the chunks that repeat an earlier one, and record each pair.
+
+        Both the vectors and the chunk rows are in hand at this point and the two
+        indexes have not been built yet, so the removal is complete: a repeated
+        passage is not searchable by meaning and not searchable by words, rather
+        than being searchable twice and answering the same question with whichever
+        source happened to rank first.
+
+        The report names the chunk that was dropped, the chunk it repeated, the
+        similarity, and the source of each — the pair is the actionable part,
+        because a person who sees the same essay arriving from two files can
+        retire a source where excluding one would not have helped.
+        """
+
+        threshold = float(self.config.settings.duplicate_cosine)
+        vectors_path = staging_root / "portable" / "embeddings.npy"
+        chunks_path = staging_root / "chunks" / "chunks.jsonl"
+        total = int(checkpoint["chunk_count"])
+        if threshold > 1.0 or total < 2 or not vectors_path.is_file():
+            return []
+        vectors = np.load(vectors_path, allow_pickle=False, mmap_mode="r")
+        duplicates = _near_duplicate_positions(np.asarray(vectors), threshold)
+        if not duplicates:
+            return []
+        chunks = read_jsonl(chunks_path)
+        keep = [
+            position for position in range(len(chunks)) if position not in duplicates
+        ]
+        if not keep or len(keep) > len(chunks):
+            return []
+        reduced = np.asarray(vectors)[keep]
+        # Written through a handle and not by path: numpy appends `.npy` to a
+        # filename that lacks it, so a path would be replaced by something that
+        # was never written. Fsynced before the replace, as every other artifact
+        # in a build is.
+        temporary = vectors_path.with_name(f".{vectors_path.name}.dedup.tmp")
+        try:
+            with temporary.open("wb") as handle:
+                np.save(handle, reduced)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, vectors_path)
+            fsync_directory(vectors_path.parent)
+        finally:
+            temporary.unlink(missing_ok=True)
+        atomic_write_jsonl(chunks_path, [chunks[position] for position in keep])
+        report: list[dict[str, Any]] = []
+        for position, (original, score) in sorted(duplicates.items()):
+            dropped = chunks[position] if position < len(chunks) else {}
+            held = chunks[original] if original < len(chunks) else {}
+            report.append(
+                {
+                    "dropped_chunk_id": dropped.get("chunk_id"),
+                    "dropped_source": dropped.get("source"),
+                    "repeated_chunk_id": held.get("chunk_id"),
+                    "repeated_source": held.get("source"),
+                    "similarity": round(float(score), 6),
+                }
+            )
+        checkpoint["chunk_count"] = len(keep)
+        checkpoint["duplicate_chunk_count"] = int(
+            checkpoint.get("duplicate_chunk_count") or 0
+        ) + len(report)
+        checkpoint["duplicate_chunks"] = [
+            *list(checkpoint.get("duplicate_chunks") or []),
+            *report,
+        ]
+        return report
 
     @staticmethod
     def _assemble_vector_batches(
@@ -1687,6 +1827,7 @@ class IngestionWorkflow:
                     self.config.settings.embedding_batch_size,
                     self.config.settings.embedding_dimension,
                 )
+                self._drop_near_duplicate_chunks(staging_root, checkpoint)
                 self._add_phase_time(
                     checkpoint,
                     "vector_assembly",

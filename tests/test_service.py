@@ -4668,3 +4668,132 @@ def test_a_busy_project_is_reported_rather_than_waited_for(
         assert time.perf_counter() - started < 5
 
     asyncio.run(exercise())
+
+
+def test_a_chunk_that_repeats_an_earlier_one_is_not_indexed(project: Path) -> None:
+    """Two sources can hold the same text, and a build keeps one of them.
+
+    An essay on its own and the same essay inside a book are both wanted, so
+    excluding a source does not remove the overlap. The later chunk is not indexed
+    and the pair is reported, because a person who sees the same passage arriving
+    from two files is the only one who can say whether that means a source should
+    be retired.
+    """
+
+    from research_ultra_rag_mcp.config import resolve_config
+    from research_ultra_rag_mcp.ingestion import IngestionWorkflow
+
+    # The check is on here, at the default threshold, because that is what this
+    # test is about — the suite turns it off for everything else.
+    config = resolve_config(
+        project, settings_overrides=["ingestion.duplicate_cosine=0.99"]
+    )
+    service = IngestionWorkflow.__new__(IngestionWorkflow)
+    service.config = config
+    staging = project / "staging"
+    (staging / "portable").mkdir(parents=True)
+    (staging / "chunks").mkdir(parents=True)
+    np.save(
+        staging / "portable" / "embeddings.npy",
+        np.array(
+            [
+                [1.0, 0.0, 0.0, 0.0],  # the essay on its own
+                [0.0, 1.0, 0.0, 0.0],  # a different essay
+                [0.9999, 0.0141, 0.0, 0.0],  # the same essay, inside the book
+                [0.0, 0.0, 1.0, 0.0],  # unrelated
+                [0.0, 0.0, 0.0, 1.0],  # unrelated
+            ],
+            dtype=np.float32,
+        ),
+    )
+    rows = [
+        {
+            "chunk_id": "essay-1",
+            "source": "essays/entropy.pdf",
+            "contents": "the essay",
+        },
+        {"chunk_id": "essay-2", "source": "essays/waste.pdf", "contents": "another"},
+        {
+            "chunk_id": "book-3",
+            "source": "books/collected.pdf",
+            "contents": "the essay",
+        },
+        {"chunk_id": "notes-4", "source": "notes/one.md", "contents": "unrelated"},
+        {"chunk_id": "notes-5", "source": "notes/two.md", "contents": "unrelated"},
+    ]
+    (staging / "chunks" / "chunks.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    checkpoint = {"chunk_count": len(rows)}
+
+    report = service._drop_near_duplicate_chunks(staging, checkpoint)
+
+    assert [entry["dropped_chunk_id"] for entry in report] == ["book-3"]
+    assert report[0]["repeated_chunk_id"] == "essay-1"
+    assert report[0]["dropped_source"] == "books/collected.pdf"
+    assert report[0]["repeated_source"] == "essays/entropy.pdf"
+    assert report[0]["similarity"] > 0.99
+    # The chunk is gone from the rows the index is built from and from the matrix
+    # the index is built from, and the count says so.
+    kept = [
+        json.loads(line)
+        for line in (staging / "chunks" / "chunks.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["chunk_id"] for row in kept] == [
+        "essay-1",
+        "essay-2",
+        "notes-4",
+        "notes-5",
+    ]
+    assert np.load(staging / "portable" / "embeddings.npy").shape[0] == 4
+    assert checkpoint["chunk_count"] == 4
+    assert checkpoint["duplicate_chunk_count"] == 1
+    # And the pair is disclosed to whoever asks about the build.
+    assert service._duplicate_disclosure(checkpoint) == {
+        "duplicate_chunk_count": 1,
+        "duplicate_chunks": report,
+    }
+
+
+def test_the_duplicate_check_can_be_turned_off(project: Path) -> None:
+    """Above 1 is unreachable for a cosine, and so nothing is ever a repetition."""
+
+    from research_ultra_rag_mcp.config import resolve_config
+    from research_ultra_rag_mcp.ingestion import IngestionWorkflow
+
+    config = resolve_config(
+        project, settings_overrides=["ingestion.duplicate_cosine=2.0"]
+    )
+    service = IngestionWorkflow.__new__(IngestionWorkflow)
+    service.config = config
+    staging = project / "staging"
+    (staging / "portable").mkdir(parents=True)
+    (staging / "chunks").mkdir(parents=True)
+    np.save(
+        staging / "portable" / "embeddings.npy",
+        np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32),
+    )
+    (staging / "chunks" / "chunks.jsonl").write_text(
+        '{"chunk_id": "a", "source": "one.md", "contents": "same"}\n'
+        '{"chunk_id": "b", "source": "two.md", "contents": "same"}\n',
+        encoding="utf-8",
+    )
+    checkpoint = {"chunk_count": 2}
+
+    assert service._drop_near_duplicate_chunks(staging, checkpoint) == []
+    assert checkpoint["chunk_count"] == 2
+
+
+def test_two_chunks_on_one_theme_are_both_kept() -> None:
+    """The check is for a repeated passage, not for two passages on a subject."""
+
+    from research_ultra_rag_mcp.ingestion import _near_duplicate_positions
+
+    vectors = np.array(
+        [[1.0, 0.10, 0.0, 0.0], [0.85, 0.53, 0.0, 0.0]], dtype=np.float32
+    )
+
+    assert _near_duplicate_positions(vectors, 0.99) == {}
+    assert list(_near_duplicate_positions(vectors, 0.80)) == [1]

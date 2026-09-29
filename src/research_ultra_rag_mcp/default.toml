@@ -150,6 +150,13 @@ work_budget_seconds = 1800
 # Chunks embedded per gateway call, and PDF pages extracted per call. Throughput only.
 embedding_batch_size = 64
 pdf_page_batch_size = 8
+# How alike two chunks may be before the second is not indexed. Two sources can hold
+# the same text — an essay on its own and the same essay inside a book — and both
+# texts are wanted, so excluding a source does not fix it: the build keeps one of
+# the two and reports the pair with both sources, so a person can retire a source
+# if that is what the overlap means. Above 1 is unreachable for a cosine and turns
+# the check off.
+duplicate_cosine = 0.99
 
 [dense]
 # Embedding model for the dense half of retrieval. Every supported name is pinned to
