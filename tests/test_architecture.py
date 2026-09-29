@@ -22,10 +22,10 @@ PACKAGE = Path(__file__).resolve().parent.parent / "src" / "research_ultra_rag_m
 # The modules allowed to import MCP machinery: the tool surface and its
 # projector, the stdio transports, the entry points that talk to a server, and
 # the typed boundary over the vanilla runtime, which reaches it over MCP. The
-# core `cli` holds a client to that gateway for `ingest`; it never speaks the
-# research tool surface.
+# core `cli` opens its gateway through that boundary, so it holds no MCP client
+# of its own; it never speaks the research tool surface.
 MCP_MODULES = frozenset(
-    {"cli.py", "server.py", "transport.py", "ui.py", "ultrarag.py", "verify.py"}
+    {"server.py", "transport.py", "ui.py", "ultrarag.py", "verify.py"}
 )
 
 # The modules no core module may import: the tool surface, its projector, the
@@ -91,6 +91,9 @@ def test_no_core_module_imports_the_surface() -> None:
         for path in _modules()
         if path.name not in MCP_MODULES
         and path.name not in ENTRY_MODULES
+        # A module that is itself part of the surface is not a core module, so it
+        # is exempt in its own right rather than by being an MCP client.
+        and path.name.removesuffix(".py") not in SURFACE_MODULES
         and _package_imports(path) & SURFACE_MODULES
     }
     assert offenders == {}, f"core modules importing the surface: {offenders}"

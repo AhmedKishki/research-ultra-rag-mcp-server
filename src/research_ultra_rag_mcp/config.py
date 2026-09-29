@@ -5,6 +5,7 @@ from __future__ import annotations
 import filecmp
 import json
 import os
+import shlex
 import sys
 import uuid
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,10 @@ from .settings import (
     SettingsError,
     resolve_settings,
 )
+
+# The console script that runs this project without an MCP client, named here
+# because the health report prints commands an operator can paste.
+CLI_COMMAND = "research-ultra-rag"
 
 
 class ConfigurationError(ValueError):
@@ -434,6 +439,54 @@ def _initialize_portable_project(
     return project_id, project_name
 
 
+def project_command(project_root: str | Path, *arguments: str) -> str:
+    """Return a copy-pasteable command naming one project, quoting what needs it."""
+
+    parts = (CLI_COMMAND, "--project-root", str(project_root), *arguments)
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def runtime_root_claim_problem(candidate: Path, project_id: str) -> str | None:
+    """Return why this directory may not hold this project's derived state.
+
+    A relocated root carries a marker naming its owning project, so two projects
+    can never silently share one set of generations and an unrelated directory is
+    never adopted. The default in-project root needs no marker, because the
+    project owns it by construction; pass it anyway to read the marker that is
+    there. This reads, so a health report can ask the same question the
+    configuration asks when it claims the root.
+    """
+
+    if not candidate.exists():
+        return None
+    if not candidate.is_dir():
+        return f"Runtime root is not a directory: {candidate}"
+    marker_path = candidate / _RUNTIME_MARKER
+    if not marker_path.is_file():
+        try:
+            has_payload = any(candidate.iterdir())
+        except OSError:
+            return f"Runtime root is not readable: {candidate}"
+        if has_payload:
+            return (
+                "Runtime root is not empty and carries no project marker: "
+                f"{candidate}. Point --runtime-root at an empty directory or at "
+                "the directory this project already uses."
+            )
+        return None
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return f"Invalid runtime-root marker: {marker_path}"
+    owner = marker.get("project_id") if isinstance(marker, dict) else None
+    if owner != project_id:
+        return (
+            f"Runtime root belongs to another project ({owner!r}; this "
+            f"project is {project_id!r}): {candidate}"
+        )
+    return None
+
+
 def _prepare_runtime_root(
     candidate: Path,
     *,
@@ -453,35 +506,10 @@ def _prepare_runtime_root(
         # construction and there is nothing to claim or validate.
         candidate.mkdir(parents=True, exist_ok=True)
         return candidate
-    if candidate.exists() and not candidate.is_dir():
-        raise ConfigurationError(f"Runtime root is not a directory: {candidate}")
+    problem = runtime_root_claim_problem(candidate, project_id)
+    if problem is not None:
+        raise ConfigurationError(problem)
     marker_path = candidate / _RUNTIME_MARKER
-    if candidate.is_dir() and not marker_path.is_file():
-        try:
-            has_payload = any(candidate.iterdir())
-        except OSError as exc:
-            raise ConfigurationError(
-                f"Runtime root is not readable: {candidate}"
-            ) from exc
-        if has_payload:
-            raise ConfigurationError(
-                "Runtime root is not empty and carries no project marker: "
-                f"{candidate}. Point --runtime-root at an empty directory or at "
-                "the directory this project already uses."
-            )
-    if marker_path.is_file():
-        try:
-            marker = json.loads(marker_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ConfigurationError(
-                f"Invalid runtime-root marker: {marker_path}"
-            ) from exc
-        owner = marker.get("project_id") if isinstance(marker, dict) else None
-        if owner != project_id:
-            raise ConfigurationError(
-                f"Runtime root belongs to another project ({owner!r}; this "
-                f"project is {project_id!r}): {candidate}"
-            )
     candidate.mkdir(parents=True, exist_ok=True)
     if not marker_path.is_file():
         temporary = marker_path.with_name(f".{marker_path.name}.{uuid.uuid4().hex}.tmp")

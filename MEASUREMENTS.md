@@ -140,6 +140,10 @@ Measured on the reference project, medians:
 | opening one artifact-lookup SQLite connection | 0.094 ms |
 | artifact lookup built from scratch plus one count query | 1.32 ms |
 | the same count query on a warm instance | 0.319 ms |
+| dependency report, first call in a process (one read of the 11 MB runtime tree) | **46.6 ms** |
+| dependency report, every later call (one marker stat) | 2.41 ms |
+
+The dependency report is the one term that reads outside this project: it validates the managed UltraRAG runtime, which hashes 11 MB, so it costs 46.6 ms the first time a process asks and 2.41 ms after that, against a `status` that measures 127 ms on its first call and a 76 ms median after it. It is cached per process and re-read only when the marker that identifies the installed runtime changes, which is what a reinstall or a repair rewrites, so the cost is paid once per server session rather than once per call. It is not paid at all by `search`.
 
 The staleness walk is an order of magnitude larger than everything else and is the only term that grows with the number of source files: about 0.18 ms per source, so roughly 176 ms at 1,000 sources. That is why `include_staleness=false` exists. Nothing else here is cached, deliberately: caching the document map saves about 0.6 ms per query while adding cross-request state that must be invalidated correctly, and reusing SQLite connections saves about 0.09 ms while requiring one connection to be reachable from whichever thread serves the next call. At the scale where either would matter, parsing the manifest dominates both, so the right answer there is a persistent document-metadata index rather than a per-process cache. A staleness verdict cached behind a directory signature was rejected because it would be wrong: a directory's own modification time does not change when a file inside it is replaced in place, so such a cache would report a changed corpus as fresh. At this corpus size the flag does not change how fast a search feels — a warm hybrid query measured 567 ms with the check and 583 ms without it, inside the machine's run-to-run variance — and it is not claimed to.
 

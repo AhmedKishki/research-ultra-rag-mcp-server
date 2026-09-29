@@ -10,6 +10,9 @@ language.
 
 Order of work:
 1. status — is a generation ready, current, and able to serve the search?
+   Read blocked_by and degraded before promising an answer: each entry names the
+   condition and the command that fixes it, and both are absent when the project
+   is ready.
 2. ingest — only with the user's agreement. It writes persistent state and may
    download a model; a long build returns in_progress, so call it again.
 3. search — one query per question. When an answer is thin, ask again in
@@ -34,4 +37,6 @@ What the user is owed:
   by hand instead, and a correction changes later reads without a rebuild.
 - If rerank_fallback appears, the order is unranked: say so rather than implying
   the results were reranked.
+- A tool error that names a log is telling you where the failure is written. Read
+  that log, then report the cause; do not retry the same call unchanged.
 """

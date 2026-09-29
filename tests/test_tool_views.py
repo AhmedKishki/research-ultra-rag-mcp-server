@@ -187,6 +187,81 @@ def test_passage_context_is_lean_and_keeps_no_rank() -> None:
     assert "direct_quote_safe" not in lean["context"][0]
 
 
+def test_status_names_a_blocker_and_its_remedy() -> None:
+    lean = present_tool_response(
+        "status",
+        _status_payload(
+            blocked_by=[
+                {
+                    "check": "vanilla_runtime",
+                    "reason": "The tree differs at servers/stray.pyc.",
+                    "remedy": "research-ultra-rag doctor --project-root /project "
+                    "--repair-runtime",
+                }
+            ],
+            degraded=[
+                {
+                    "check": "lock",
+                    "reason": "Process 4321 has held the project since 09:00:00Z.",
+                    "remedy": "research-ultra-rag --project-root /project stop --servers",
+                }
+            ],
+        ),
+        detail=LEAN_TOOL_DETAIL,
+    )
+
+    assert lean["blocked_by"] == [
+        {
+            "check": "vanilla_runtime",
+            "reason": "The tree differs at servers/stray.pyc.",
+            "remedy": "research-ultra-rag doctor --project-root /project "
+            "--repair-runtime",
+        }
+    ]
+    assert lean["degraded"][0]["check"] == "lock"
+
+
+def test_status_keeps_dependencies_out_of_the_answer_when_there_are_none() -> None:
+    lean = present_tool_response("status", _status_payload(), detail=LEAN_TOOL_DETAIL)
+
+    assert "blocked_by" not in lean
+    assert "degraded" not in lean
+
+
+def test_status_discloses_nothing_the_payload_did_not_say() -> None:
+    """Every string in the lean answer comes from the payload it projects."""
+
+    payload = _status_payload(
+        blocked_by=[
+            {
+                "check": "generation",
+                "reason": "No generation exists; call ingest.",
+                "remedy": None,
+            }
+        ]
+    )
+
+    lean = present_tool_response("status", payload, detail=LEAN_TOOL_DETAIL)
+
+    values = {value for value in _values(lean)}
+    for entry in lean["blocked_by"]:
+        assert set(entry) == {"check", "reason", "remedy"}
+        assert entry["check"] in payload["blocked_by"][0]["check"]
+        assert entry["reason"] in values
+    # A condition is reported, not invented, and not padded with a check the
+    # report never made.
+    assert "degraded" not in lean
+    assert json.loads(json.dumps(lean)) == lean
+
+
+def _values(payload: object) -> list[str]:
+    if isinstance(payload, dict):
+        return [item for value in payload.values() for item in _values(value)]
+    if isinstance(payload, list):
+        return [item for value in payload for item in _values(value)]
+    return [payload] if isinstance(payload, str) else []
+
+
 def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
     payload = _status_payload()
     lean = present_tool_response("status", payload, detail=LEAN_TOOL_DETAIL)
@@ -241,6 +316,12 @@ def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
         assert key not in serialized
         assert key in present_tool_response("status", payload, detail=FULL_TOOL_DETAIL)
     # A field whose value is the harmless default is left out entirely.
+    # A dependency that is fine and one that is only listed are both absent: a
+    # lean answer discloses a condition, not an inventory of checks.
+    assert "blocked_by" not in lean
+    assert "degraded" not in lean
+    assert "checks" not in lean
+    assert "not_checked" not in lean
     assert "excluded_sources" not in lean
     assert "generation_upgrade_required" not in lean
     assert "upgrade_reasons" not in lean
@@ -709,6 +790,17 @@ def _status_payload(**overrides: object) -> dict[str, object]:
         ],
         "retained_generation_count": 1,
         "retained_generation_bytes": 4096,
+        "checks": [
+            {
+                "check": "project_identity",
+                "state": "ok",
+                "reason": "This project owns its state root.",
+                "remedy_command": None,
+            }
+        ],
+        "blocked_by": [],
+        "degraded": [],
+        "not_checked": [],
     }
     payload.update(overrides)
     return payload

@@ -211,7 +211,7 @@ async def run_once(
             timeout=1800,
             init_timeout=1800,
         ) as client:
-            service = ResearchService(config, VanillaUltraRAG(client))
+            service = ResearchService(config, VanillaUltraRAG(client, config))
             result = await service.ingest(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,

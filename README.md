@@ -237,7 +237,7 @@ A ready-to-copy template is in [`mcp_settings.example.json`](mcp_settings.exampl
 
 ### Kilo Code
 
-Kilo Code keeps its servers in `~/.config/kilo/kilo.jsonc` (the `KILO_CONFIG_DIR` directory, `~/.config/kilo` by default) under an `mcp` key, one entry per server. Its shape differs from the `mcpServers` block above: `command` is one array that carries the arguments, the arguments live in that array rather than in `args`, and a local server is declared with `type: "local"`. A `command` *string* plus an `args` array is rejected by Kilo's schema, and a rejected file takes down every server in it, so the whole config loads or none of it does. A ready-to-copy entry is in [`kilo-mcp.example.jsonc`](kilo-mcp.example.jsonc):
+Kilo Code keeps its servers in `~/.config/kilo/kilo.jsonc` (the `KILO_CONFIG_DIR` directory, `~/.config/kilo` by default) under an `mcp` key, one entry per server. Its shape differs from the `mcpServers` block above: `command` is one array that carries the arguments, the arguments live in that array rather than in `args`, and a local server is declared with `type: "local"`. A `command` *string* plus an `args` array is rejected by Kilo's schema, and a rejected file takes down every server in it, so the whole config loads or none of it does. `research-ultra-rag doctor --mcp-entry` prints the entry for a project's own flags, and `research-ultra-rag doctor --check-entry <file>` reports on an entry you already have without editing it. A ready-to-copy entry is in [`kilo-mcp.example.jsonc`](kilo-mcp.example.jsonc):
 
 ```jsonc
 {
@@ -280,6 +280,8 @@ A client that probes resources — Kilo Code's agent has `list_mcp_resources` an
 A search returns `query`, `generation_id`, `stale`, `reranked`, and the selected passages. A passage holds `chunk_id`, `source_relative_path` (the filename), `authors`, `locator`, and `text`. The locator is the position alone: a page, with the printed page label only where that label differs from the physical page, or a section for an EPUB. A passage is deliberately not citation-ready and repeats nothing: it carries no title and no citation, and `--tool-detail full` is what returns the citation, the resolved title, the year and DOI, the per-field provenance, the quote-safety flag, the advisory script note, and the ranking accounting.
 
 `status` returns readiness, `stale`, the selected generation's `generation_id`, `created_at` and `chunk_count`, the source counts, `hybrid_ready` when the generation cannot serve the hybrid search the tool always runs, `generation_upgrade_required` with `upgrade_reasons`, `metadata_overlay_active`, `metadata_pending_source_count`, `ingestion_progress`, what a prune would consider as `retained_generation_count` and `retained_generation_bytes`, and, when the generation is stale, `changes` — counts of added and modified sources, `removed_sources` naming the files that disappeared, and the review and exclusion flags. It inventories nothing: the retained-generation list, the category inventory, the project inventory, and the generation's own method list come back from `--tool-detail full`. `ingest` returns its `status`, `generation_changed`, and the document, chunk, vector, reuse, and discard counts. `set_source_inclusion` returns the decision, its reason, `effective_immediately`, and whether the next ingestion should rebuild without the source. `set_source_metadata` returns the normalized metadata that was saved, whether it applies now, and a message.
+
+`status` also reports what stands between this project and a search that answers: `blocked_by` for a condition that stops the server, and `degraded` for one that only makes an answer worse — a missing reranker, a project another process holds. Each entry carries the check that found it, the reason, and the command that fixes it. Both fields are absent when there is nothing to act on, which is what a healthy project's answer looks like, and `--tool-detail full` adds the per-check detail and the list of checks that could not run at all.
 
 A field that is empty, null, or false is omitted, so an absent field means there is nothing to report. `stale` (where `null` means the freshness check was skipped) and `reranked` are always present.
 
@@ -477,6 +479,9 @@ research-ultra-rag --project-root ~/my-research-project config
 # Stop it, and every server serving this project.
 research-ultra-rag --project-root ~/my-research-project stop
 research-ultra-rag --project-root ~/my-research-project stop --servers
+
+# Find out what is wrong with the installation.
+research-ultra-rag --project-root ~/my-research-project doctor
 ```
 
 `stop` hands over to the project's own launcher, so the browser view and the private server it started go together. The launcher refuses to signal a pid whose command line does not name this project, so a stale pid file or a port file left by another project cannot stop the wrong thing, and it finishes by sweeping for any server of this project that a long build left behind. `--servers` also signals every research process whose command line names this project, which is how a server an MCP client started is stopped from a shell. That process belongs to the client, so whether it comes back is the client's decision — and a build stopped this way resumes from its checkpoint.
@@ -494,6 +499,42 @@ research-ultra-rag --set retrieval.rrf_k=30 --project-root ~/my-research-project
 ```
 
 `research-ultra-rag-verify` remains the check for the MCP surface itself: it starts a real stdio server and calls the tools over the protocol, which is the one thing the core command line deliberately does not do.
+
+### Ask the doctor
+
+`doctor` answers one question: what is stopping this project from working. It reads the same checks the `status` tool reports, so the two never disagree, and it prints one line per dependency with its state, the reason, and the command that fixes it. It changes nothing, and it exits nonzero when something is blocked:
+
+```bash
+research-ultra-rag --project-root ~/my-research-project doctor
+```
+
+```
+blocked  vanilla_runtime    Managed runtime content hash mismatch: ... The tree differs at
+servers/memory/src/__pycache__/memory.cpython-311.pyc: unexpected in the installed
+tree, mode -rw-r--r--. Use a fresh cache location rather than modifying the snapshot.
+  ->  research-ultra-rag --project-root ~/my-research-project doctor --repair-runtime
+ok       generation         The selected generation 20260927T203911Z-f2c60bd1 serves this corpus.
+```
+
+It checks the project identity and its state root, the managed UltraRAG runtime, both pinned models, the project lock, the selected generation, free space against the build it has to fit, and whether this process is older than the installed code. Give it the same flags the MCP client entry uses, including `--runtime-root`; when a server for this project runs with a different one, the report says so.
+
+Two of its options reach the network, and neither is implied by the other:
+
+```bash
+# Download the pinned models into the shared cache, which `--offline` then requires.
+research-ultra-rag --project-root ~/my-research-project doctor --prefetch-models
+
+# Move a mismatched runtime aside, install the pinned one, and validate it.
+research-ultra-rag --project-root ~/my-research-project doctor --repair-runtime
+```
+
+`--repair-runtime` keeps the mismatched tree under `<cache>/quarantine/<commit>-<hash>` rather than deleting it, because a tree that failed validation is the evidence. A verified runtime is installed read-only, so a component process cannot write into it; a development change that needs a writable tree is undone with the `chmod -R u+w` command the install prints.
+
+The client entry is the other thing that goes wrong quietly, and the doctor only reports on it: `--check-entry <path>` reads a `kilo.jsonc` or `.vscode/mcp.json` and reports whether the executable exists, whether the paths match this project, whether the timeout can outlive an ingestion, and whether a second entry serves the same project root. To get an entry rather than check one, ask for it and paste it yourself:
+
+```bash
+research-ultra-rag --project-root ~/my-research-project doctor --mcp-entry
+```
 
 ## Use the UI
 
@@ -693,7 +734,7 @@ Six tools are exposed. All are project-scoped and none of them deletes a source 
 
 | Tool | What it does |
 |---|---|
-| `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. It also reports `restart_required` when the running process is older than the installed version. The full-detail payload adds the paths, the version block, revision fingerprints, build metrics, UI-launcher state, and per-source exclusion records. Read-only. |
+| `status` | Reports readiness, staleness, the source and generation counts, the category and project inventories, the available retrieval methods, any required upgrade with its reasons, resumable-ingestion progress, and every retained generation with its creation time, counts, and size. It also reports `restart_required` when the running process is older than the installed version, and `blocked_by` and `degraded` when a condition has to be acted on, each entry naming the check, the reason, and the command that fixes it. The full-detail payload adds the paths, the version block, revision fingerprints, build metrics, UI-launcher state, per-source exclusion records, and the per-check detail behind the two lists. Read-only. |
 | `ingest` | Creates or refreshes a generation with the server's own chunking settings. Resumable, with a soft per-call work budget; `force_recompute` bypasses reuse. Reports what changed and how much was reused; discarded, withheld, and densely truncated material is reported only when there is any. A rejected call means another process holds the project, and the message names that build; a `superseded_build` entry means the corpus changed, so the staged build was discarded rather than resumed. |
 | `search` | Retrieves evidence candidates with hybrid retrieval and reranking. Optional narrowing by source (`source_ids`, `exclude_source_ids`) and by reviewed metadata (`projects_any`, `categories_any`, `authors_any` and `titles_any` keep a result whose source carries at least one listed value, matching names as case-insensitive substrings; `languages_any` matches a language code; `keywords` requires every listed term). Always reports whether the generation is stale. Returns 10 passages by default; when an answer is thin, ask the question again in different words and raise `top_k`, which also widens the window the reranker reorders. Answers with the passages, `stale`, `reranked`, and any unresolved ID. |
 | `list_sources` | Lists discovered and indexed sources with stable IDs, inclusion state, and saved metadata overrides. Takes no parameters: it is the corpus inventory. Registers discovered IDs in the project catalog. |
@@ -770,7 +811,8 @@ Things to know before you rely on a result:
 If something looks wrong:
 
 - The stdio executable appears to hang when run directly. It is waiting for an MCP client.
-- `--offline` reports missing runtime or models. Run once online, or point `--model-cache-root` at a populated cache.
+- A tool error names a log and ends with the line the gateway printed. The error carries the tail of that log and the path of every log the run produced; read the named file for the rest. A gateway that exits during its handshake no longer answers as `Connection closed` alone.
+- `--offline` reports missing runtime or models. Run once online, point `--model-cache-root` at a populated cache, or run `research-ultra-rag doctor --project-root <project> --prefetch-models` on a machine that has the network.
 - `status` says the generation is stale. Search still uses the previous generation until a re-ingestion succeeds. That is intentional.
 - Search returns nothing. This can be correct: the relevance gates prefer abstaining over returning weak matches. Try a precise BM25 query, or inspect dense mode, before lowering any quality expectation.
 - You want the ranking or candidate detail behind a query, or the ingestion timings. Start the server with `--tool-detail full` (`RESEARCH_ULTRARAG_TOOL_DETAIL=full`) and inspect the complete payload.

@@ -6,7 +6,9 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from .config import ResearchConfig
 from .generation import value_fingerprint
+from .health import health_report
 from .launcher import ui_launcher_state
 from .sources import (
     ALLOWED_SOURCE_EXTENSIONS,
@@ -30,56 +32,119 @@ from .support import (
 from .version import version_block
 
 
+def generation_upgrade_reasons(
+    config: ResearchConfig,
+    manifest: dict[str, Any],
+    policy_fingerprint: str,
+) -> list[str]:
+    """Return the policy mismatches a generation has, without touching disk.
+
+    This is the part of a status report that depends only on the manifest and the
+    current policy constants, so a caller that skipped the staleness check can
+    still report whether the generation needs an upgrade. The fingerprint is the
+    caller's: a process computes it once from the settings it resolved.
+    """
+
+    retrieval = manifest.get("retrieval", {})
+    dense_policy = retrieval.get("dense", {})
+    fusion_policy = retrieval.get("fusion", {})
+    relevance_policy = retrieval.get("relevance_gates", {})
+    reasons: list[str] = []
+    if int(manifest.get("schema_version") or 0) != SCHEMA_VERSION:
+        reasons.append("generation_schema")
+    if int(manifest.get("extraction_policy_version") or 0) != EXTRACTION_POLICY_VERSION:
+        reasons.append("layout_extraction")
+    if int(manifest.get("cleaning_policy_version") or 0) != CLEANING_POLICY_VERSION:
+        reasons.append("semantic_cleaning")
+    if int(manifest.get("artifact_policy_version") or 0) != ARTIFACT_POLICY_VERSION:
+        reasons.append("generation_artifacts")
+    if manifest.get("metadata_storage_policy") != METADATA_STORAGE_POLICY:
+        reasons.append("metadata_storage")
+    if manifest.get("project_id") != config.project_id:
+        reasons.append("project_identity")
+    if (
+        dense_policy.get("embedding_model") != config.settings.embedding_model
+        or dense_policy.get("embedding_model_revision")
+        != config.settings.embedding_model_revision
+        or dense_policy.get("embedding_dimension")
+        != config.settings.embedding_dimension
+    ):
+        reasons.append("embedding_model")
+    if (
+        manifest.get("retrieval_policy_fingerprint") != policy_fingerprint
+        or fusion_policy.get("method") != "weighted_reciprocal_rank_fusion"
+        or fusion_policy.get("rrf_k") != config.settings.rrf_k
+        or fusion_policy.get("bm25_weight") != config.settings.bm25_weight
+        or fusion_policy.get("dense_weight") != config.settings.dense_weight
+        or relevance_policy.get("dense_minimum_cosine_similarity")
+        != config.settings.dense_minimum_cosine_similarity
+        or relevance_policy.get("bm25_requires_query_token_overlap") is not True
+    ):
+        reasons.append("retrieval_policy")
+    return reasons
+
+
+def generation_inventory(
+    config: ResearchConfig,
+    current_generation_id: str | None,
+) -> dict[str, Any]:
+    """Describe every retained generation on disk without validating it.
+
+    These are exactly the directories a prune would consider, so `status`
+    reports them with their size and file count. A generation whose manifest is
+    missing, unreadable, or not JSON is reported with a ``manifest_error``
+    instead of raising: the purpose is transparency about what occupies disk,
+    and a status call must still answer when one retained generation is
+    damaged. This runs only on the read-only ``status`` surface, never on the
+    search path, because it walks each generation's files.
+    """
+
+    root = config.generations_root
+    records: list[dict[str, Any]] = []
+    if root.is_dir():
+        for entry in root.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            record: dict[str, Any] = {
+                "generation_id": entry.name,
+                "is_current": entry.name == current_generation_id,
+            }
+            try:
+                manifest = read_json(entry / "manifest.json")
+            except StorageError as exc:
+                record["manifest_error"] = str(exc)
+            else:
+                if isinstance(manifest, dict):
+                    record.update(
+                        created_at=manifest.get("created_at"),
+                        chunk_count=manifest.get("chunk_count"),
+                        document_count=manifest.get("document_count"),
+                        schema_version=manifest.get("schema_version"),
+                    )
+                else:
+                    record["manifest_error"] = "manifest.json is not a JSON object"
+            file_count, size_bytes = directory_statistics(entry)
+            record["file_count"] = file_count
+            record["size_bytes"] = size_bytes
+            records.append(record)
+    records.sort(
+        key=lambda item: (str(item.get("created_at") or ""), item["generation_id"]),
+        reverse=True,
+    )
+    return {
+        "generations": records,
+        "retained_generation_count": len(records),
+        "retained_generation_bytes": sum(int(item["size_bytes"]) for item in records),
+    }
+
+
 class StatusWorkflow:
     def _generation_upgrade_reasons(self, manifest: dict[str, Any]) -> list[str]:
-        """Return the policy mismatches a generation has, without touching disk.
-
-        This is the part of a status report that depends only on the manifest and
-        the current policy constants, so a caller that skipped the staleness check
-        can still report whether the generation needs an upgrade.
-        """
-
-        retrieval = manifest.get("retrieval", {})
-        dense_policy = retrieval.get("dense", {})
-        fusion_policy = retrieval.get("fusion", {})
-        relevance_policy = retrieval.get("relevance_gates", {})
-        reasons: list[str] = []
-        if int(manifest.get("schema_version") or 0) != SCHEMA_VERSION:
-            reasons.append("generation_schema")
-        if (
-            int(manifest.get("extraction_policy_version") or 0)
-            != EXTRACTION_POLICY_VERSION
-        ):
-            reasons.append("layout_extraction")
-        if int(manifest.get("cleaning_policy_version") or 0) != CLEANING_POLICY_VERSION:
-            reasons.append("semantic_cleaning")
-        if int(manifest.get("artifact_policy_version") or 0) != ARTIFACT_POLICY_VERSION:
-            reasons.append("generation_artifacts")
-        if manifest.get("metadata_storage_policy") != METADATA_STORAGE_POLICY:
-            reasons.append("metadata_storage")
-        if manifest.get("project_id") != self.config.project_id:
-            reasons.append("project_identity")
-        if (
-            dense_policy.get("embedding_model") != self.config.settings.embedding_model
-            or dense_policy.get("embedding_model_revision")
-            != self.config.settings.embedding_model_revision
-            or dense_policy.get("embedding_dimension")
-            != self.config.settings.embedding_dimension
-        ):
-            reasons.append("embedding_model")
-        if (
-            manifest.get("retrieval_policy_fingerprint")
-            != self.retrieval_policy_fingerprint
-            or fusion_policy.get("method") != "weighted_reciprocal_rank_fusion"
-            or fusion_policy.get("rrf_k") != self.config.settings.rrf_k
-            or fusion_policy.get("bm25_weight") != self.config.settings.bm25_weight
-            or fusion_policy.get("dense_weight") != self.config.settings.dense_weight
-            or relevance_policy.get("dense_minimum_cosine_similarity")
-            != self.config.settings.dense_minimum_cosine_similarity
-            or relevance_policy.get("bm25_requires_query_token_overlap") is not True
-        ):
-            reasons.append("retrieval_policy")
-        return reasons
+        return generation_upgrade_reasons(
+            self.config,
+            manifest,
+            self.retrieval_policy_fingerprint,
+        )
 
     def _status(
         self,
@@ -343,56 +408,7 @@ class StatusWorkflow:
     def _generation_inventory(
         self, current_generation_id: str | None
     ) -> dict[str, Any]:
-        """Describe every retained generation on disk without validating it.
-
-        These are exactly the directories a prune would consider, so `status`
-        reports them with their size and file count. A generation whose manifest
-        is missing, unreadable, or not JSON is reported with a ``manifest_error``
-        instead of raising: the purpose is transparency about what occupies disk,
-        and a status call must still answer when one retained generation is
-        damaged. This runs only on the read-only ``status`` surface, never on the
-        search path, because it walks each generation's files.
-        """
-
-        root = self.config.generations_root
-        records: list[dict[str, Any]] = []
-        if root.is_dir():
-            for entry in root.iterdir():
-                if entry.is_symlink() or not entry.is_dir():
-                    continue
-                record: dict[str, Any] = {
-                    "generation_id": entry.name,
-                    "is_current": entry.name == current_generation_id,
-                }
-                try:
-                    manifest = read_json(entry / "manifest.json")
-                except StorageError as exc:
-                    record["manifest_error"] = str(exc)
-                else:
-                    if isinstance(manifest, dict):
-                        record.update(
-                            created_at=manifest.get("created_at"),
-                            chunk_count=manifest.get("chunk_count"),
-                            document_count=manifest.get("document_count"),
-                            schema_version=manifest.get("schema_version"),
-                        )
-                    else:
-                        record["manifest_error"] = "manifest.json is not a JSON object"
-                file_count, size_bytes = directory_statistics(entry)
-                record["file_count"] = file_count
-                record["size_bytes"] = size_bytes
-                records.append(record)
-        records.sort(
-            key=lambda item: (str(item.get("created_at") or ""), item["generation_id"]),
-            reverse=True,
-        )
-        return {
-            "generations": records,
-            "retained_generation_count": len(records),
-            "retained_generation_bytes": sum(
-                int(item["size_bytes"]) for item in records
-            ),
-        }
+        return generation_inventory(self.config, current_generation_id)
 
     async def status(self) -> dict[str, Any]:
         async with self._operation():
@@ -403,4 +419,9 @@ class StatusWorkflow:
                     payload.get("generation_id"),
                 )
             )
+            # The dependency report is built from the payload this method already
+            # produced, so the health answer and the status answer cannot be taken
+            # from two different states of the project.
+            report = await asyncio.to_thread(health_report, self.config, payload)
+            payload.update(report.as_status_fields())
             return payload

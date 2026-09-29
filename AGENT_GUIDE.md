@@ -15,6 +15,12 @@ Use `research-ultra-rag-mcp` to discover and synthesize evidence across one proj
 9. Use `get_passage` for surrounding semantic context. For a direct quotation, open the original at `source_relative_path` and `locator`; never quote returned `text` as though it were an exact transcript.
 10. If two files appear to be the same work, do not count them as independent support. Explain the issue and use `set_source_inclusion` only after agent/user review.
 
+## What is in the way
+
+`status` names the conditions between the user and an answer that works, in two lists. `blocked_by` is what stops the server: a missing UltraRAG runtime, a state root another project owns, no generation, no space for the next build. `degraded` is what makes an answer worse without stopping it: a missing reranker, a project another process is holding. Each entry is `{check, reason, remedy}`, and both lists are absent when there is nothing to act on, so an absent field is good news rather than missing data.
+
+Report the reason in your own words and pass the `remedy` command to the user verbatim; do not run it yourself, because a fetch and a repair change the installation. A user who asks why a search failed usually wants the `blocked_by` entry, so read it before proposing anything. A tool error that names a log holds the same information from the other direction: it carries the last lines the vanilla gateway wrote and the paths of every log the run produced, so read the named file and report the cause instead of retrying the same call.
+
 The local UI uses the same public tools. Call `status` again before relying on state observed earlier in a long session.
 
 ## How retrieval is chosen for you

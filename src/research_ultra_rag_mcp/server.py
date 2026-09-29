@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Annotated, Any, TypeAlias, TypeVar
 
-from fastmcp import Client, FastMCP
+from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
@@ -229,21 +229,14 @@ def create_server(
                 """
 
                 from .service import ResearchService
-                from .ultrarag import VanillaUltraRAG, create_vanilla_transport
+                from .ultrarag import VanillaUltraRAG, vanilla_client
 
                 async with lock:
                     instance = holder.get("service")
                     if instance is not None:
                         return instance
-                    client = await stack.enter_async_context(
-                        Client(
-                            create_vanilla_transport(config),
-                            name=SERVER_NAME,
-                            timeout=1800,
-                            init_timeout=1800,
-                        )
-                    )
-                    instance = ResearchService(config, VanillaUltraRAG(client))
+                    client = await stack.enter_async_context(vanilla_client(config))
+                    instance = ResearchService(config, VanillaUltraRAG(client, config))
                     holder["service"] = instance
                     return instance
 
@@ -309,6 +302,7 @@ def create_server(
             )
         except ResearchError as exc:
             raise ToolError(str(exc)) from exc
+
     async def _status_payload() -> dict[str, Any]:
         """Return the `status` answer, including this server's own UI state."""
 
@@ -339,6 +333,11 @@ def create_server(
         Call this first, and before telling the user their corpus is up to date.
         No generation means nothing can be searched yet; `stale` and
         `generation_upgrade_required` say what moved and whether to ingest again.
+
+        `blocked_by` and `degraded` name what stands between this project and a
+        search that answers, each with the reason and the command that fixes it.
+        They are absent when there is nothing to act on. A tool error that names a
+        gateway log holds the same information: read the log before retrying.
         """
         return await _status_payload()
 

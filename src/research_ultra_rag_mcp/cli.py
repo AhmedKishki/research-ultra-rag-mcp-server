@@ -25,22 +25,23 @@ import argparse
 import asyncio
 import json
 import os
-import shlex
 import signal
 import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastmcp import Client
-
 from .config import (
+    CLI_COMMAND,
     ConfigurationError,
     ResearchConfig,
     apply_process_priority,
     configured_source_directory,
+    project_command,
     resolve_config,
 )
 from .launcher import launcher_path, ui_launcher_state
@@ -49,9 +50,9 @@ from .service import ResearchService
 from .settings import FULL_TOOL_DETAIL, TOOL_DETAIL_MODES, describe_settings
 from .support import DEFAULT_RETRIEVAL_METHOD, RETRIEVAL_METHODS, ResearchError
 from .tool_views import present_tool_response
-from .ultrarag import VanillaUltraRAG, create_vanilla_transport
+from .ultrarag import VanillaUltraRAG, vanilla_client
 
-CLI_NAME = "research-ultra-rag"
+CLI_NAME = CLI_COMMAND
 DEFAULT_DEPTH = 10
 # What a project's own .gitignore has to keep out of version control: the
 # derived state that can be rebuilt, and the machine-local launcher. The
@@ -88,10 +89,7 @@ class _LazyGateway:
     async def call_tool(self, name: str, *args: Any, **kwargs: Any) -> Any:
         if self._client is None:
             stack = AsyncExitStack()
-            transport = create_vanilla_transport(self._config)
-            self._client = await stack.enter_async_context(
-                Client(transport, timeout=1800, init_timeout=1800)
-            )
+            self._client = await stack.enter_async_context(vanilla_client(self._config))
             self._stack = stack
         return await self._client.call_tool(name, *args, **kwargs)
 
@@ -108,7 +106,7 @@ async def _service(config: ResearchConfig) -> AsyncIterator[ResearchService]:
 
     gateway = _LazyGateway(config)
     try:
-        yield ResearchService(config, VanillaUltraRAG(gateway))
+        yield ResearchService(config, VanillaUltraRAG(gateway, config))
     finally:
         await gateway.aclose()
 
@@ -359,6 +357,38 @@ def _parser() -> argparse.ArgumentParser:
         "config", help="Print the merged settings and where each value came from."
     )
 
+    examine = commands.add_parser(
+        "doctor",
+        help=(
+            "Report what is wrong with this installation: one line per "
+            "dependency, with the command that fixes it."
+        ),
+    )
+    examine.add_argument(
+        "--mcp-entry",
+        action="store_true",
+        help="Print the MCP client entry for the resolved configuration.",
+    )
+    examine.add_argument(
+        "--check-entry",
+        metavar="PATH",
+        default=None,
+        help="Report on a client entry file without changing it.",
+    )
+    examine.add_argument(
+        "--prefetch-models",
+        action="store_true",
+        help="Download the pinned embedding and reranker models into the cache.",
+    )
+    examine.add_argument(
+        "--repair-runtime",
+        action="store_true",
+        help=(
+            "Move a mismatched UltraRAG runtime aside, install the pinned one, "
+            "and validate it."
+        ),
+    )
+
     browser = commands.add_parser(
         "ui", help="Start, open, or stop this project's browser view."
     )
@@ -403,13 +433,6 @@ def _config_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "config_path": args.config,
         "settings_overrides": args.set_overrides,
     }
-
-
-def _command(project_root: Path, *arguments: str) -> str:
-    """A copy-pasteable command naming this project, quoting what needs it."""
-
-    parts = (CLI_NAME, "--project-root", str(project_root), *arguments)
-    return " ".join(shlex.quote(part) for part in parts)
 
 
 def _resolve(args: argparse.Namespace) -> ResearchConfig:
@@ -463,9 +486,9 @@ def _init(args: argparse.Namespace) -> dict[str, Any]:
         "keep_out_of_version_control": list(VERSION_CONTROL_NOTES),
         "next_steps": [
             f"Add PDF or EPUB sources to {config.source_root}.",
-            _command(config.project_root, "ingest"),
-            _command(config.project_root, "search", "your question"),
-            _command(config.project_root, "ui", "--open"),
+            project_command(config.project_root, "ingest"),
+            project_command(config.project_root, "search", "your question"),
+            project_command(config.project_root, "ui", "--open"),
         ],
     }
 
@@ -681,24 +704,61 @@ async def _operate(
     raise ResearchError(f"Unknown command: {command}")
 
 
-async def _run(args: argparse.Namespace) -> dict[str, Any] | None:
+@dataclass(frozen=True, slots=True)
+class CommandResult:
+    """What one command printed, and the exit code that follows from it."""
+
+    payload: dict[str, Any] | None = None
+    exit_code: int = 0
+    text: str | None = None
+
+
+async def _doctor(args: argparse.Namespace, config: ResearchConfig) -> CommandResult:
+    """Report the installation, and run only the operation the flags name."""
+
+    from .doctor import mcp_entry_block, run_doctor
+
+    if args.mcp_entry:
+        return CommandResult(text=mcp_entry_block(config))
+    status: dict[str, Any] | None = None
+    if not args.check_entry:
+        # The report is built from the same service call the `status` command
+        # makes, so the two surfaces cannot disagree about this project.
+        async with _service(config) as service:
+            status = await service.status()
+    result = run_doctor(
+        config,
+        status or {},
+        running=_service_processes(config.project_root),
+        entry=args.check_entry,
+        prefetch=args.prefetch_models,
+        repair=args.repair_runtime,
+    )
+    return CommandResult(text=result.text(), exit_code=result.exit_code)
+
+
+async def _run(args: argparse.Namespace) -> CommandResult:
     """Resolve the project, run the named command, and return what to print."""
 
     if args.command == "init":
-        return _init(args)
+        return CommandResult(payload=_init(args))
     config = _resolve(args)
     apply_process_priority(config.nice)
     if args.command == "config":
         print(describe_settings(config.settings, config.settings_provenance))
-        return None
+        return CommandResult()
     if args.command == "ui":
         _ui(args, config)
-        return None
+        return CommandResult()
     if args.command == "stop":
-        return _stop(args, config)
+        return CommandResult(payload=_stop(args, config))
+    if args.command == "doctor":
+        return await _doctor(args, config)
     async with _service(config) as service:
         tool, payload = await _operate(args, service)
-    return present_tool_response(tool, payload, detail=args.detail)
+    return CommandResult(
+        payload=present_tool_response(tool, payload, detail=args.detail)
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -707,8 +767,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         result = asyncio.run(_run(args))
     except (ConfigurationError, ResearchError, OSError, ValueError) as exc:
         raise SystemExit(f"{CLI_NAME}: {exc}") from exc
-    if result is not None:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result.text is not None:
+        sys.stdout.write(result.text)
+    elif result.payload is not None:
+        print(json.dumps(result.payload, ensure_ascii=False, indent=2))
+    if result.exit_code:
+        raise SystemExit(result.exit_code)
 
 
 if __name__ == "__main__":

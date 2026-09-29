@@ -21,7 +21,7 @@ What a caller is told has to match what the server holds.
 Work that protects the data, or that stops a build from costing more than it should.
 
 - [ ] **Narrow the two broad `except Exception` handlers** at durability boundaries, so a storage fault cannot be swallowed. Feature.
-- [ ] **Check free disk space before a build starts.** Feature. A build that runs out of room partway leaves a staging directory and no generation, on the machine least able to afford the retry.
+- [ ] **Refuse to start a build that cannot fit.** Feature. `status` and `doctor` now report free space against the size of the generations already on disk, and `ingest` does not read that verdict: a build that runs out of room partway leaves a staging directory and no generation, on the machine least able to afford the retry.
 - [ ] **Prune retained generations.** Feature. Removal is manual and deletes data, so it needs which generation, a confirmation step, and never the current one.
 - [ ] **Roll back to a retained generation deliberately**, instead of only moving forward. Feature.
 - [ ] **An `ingest` dry run** that reports what would change and what would be reused, and writes nothing. Feature.
@@ -51,6 +51,7 @@ uv run pytest -q
 uv run ruff check .
 uv run ruff format --check .
 uv run research-ultra-rag --project-root /path/to/project status
+uv run research-ultra-rag --project-root /path/to/project doctor
 uv run research-ultra-rag-verify /path/to/project --query "your question"
 uv run python scripts/benchmark_write_pattern.py --root /path/on/target/disk
 uv run python scripts/evaluate_retrieval.py --project /path/to/project --offline

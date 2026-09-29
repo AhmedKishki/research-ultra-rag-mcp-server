@@ -1,3 +1,7 @@
+// Paste the entry a project prints for itself:
+// research-ultra-rag --project-root <project> doctor --mcp-entry
+// and check one that is already in place without editing it:
+// research-ultra-rag --project-root <project> doctor --check-entry <this file>
 {
   "mcp": {
     "research-ultra-rag-mcp": {

@@ -16,8 +16,10 @@ from types import SimpleNamespace
 from typing import Any, ClassVar, Self
 
 import pytest
+from conftest import write_pdf
 
 import research_ultra_rag_mcp.cli as cli_module
+import research_ultra_rag_mcp.ultrarag as ultrarag_module
 from research_ultra_rag_mcp.cli import (
     _init,
     _LazyGateway,
@@ -297,9 +299,9 @@ def test_the_gateway_is_opened_by_the_first_call_and_then_reused(
 ) -> None:
     _FakeGatewayClient.opened = 0
     _FakeGatewayClient.calls = []
-    monkeypatch.setattr(cli_module, "Client", _FakeGatewayClient)
+    monkeypatch.setattr(ultrarag_module, "Client", _FakeGatewayClient)
     monkeypatch.setattr(
-        cli_module, "create_vanilla_transport", lambda _config: object()
+        ultrarag_module, "create_vanilla_transport", lambda _config: object()
     )
     gateway = _LazyGateway(_resolve(_args("--project-root", str(project), "status")))
 
@@ -327,12 +329,33 @@ def test_a_reading_command_never_opens_the_gateway(
     def refuse(_config: Any) -> Any:
         raise AssertionError("a command that only reads opened the vanilla gateway")
 
-    monkeypatch.setattr(cli_module, "create_vanilla_transport", refuse)
+    monkeypatch.setattr(ultrarag_module, "create_vanilla_transport", refuse)
 
     result = asyncio.run(_run(_args("--project-root", str(project), "sources")))
 
-    assert result is not None
-    assert result["source_count"] == 0
+    assert result.payload is not None
+    assert result.payload["source_count"] == 0
+
+
+def test_the_doctor_reports_without_opening_the_gateway(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every dependency check reads, so the doctor never starts the gateway."""
+
+    def refuse(_config: Any) -> Any:
+        raise AssertionError("the doctor opened the vanilla gateway")
+
+    monkeypatch.setattr(ultrarag_module, "create_vanilla_transport", refuse)
+    write_pdf(project / "sources" / "evidence.pdf", ["The cobalt heron."])
+
+    result = asyncio.run(_run(_args("--project-root", str(project), "doctor")))
+
+    assert result.text is not None
+    assert "project_identity" in result.text
+    assert "vanilla_runtime" in result.text
+    # Nothing is indexed yet, so the project cannot serve a search.
+    assert result.exit_code == 1
 
 
 def _fake_process(proc_root: Path, pid: int, arguments: list[str]) -> None:

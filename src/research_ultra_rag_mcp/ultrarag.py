@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
+from fastmcp.exceptions import ToolError
 
 from .config import ResearchConfig, child_process_environment
+
+# How long one vanilla call may take, and how much of a failed component's
+# stderr is worth carrying back to the caller.
+TRANSPORT_TIMEOUT_SECONDS = 1800
+GATEWAY_LOG_TAIL_LINES = 20
 
 
 def create_vanilla_transport(config: ResearchConfig) -> StdioTransport:
@@ -43,19 +51,125 @@ def create_vanilla_transport(config: ResearchConfig) -> StdioTransport:
     )
 
 
+def gateway_log_path(config: ResearchConfig) -> Path:
+    return config.logs_root / "vanilla-gateway-stderr.log"
+
+
+def child_logs_root(config: ResearchConfig) -> Path:
+    return config.ultrarag_workspace / "logs"
+
+
+def child_log_path(config: ResearchConfig, namespace: str) -> Path:
+    return child_logs_root(config) / f"{namespace}-child-stderr.log"
+
+
+def _log_tail(path: Path, *, lines: int = GATEWAY_LOG_TAIL_LINES) -> list[str]:
+    """Return the last meaningful lines of one log, or nothing when unreadable."""
+
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [line.rstrip() for line in content.splitlines() if line.strip()][-lines:]
+
+
+def gateway_start_failure(config: ResearchConfig, exc: BaseException) -> ToolError:
+    """Return the error a gateway that cannot start must answer with.
+
+    A gateway that exits during its handshake leaves the reason in the log the
+    transport already writes, and a caller who never opens that file has only the
+    client's own "connection closed". This carries the reason, the last lines of
+    every log the run produced, and the path of each one, so a tool answer names
+    the cause instead of restating the symptom.
+    """
+
+    gateway_log = gateway_log_path(config)
+    logs_root = child_logs_root(config)
+    lines = [
+        f"The UltraRAG gateway could not start: {exc}",
+        f"Gateway stderr: {gateway_log}",
+    ]
+    tail = _log_tail(gateway_log)
+    if tail:
+        lines.append("Last lines:")
+        lines.extend(f"  {line}" for line in tail)
+    else:
+        lines.append("That log is empty or absent.")
+    written: Sequence[Path] = sorted(logs_root.glob("*-child-stderr.log"))
+    lines.append(f"Component stderr: {logs_root}")
+    for path in written:
+        lines.append(f"  {path}")
+        lines.extend(f"    {line}" for line in _log_tail(path))
+    return ToolError("\n".join(lines))
+
+
+def call_timeout_failure(
+    config: ResearchConfig,
+    name: str,
+    exc: BaseException,
+) -> ToolError:
+    """Return the error a vanilla call that never answered must raise.
+
+    The vanilla tools are namespaced, so the tool name says which component was
+    busy, and that component writes its own stderr beside the gateway's. Naming
+    both is enough to see what the component was doing; no process tree is
+    inspected to work it out.
+    """
+
+    namespace = name.split("_", 1)[0]
+    return ToolError(
+        f"The {namespace} component did not answer {name} within "
+        f"{TRANSPORT_TIMEOUT_SECONDS} seconds: {exc}. Its stderr is at "
+        f"{child_log_path(config, namespace)} and the gateway's is at "
+        f"{gateway_log_path(config)}."
+    )
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    message = str(exc).casefold()
+    return "timed out" in message or "timeout" in message
+
+
+@asynccontextmanager
+async def vanilla_client(config: ResearchConfig) -> AsyncIterator[Client[Any]]:
+    """Open the gateway, reporting a failure to start as the reason it failed."""
+
+    client: Client[Any] = Client(
+        create_vanilla_transport(config),
+        timeout=TRANSPORT_TIMEOUT_SECONDS,
+        init_timeout=TRANSPORT_TIMEOUT_SECONDS,
+    )
+    try:
+        await client.__aenter__()
+    except Exception as exc:
+        raise gateway_start_failure(config, exc) from exc
+    try:
+        yield client
+    finally:
+        await client.__aexit__(None, None, None)
+
+
 class VanillaUltraRAG:
     """Small typed boundary around vanilla MCP tool calls."""
 
-    def __init__(self, client: Client[Any]) -> None:
+    def __init__(
+        self, client: Client[Any], config: ResearchConfig | None = None
+    ) -> None:
         self.client = client
+        self.config = config
 
     async def call(self, name: str, arguments: dict[str, Any]) -> Any:
-        result = await self.client.call_tool(
-            name,
-            arguments,
-            timeout=1800,
-            raise_on_error=True,
-        )
+        try:
+            result = await self.client.call_tool(
+                name,
+                arguments,
+                timeout=TRANSPORT_TIMEOUT_SECONDS,
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            if self.config is not None and _is_timeout(exc):
+                raise call_timeout_failure(self.config, name, exc) from exc
+            raise
         return result.data
 
     async def chunk(

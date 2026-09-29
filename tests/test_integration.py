@@ -475,6 +475,10 @@ def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
     a gateway that cannot start at all, the property is easy to see: connecting and
     listing tools must succeed, and the failure must arrive as the answer to the
     tool that needed the gateway rather than as a client that never connected.
+
+    That answer must also be usable. `Connection closed` names the symptom and
+    nothing else, so the failure carries the reason the gateway wrote to its own
+    log, and the paths of the logs a reader has to open to see the rest.
     """
 
     async def exercise() -> None:
@@ -485,7 +489,9 @@ def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
         # A gateway that exists and cannot serve: configuration resolution accepts
         # it, so the failure can only appear when a tool asks for it.
         broken = project / "broken-vanilla-gateway"
-        broken.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        broken.write_text(
+            "#!/bin/sh\necho 'no runtime at /nowhere' >&2\nexit 3\n", encoding="utf-8"
+        )
         broken.chmod(0o755)
         transport = StdioTransport(
             command=str(Path(sys.executable).parent / "research-ultra-rag-mcp"),
@@ -516,7 +522,15 @@ def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
             assert resources == {"research://status", "research://sources"}
             with pytest.raises(Exception) as failure:
                 await client.call_tool("status", {})
-        assert "Research workflow failed" in str(failure.value)
+        message = str(failure.value)
+        assert "Research workflow failed" in message
+        assert "The UltraRAG gateway could not start" in message
+        # The reason is the line the gateway itself printed, not the symptom the
+        # client would otherwise be left with.
+        assert "no runtime at /nowhere" in message
+        runtime_root = project / ".research-rag" / "runtime"
+        assert str(runtime_root / "logs" / "vanilla-gateway-stderr.log") in message
+        assert str(runtime_root / "ultrarag-runtime" / "logs") in message
 
     asyncio.run(exercise())
 

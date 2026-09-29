@@ -152,6 +152,9 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     Change lists appear only when the generation is stale, and `restart_required`
     only when the running process is older than the installed version.
+    `blocked_by` and `degraded` appear only when they are not empty: both are
+    conditions a caller must act on, which is the bound on what a lean answer
+    discloses, and the per-check detail behind them is a full-detail reader.
     """
 
     result = _copy(payload, ("ready", "stale", "project_name"))
@@ -205,6 +208,12 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
     _add(result, "restart_required", version.get("restart_required"))
     for key in ("retained_generation_count", "retained_generation_bytes"):
         _add(result, key, payload.get(key))
+    for key in ("blocked_by", "degraded"):
+        entries = payload.get(key) or []
+        if entries:
+            result[key] = [
+                _copy(entry, ("check", "reason", "remedy")) for entry in entries
+            ]
     result["message"] = payload.get("message")
     return result
 
