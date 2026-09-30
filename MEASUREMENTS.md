@@ -232,6 +232,10 @@ succ@50 90.6%, MRR 0.717, nDCG@50 0.759, doc@50 100.0%. Paraphrase reach rises f
 - They come from one English-primary corpus and one generation, not from a benchmark suite.
 - Fusion weights are deliberately untouched: with 32 queries the hybrid lead at rank 1 is about two queries, which cannot separate a real weight effect from noise.
 
+### Which server produced them
+
+A number here is only comparable with another measured by the same code, because a server answering from a different checkout reads a different reviewed-metadata field set and can refuse the project's own state. `doctor` reports the two directories when they differ, `scripts/update.sh` names the servers left running the pre-update code, and the reviewed-metadata file records the fields its writer understood, so an older server refuses the file by cause instead of naming a field the caller never typed.
+
 ### The reranker model: the default against `jinaai/jina-reranker-v1-turbo-en`
 
 Every accuracy number above was measured with the default cross-encoder. The model is an engine setting rather than a search option, so the harness can measure a second one over the same judged queries in one run:
