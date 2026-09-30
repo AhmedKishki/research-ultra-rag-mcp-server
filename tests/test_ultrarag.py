@@ -8,6 +8,7 @@ tests hold the transport down and read what a tool answer ends up carrying.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from fastmcp.exceptions import ToolError
 
 from research_ultra_rag_mcp.config import ResearchConfig, resolve_config
 from research_ultra_rag_mcp.ultrarag import (
+    GATEWAY_INIT_TIMEOUT_SECONDS,
     TRANSPORT_TIMEOUT_SECONDS,
     call_timeout_failure,
     child_log_path,
@@ -141,3 +143,43 @@ def test_the_transport_writes_the_log_the_message_names(
     assert child_log_path(config, "retriever").parent == (
         config.ultrarag_workspace / "logs"
     )
+
+
+def test_the_handshake_is_bounded_by_its_own_timeout(config: ResearchConfig) -> None:
+    """A gateway that cannot start must be reported, not waited out.
+
+    A gateway that exits mid-handshake can leave the client awaiting a response
+    that never arrives, so the handshake needs its own bound. Reusing the call
+    budget here made a failure the caller is told about in seconds take the
+    full 30 minutes, and the next step is the timeout on the test itself.
+    """
+
+    assert GATEWAY_INIT_TIMEOUT_SECONDS < TRANSPORT_TIMEOUT_SECONDS
+
+
+def test_a_gateway_that_never_starts_is_reported_within_the_handshake_bound(
+    config: ResearchConfig,
+) -> None:
+    """The reported failure must arrive, not merely be raised eventually."""
+
+    broken = _failing_gateway(config.project_root)
+    failing = resolve_config(config.project_root, vanilla_executable=broken)
+
+    async def connect() -> None:
+        async with vanilla_client(failing):
+            pass
+
+    started = time.monotonic()
+    with pytest.raises(ToolError) as raised:
+        asyncio.run(
+            asyncio.wait_for(
+                connect(),
+                timeout=GATEWAY_INIT_TIMEOUT_SECONDS + 15,
+            )
+        )
+
+    # A timeout the client raises on its own is still the right answer; what is
+    # asserted is that the reason is named, and that it arrives long before the
+    # call budget the handshake no longer shares.
+    assert "The UltraRAG gateway could not start" in str(raised.value)
+    assert time.monotonic() - started < TRANSPORT_TIMEOUT_SECONDS

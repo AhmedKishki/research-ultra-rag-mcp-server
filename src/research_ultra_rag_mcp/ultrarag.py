@@ -18,6 +18,15 @@ from .config import ResearchConfig, child_process_environment
 TRANSPORT_TIMEOUT_SECONDS = 1800
 GATEWAY_LOG_TAIL_LINES = 20
 
+# How long the handshake may take before a gateway is treated as unable to
+# start. This is not the call budget: a handshake is the process coming up and
+# answering `initialize`, so an ingestion-length timeout only ever applies to a
+# gateway that has already failed. When a gateway exits mid-handshake the
+# pinned client can leave the connection awaiting a response that will never
+# arrive, and only this bound ends the wait — without it the failure a caller
+# is told about in seconds is discovered half an hour later.
+GATEWAY_INIT_TIMEOUT_SECONDS = 30
+
 
 def create_vanilla_transport(config: ResearchConfig) -> StdioTransport:
     """Start the pinned gateway as a managed child of this server.
@@ -137,7 +146,7 @@ async def vanilla_client(config: ResearchConfig) -> AsyncIterator[Client[Any]]:
     client: Client[Any] = Client(
         create_vanilla_transport(config),
         timeout=TRANSPORT_TIMEOUT_SECONDS,
-        init_timeout=TRANSPORT_TIMEOUT_SECONDS,
+        init_timeout=GATEWAY_INIT_TIMEOUT_SECONDS,
     )
     try:
         await client.__aenter__()
