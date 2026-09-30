@@ -3,6 +3,14 @@
 Every tool answers with the lean projection, which `present_tool_response`
 applies. `--tool-detail full` is the developer detail mode: it returns the
 service payload unchanged, for debugging retrieval and ingestion.
+
+One rule decides what a lean answer carries: a field is here when a caller can
+act on it or could not otherwise account for it. `stale`, a blocker, a filter
+that removed every source, and a reranker that did not run are all things a
+caller must know about; the query it sent, the timing, the scores that ordered
+the passages, and the counts it could make for itself are not. A field whose
+value is the ordinary case is left out, so the answer says what happened rather
+than what is usual.
 """
 
 from __future__ import annotations
@@ -94,15 +102,23 @@ def lean_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a search answer: query, generation, freshness, reranking, evidence.
+    """Return a search answer: the passages, and anything the caller must know.
 
-    `stale` and `reranked` are always present; the other optional fields appear
-    only when they carry a value. `hits` is the flat passage ranking, which is
-    the only view a tool can ask for.
+    The passages and the generation they came from, plus the conditions that
+    change what the caller can conclude: `stale` when the corpus has moved on,
+    `reranked: false` when the cross-encoder did not run, an upgrade note when
+    this generation cannot serve, a filter that emptied the answer, and a source
+    id that resolved to nothing. Each of those is present only when it holds. The
+    query is not echoed, the ranking is not published, and no count appears that
+    the passages themselves do not already say.
     """
 
-    result: dict[str, Any] = _copy(payload, ("query", "generation_id", "stale"))
-    result["reranked"] = bool(payload.get("reranked"))
+    result: dict[str, Any] = {}
+    _add(result, "generation_id", payload.get("generation_id"))
+    if payload.get("stale"):
+        result["stale"] = True
+    if payload.get("reranked") is False:
+        result["reranked"] = False
     _add(result, "rerank_fallback", payload.get("rerank_fallback"))
     _add(
         result,
@@ -134,41 +150,39 @@ def lean_search(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_passage_context(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the requested passage with its neighbouring passages."""
+    """Return the requested passage's neighbours, and the generation they are in."""
 
-    result: dict[str, Any] = _copy(payload, ("generation_id", "requested_chunk_id"))
+    result: dict[str, Any] = {}
+    _add(result, "generation_id", payload.get("generation_id"))
     result["context"] = [lean_passage(item) for item in payload.get("context") or []]
     return result
 
 
 def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the current generation's state: readiness, freshness, and counts.
+    """Return whether this project can be served, and what a caller must act on.
 
-    The answer describes the selected generation and inventories nothing: the
-    retained generations, the categories, the projects, and the languages are
-    full-detail readers, and `list_sources` is the source inventory. What a prune
-    would consider is reported as `retained_generation_count` and
-    `retained_generation_bytes` rather than as a list of generations.
+    The answer is a readiness statement: `ready`, `generation_id`, `message`,
+    and whatever condition changes what a caller may conclude — `stale` when the
+    corpus has moved, `blocked_by` and `degraded` when a check is not green, an
+    upgrade note when this generation cannot serve, a change list when the
+    generation is stale, a restart the installed version needs, and an ingestion
+    still in progress.
 
-    Change lists appear only when the generation is stale, and `restart_required`
-    only when the running process is older than the installed version.
-    `blocked_by` and `degraded` appear only when they are not empty: both are
-    conditions a caller must act on, which is the bound on what a lean answer
-    discloses, and the per-check detail behind them is a full-detail reader.
+    What is here is what the caller acts on. The counts of documents, chunks and
+    sources are the corpus inventory and `list_sources` is that inventory; the
+    project's own name and the generation's date answer questions of their own and
+    belong to `--tool-detail full`.
     """
 
-    result = _copy(payload, ("ready", "stale", "project_name"))
-    for key in (
-        "generation_id",
-        "created_at",
-        "chunk_count",
-        "discovered_source_count",
-        "selected_source_count",
-        "indexed_source_count",
-        "searchable_source_count",
-        "excluded_source_count",
-    ):
-        _add(result, key, payload.get(key))
+    result: dict[str, Any] = {}
+    # `ready` travels only when it is false. Readiness is the ordinary case in an
+    # answer that has anything to say at all, and its absence is the condition a
+    # caller has to act on, which is also what the message states.
+    if payload.get("ready") is False:
+        result["ready"] = False
+    _add(result, "generation_id", payload.get("generation_id"))
+    if payload.get("stale"):
+        result["stale"] = True
     # The tool always searches hybrid, so the answer says whether this
     # generation can serve that and never lists methods as if they were a
     # choice. A generation that predates dense support is stated plainly,
@@ -206,6 +220,10 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
             result["changes"] = lean_changes
     version = payload.get("version") or {}
     _add(result, "restart_required", version.get("restart_required"))
+    # What a prune would consider stays in the lean answer: the agent guide has an
+    # agent answer a disk-use question from these two numbers, and a number a
+    # documented workflow needs is not waste. The list of generations they refer to
+    # is a full-detail reader.
     for key in ("retained_generation_count", "retained_generation_bytes"):
         _add(result, key, payload.get(key))
     for key in ("blocked_by", "degraded"):
@@ -219,24 +237,25 @@ def lean_status(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_ingest(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return ingestion state: what changed, what was reused, what was discarded.
+    """Return what ingestion did, what is left to do, and anything it dropped.
 
-    The counters that report discarded, withheld, or densely truncated material
-    appear only when they are not zero.
+    A build answers with its outcome and its size: whether the generation
+    changed, how many documents and chunks it holds, and the next action when
+    work is resumable. The counters that report discarded, withheld, or densely
+    truncated material appear only when they are not zero, because a caller has
+    to act on those and on nothing else. What the build reused, rebuilt, or
+    re-embedded is cost rather than outcome, and belongs to `--tool-detail full`
+    and to `MEASUREMENTS.md`.
     """
 
-    result = _copy(payload, ("status", "generation_changed"))
+    result: dict[str, Any] = {}
+    _add(result, "status", payload.get("status"))
+    _add(result, "generation_changed", payload.get("generation_changed"))
     for key in ("generation_id", "build_id", "phase", "progress"):
         _add(result, key, payload.get(key))
+    for key in ("document_count", "chunk_count"):
+        _add(result, key, payload.get(key))
     for key in (
-        "document_count",
-        "chunk_count",
-        "reused_document_count",
-        "rebuilt_document_count",
-        "reused_chunk_count",
-        "rebuilt_chunk_count",
-        "created_vector_count",
-        "reused_vector_count",
         "discarded_empty_chunk_count",
         "discarded_symbol_only_chunk_count",
         "discarded_corrupt_chunk_count",
@@ -246,6 +265,7 @@ def lean_ingest(payload: Mapping[str, Any]) -> dict[str, Any]:
     ):
         _add(result, key, payload.get(key))
     _add(result, "withheld_chunk_reasons", payload.get("withheld_chunk_reasons"))
+    _add(result, "superseded_build", payload.get("superseded_build"))
     _add(result, "next_action", payload.get("next_action"))
     result["message"] = payload.get("message")
     return result
@@ -265,18 +285,13 @@ def lean_list_sources(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     `sources` holds the bibliography of what is searchable now and
     `discovered_sources` every live PDF/EPUB with its index state, so a handle
-    exists before the first ingestion.
+    exists before the first ingestion. The lists are the inventory, so no count
+    travels beside them: a caller can count the rows it was given.
     """
 
-    result = _copy(payload, ("ready",))
+    result: dict[str, Any] = {}
+    _add(result, "ready", payload.get("ready"))
     _add(result, "generation_id", payload.get("generation_id"))
-    for key in (
-        "source_count",
-        "discovered_source_count",
-        "excluded_source_count",
-        "reviewed_metadata_source_count",
-    ):
-        _add(result, key, payload.get(key))
     result["sources"] = [
         lean_source_record(record) for record in payload.get("sources") or []
     ]
@@ -312,17 +327,21 @@ def lean_list_sources(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def lean_source_inclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the inclusion decision, its reason, and its effect."""
+    """Return the inclusion decision, its reason, and whether it applies now."""
 
-    result = _copy(payload, ("status", "source_id", "source_relative_path"))
-    for key in (
-        "included",
-        "reason",
-        "effective_immediately",
-        "generation_rebuild_recommended",
-    ):
+    result: dict[str, Any] = {}
+    for key in ("status", "source_id", "source_relative_path"):
+        _add(result, key, payload.get(key))
+    for key in ("included", "reason"):
         if key in payload:
             result[key] = payload[key]
+    # An exclusion applies at once, which is the ordinary case and so unsaid; a
+    # decision that has to wait for a rebuild is news, because the caller has to
+    # rebuild before the corpus answers differently.
+    if payload.get("effective_immediately") is False:
+        result["effective_immediately"] = False
+    if payload.get("generation_rebuild_recommended"):
+        result["generation_rebuild_recommended"] = True
     result["message"] = payload.get("message")
     return result
 
@@ -330,14 +349,15 @@ def lean_source_inclusion(payload: Mapping[str, Any]) -> dict[str, Any]:
 def lean_source_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return what was saved for one source and whether it applies now."""
 
-    result = _copy(payload, ("status", "source_id", "source_relative_path"))
-    for key in (
-        "metadata",
-        "effective_immediately",
-        "generation_rebuild_recommended",
-    ):
-        if key in payload:
-            result[key] = payload[key]
+    result: dict[str, Any] = {}
+    for key in ("status", "source_id", "source_relative_path"):
+        _add(result, key, payload.get(key))
+    if "metadata" in payload:
+        result["metadata"] = payload["metadata"]
+    if payload.get("effective_immediately") is False:
+        result["effective_immediately"] = False
+    if payload.get("generation_rebuild_recommended"):
+        result["generation_rebuild_recommended"] = True
     result["message"] = payload.get("message")
     return result
 

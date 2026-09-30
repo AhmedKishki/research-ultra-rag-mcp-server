@@ -150,8 +150,11 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             )
 
         initial = await client.call_tool("status", {})
+        # There is nothing to serve yet, and that is the one readiness fact worth
+        # saying. The counts of what was found are the inventory list_sources
+        # returns, not something a readiness answer repeats.
         assert initial.data["ready"] is False
-        assert initial.data["selected_source_count"] == 1
+        assert "selected_source_count" not in initial.data
         for key in LEAN_ONLY_ABSENT:
             assert key not in initial.data
 
@@ -218,8 +221,10 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert ready.data["ui_url"] is None
         assert ready.data["ui_ready"] is False
         assert ready.data["ui_error"] is None
-        # What a prune would consider is the count and the bytes, never a list.
+        # What a prune would consider is the one inventory a lean answer keeps,
+        # because the agent guide has an agent answer a disk-use question from it.
         assert ready.data["retained_generation_count"] >= 1
+        assert ready.data["retained_generation_bytes"] > 0
 
         # A stale status counts what the corpus gained and reports only what a
         # researcher has to act on; it never enumerates the available sources.
@@ -239,7 +244,9 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         removed_source.write_bytes(removed_bytes)
         added_source.unlink()
         settled_status = await client.call_tool("status", {})
-        assert settled_status.data["stale"] is False
+        # Settled is the ordinary case: the answer says the generation and the
+        # message and nothing about freshness.
+        assert "stale" not in settled_status.data
         assert "changes" not in settled_status.data
 
         result = await client.call_tool(
@@ -251,8 +258,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert initial_hit["locator"] == {"page": 1}
         assert "cobalt heron" in initial_hit["text"].lower()
         assert "notes" not in initial_hit["text"].lower()
-        assert result.data["stale"] is False
-        assert result.data["reranked"] is True
+        assert "stale" not in result.data
+        assert "reranked" not in result.data
         for key in LEAN_ONLY_HIT_KEYS:
             assert key not in initial_hit
 
@@ -288,7 +295,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         ).read_bytes() == chunks_before_metadata
 
         metadata_status = await client.call_tool("status", {})
-        assert metadata_status.data["stale"] is False
+        assert "stale" not in metadata_status.data
         assert metadata_status.data["metadata_overlay_active"] is True
         assert "immediately" in metadata_status.data["message"]
         # Change lists appear only when the generation is stale, so a
@@ -296,7 +303,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert "changes" not in metadata_status.data
 
         corrected_sources = await client.call_tool("list_sources", {})
-        assert corrected_sources.data["source_count"] == 1
+        # The list is the inventory, so no count travels beside it.
+        assert "source_count" not in corrected_sources.data
         source_record = corrected_sources.data["sources"][0]
         # The stable ID is the inventory's business, not a search answer's.
         assert source_record["source_id"].startswith("src_")
@@ -329,7 +337,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert corrected_passage["authors"] == ["Field Researcher"]
         assert corrected_passage["locator"] == {"page": 1}
         assert "categories" not in corrected_passage
-        assert corrected_context.data["requested_chunk_id"] == hit["chunk_id"]
+        assert "requested_chunk_id" not in corrected_context.data
 
         filtered_out = await client.call_tool(
             "search",
@@ -386,7 +394,9 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             {"query": "cobalt heron amber marsh", "top_k": 1},
             timeout=1800,
         )
-        assert reranked.data["reranked"] is True
+        # Reranking is not optional, so an answer never announces that it
+        # happened; only a cross-encoder that did not run is news.
+        assert "reranked" not in reranked.data
         assert "rerank_score" not in reranked.data["hits"][0]
 
         excluded = await client.call_tool(
@@ -397,7 +407,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "reason": "Agent-reviewed duplicate representation test.",
             },
         )
-        assert excluded.data["effective_immediately"] is True
+        assert "effective_immediately" not in excluded.data
         assert (project / "sources" / "evidence.pdf").is_file()
         excluded_search = await client.call_tool(
             "search",
@@ -409,7 +419,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
             "set_source_inclusion",
             {"source_path": "evidence.pdf", "included": True},
         )
-        assert restored.data["effective_immediately"] is True
+        assert "effective_immediately" not in restored.data
         restored_search = await client.call_tool(
             "search",
             {"query": "cobalt heron", "top_k": 1},
@@ -461,7 +471,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert status_payload["generation_id"] == offline_status.data["generation_id"]
         sources_resource = await offline_client.read_resource("research://sources")
         sources_payload = json.loads(sources_resource[0].text)
-        assert sources_payload["source_count"] == 1
+        assert len(sources_payload["sources"]) == 1
         assert sources_payload["sources"][0]["source_relative_path"] == "evidence.pdf"
 
 

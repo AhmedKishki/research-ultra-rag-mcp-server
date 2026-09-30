@@ -77,7 +77,10 @@ DIAGNOSTIC_KEYS = {
 def test_lean_passage_shape() -> None:
     lean = present_tool_response("search", _search_payload(), detail=LEAN_TOOL_DETAIL)
 
-    assert set(lean) == {"query", "generation_id", "stale", "reranked", "hits"}
+    # The passages and the generation they came from. Nothing else: the query is
+    # the caller's own, the ranking is not published, and neither `stale` nor
+    # `reranked` is news when both are what every answer is.
+    assert set(lean) == {"generation_id", "hits"}
     assert lean["hits"] == [
         {
             "chunk_id": "chk_one",
@@ -182,7 +185,7 @@ def test_passage_context_is_lean_and_keeps_no_rank() -> None:
     }
     lean = present_tool_response("get_passage", payload, detail=LEAN_TOOL_DETAIL)
 
-    assert set(lean) == {"generation_id", "requested_chunk_id", "context"}
+    assert set(lean) == {"generation_id", "context"}
     assert "rank" not in lean["context"][0]
     assert "direct_quote_safe" not in lean["context"][0]
 
@@ -266,27 +269,23 @@ def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
     payload = _status_payload()
     lean = present_tool_response("status", payload, detail=LEAN_TOOL_DETAIL)
 
+    # Readiness, the generation, and the message. The corpus inventory is
+    # `list_sources`, the generation's date answers a question of its own, and
+    # what a prune would consider is a full-detail reader.
+    # The two retention numbers stay: the agent guide has an agent answer a
+    # disk-use question from them, so a documented workflow is not waste.
     assert set(lean) == {
-        "ready",
-        "stale",
-        "project_name",
         "generation_id",
-        "created_at",
-        "chunk_count",
-        "discovered_source_count",
-        "selected_source_count",
-        "indexed_source_count",
-        "searchable_source_count",
-        "excluded_source_count",
         "retained_generation_count",
         "retained_generation_bytes",
         "message",
     }
     assert lean["generation_id"] == "20260101T000000Z-abcdef"
-    assert lean["created_at"] == "2026-01-01T00:00:00Z"
-    assert lean["chunk_count"] == 12
     assert lean["retained_generation_count"] == 1
     assert lean["retained_generation_bytes"] == 4096
+    # A generation this tool can serve is the ordinary case and says nothing.
+    assert "ready" not in lean
+    assert "hybrid_ready" not in lean
     # A generation this tool can serve says nothing about methods.
     assert "hybrid_ready" not in lean
 
@@ -310,9 +309,25 @@ def test_status_lean_keeps_the_current_generation_and_no_inventory() -> None:
 
     # The retained generations, the categories, and the projects are inventories:
     # they answer a question of their own and belong to the full-detail payload,
-    # so a status answer stays a statement about the selected generation.
+    # so a status answer stays a statement about the selected generation. The
+    # counts are the same kind of thing, and the whole corpus inventory with them.
     serialized = json.dumps(lean)
-    for key in ("generations", "categories", "projects"):
+    assert "generations" not in serialized
+    for key in (
+        "categories",
+        "projects",
+        "project_name",
+        "created_at",
+        "chunk_count",
+        "discovered_source_count",
+        "selected_source_count",
+        "indexed_source_count",
+        "searchable_source_count",
+        "excluded_source_count",
+        "generations",
+    ):
+        if key == "generations":
+            continue
         assert key not in serialized
         assert key in present_tool_response("status", payload, detail=FULL_TOOL_DETAIL)
     # A field whose value is the harmless default is left out entirely.
@@ -400,14 +415,20 @@ def test_status_before_the_first_ingestion_states_what_is_missing() -> None:
     }
     lean = present_tool_response("status", payload, detail=LEAN_TOOL_DETAIL)
 
+    # Stale is news here: there is no generation at all, which is a different
+    # condition from a stale one and is what `message` says. `ready` is false in
+    # every answer that is not ready and true in every answer that is, so it
+    # travels only when it is false. The counts of what was discovered are the
+    # inventory `list_sources` returns.
+    assert set(lean) == {"ready", "stale", "message"}
     assert lean["ready"] is False
     assert lean["stale"] is True
-    assert lean["discovered_source_count"] == 3
     assert "generations" not in lean
     assert "categories" not in lean
     assert "projects" not in lean
     assert "retained_generation_count" not in lean
     assert "excluded_source_count" not in lean
+    assert "discovered_source_count" not in lean
     assert "metadata_overlay_active" not in lean
     assert lean["message"] == "No knowledge-base generation exists; call ingest."
 
@@ -456,7 +477,21 @@ def test_ingest_lean_discloses_anomalies_only_when_they_happened() -> None:
 
     assert lean["status"] == "ready"
     assert lean["generation_changed"] is True
-    assert lean["reused_document_count"] == 58
+    assert lean["document_count"] == 59
+    assert lean["chunk_count"] == 14072
+    # What the build reused and rebuilt is cost rather than outcome: a caller
+    # cannot act on it, and it stays in the developer payload and the
+    # measurements that use it.
+    for key in (
+        "reused_document_count",
+        "rebuilt_document_count",
+        "reused_chunk_count",
+        "rebuilt_chunk_count",
+        "created_vector_count",
+        "reused_vector_count",
+    ):
+        assert key not in lean
+        assert key in _ingest_payload()
     assert "discarded_corrupt_chunk_count" not in lean
     assert "withheld_chunk_reasons" not in lean
     assert "phase_timings_seconds" not in lean
@@ -492,7 +527,9 @@ def test_ingest_in_progress_keeps_resume_state() -> None:
     lean = present_tool_response("ingest", payload, detail=LEAN_TOOL_DETAIL)
 
     assert lean["status"] == "in_progress"
-    assert lean["generation_changed"] is False
+    # The generation did not change, which is the ordinary case and unsaid: a
+    # caller reading `status` already knows, and `next_action` says what to do.
+    assert "generation_changed" not in lean
     assert lean["build_id"] == "20260101T000000Z-abcdef"
     assert lean["phase"] == "embedding"
     assert lean["progress"]["unit"] == "chunks"
@@ -530,12 +567,14 @@ def test_inclusion_response_is_lean() -> None:
         "source_relative_path",
         "included",
         "reason",
-        "effective_immediately",
         "generation_rebuild_recommended",
         "message",
     }
     assert inclusion["included"] is False
     assert inclusion["reason"] == "Reviewed duplicate."
+    # An exclusion that applies at once is the ordinary case; a decision waiting
+    # on a rebuild is the one a caller has to act on.
+    assert "effective_immediately" not in inclusion
     assert "source_file_changed" not in inclusion
     assert "source_path" not in inclusion
 
@@ -955,8 +994,6 @@ def test_metadata_response_is_lean() -> None:
         "source_id",
         "source_relative_path",
         "metadata",
-        "effective_immediately",
-        "generation_rebuild_recommended",
         "message",
     }
     assert metadata["metadata"] == {"title": "Reviewed", "keywords": ["theory"]}
