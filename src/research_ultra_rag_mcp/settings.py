@@ -508,6 +508,27 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_RETRIEVAL_MAXIMUM_WITHHELD_EXAMPLES",
     ),
     Setting(
+        key="retrieval.duplicate_cosine",
+        field="duplicate_cosine",
+        kind=float,
+        layer="runtime",
+        doc=(
+            "How alike two passages may be before one search answer shows only "
+            "the better-ranked of them. Two sources can hold the same text — an "
+            "essay on its own and the same essay inside a book — and a search "
+            "that answered the same question twice with two copies of one "
+            "passage is not an answer. The words are compared first, which need "
+            "no vector and cost nothing, and this number decides the part cosine "
+            "decides: the statement that says the same thing in other words. A "
+            "number no cosine can reach decides that nothing is close enough "
+            "rather than turning the check off, because the words are compared "
+            "whatever it says."
+        ),
+        minimum=-1.0,
+        maximum=2.0,
+        env="RESEARCH_ULTRARAG_RETRIEVAL_DUPLICATE_COSINE",
+    ),
+    Setting(
         key="retrieval.source_diversity_penalty",
         field="source_diversity_penalty",
         kind=float,
@@ -667,25 +688,6 @@ SETTINGS: tuple[Setting, ...] = (
         env="RESEARCH_ULTRARAG_INGESTION_PDF_PAGE_BATCH_SIZE",
     ),
     Setting(
-        key="ingestion.duplicate_cosine",
-        field="duplicate_cosine",
-        kind=float,
-        layer="runtime",
-        doc=(
-            "How alike two chunks may be before the second is not indexed. Two "
-            "sources can hold the same text — an essay on its own and the same "
-            "essay inside a book — and excluding a source does not fix that, "
-            "because both texts are wanted. The later chunk is dropped, and the "
-            "answer names the chunk it repeated, its source, and the source it "
-            "came from, so a person can retire the source instead. Above 1 is "
-            "unreachable for a cosine and turns the check off."
-        ),
-        minimum=-1.0,
-        maximum=2.0,
-        env="RESEARCH_ULTRARAG_INGESTION_DUPLICATE_COSINE",
-    ),
-    # --- Dense engine and models. ---
-    Setting(
         key="dense.backend",
         field="dense_backend",
         kind=str,
@@ -808,12 +810,12 @@ class EffectiveSettings:
     dense_relative_similarity_margin: float
     minimum_passage_words: int
     minimum_passage_token_fraction: float
+    duplicate_cosine: float
     chunk_size: int
     chunk_overlap: int
     chunk_headers: bool
     chunk_batch_units: int
     work_budget_seconds: int
-    duplicate_cosine: float
     embedding_batch_size: int
     pdf_page_batch_size: int
     dense_backend: str

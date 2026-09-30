@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .artifact_lookup import ArtifactLookup
+import numpy as np
+
+from .artifact_lookup import ArtifactLookup, VectorByContentsMapping
 from .dense import DenseSearchHit, RerankerUnavailable
 from .extraction import (
     CHUNK_FLAG_CORRUPT_TEXT,
@@ -28,6 +31,7 @@ from .support import (
     _effective_documents,
     _is_extraction_artifact,
     _normalized_filter,
+    _passage_equality_key,
     _pseudo_relevance_terms,
     _public_document,
     _public_passage,
@@ -40,7 +44,152 @@ from .support import (
 )
 
 
+def _collapse_repetitions(
+    ordered_ids: Sequence[str],
+    *,
+    chunks_by_id: Mapping[str, dict[str, Any]],
+    documents_by_id: Mapping[str, dict[str, Any]],
+    vectors: Mapping[str, np.ndarray[Any, np.dtype[np.float32]]],
+    threshold: float,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Return the ranked passages with near-repeats of them removed.
+
+    The words first, because two copies of one passage differ by case and
+    punctuation and need no vector to recognise, and because that is the case a
+    collection holding one essay in two formats is made of. The cosine second, for
+    the passage that says the same thing in other words. A survivor is compared
+    only against survivors, so the first — and therefore the best-ranked — of a
+    repeated pair is the one kept.
+
+    The work is the number of candidates this search already holds, which is
+    `maximum_candidates` and not the size of the corpus, so a large collection
+    costs no more to search than a small one.
+
+    Both copies are reported with their sources, because the pair is the
+    actionable part: a person who sees one essay arriving from two files can
+    retire a source, and one who does not would keep an overlap they cannot see.
+    """
+
+    def normalised(
+        vector: np.ndarray[Any, np.dtype[np.float32]],
+    ) -> np.ndarray[Any, np.dtype[np.float32]]:
+        """Return the vector at unit length, so the dot product is a cosine.
+
+        The comparison is against a number between -1 and 1, so it is a cosine
+        and not a dot product: a store whose vectors are not already at unit
+        length would otherwise score two unrelated passages above any threshold
+        this setting allows.
+        """
+
+        unit = np.asarray(vector, dtype=np.float32)
+        length = float(np.linalg.norm(unit))
+        if not np.isfinite(length) or length == 0.0:
+            return np.zeros_like(unit)
+        return unit / length
+
+    def described(chunk_id: str, prefix: str = "") -> dict[str, Any]:
+        chunk = chunks_by_id[chunk_id]
+        document = _document_for_chunk(chunk, documents_by_id)
+        return {
+            f"{prefix}chunk_id": chunk_id,
+            f"{prefix}source_id": str(document["source_id"]),
+            f"{prefix}source_relative_path": str(
+                document.get("source_relative_path") or ""
+            ),
+        }
+
+    kept: list[str] = []
+    kept_words: dict[str, str] = {}
+    kept_vectors: list[np.ndarray[Any, np.dtype[np.float32]]] = []
+    collapsed: list[dict[str, Any]] = []
+    for chunk_id in ordered_ids:
+        text = _chunk_text(chunks_by_id[chunk_id])
+        words = _passage_equality_key(text)
+        # A passage with no words is not a repetition of another with no words:
+        # an empty key would make every such passage match every other one, and
+        # there is nothing in it to say they are the same.
+        repeated = kept_words.get(words) if words else None
+        if repeated is not None:
+            collapsed.append(
+                {
+                    **described(chunk_id),
+                    **described(repeated, prefix="repeated_"),
+                    "collapsed_by": "same_words",
+                }
+            )
+            continue
+        vector = vectors.get(text)
+        if vector is None:
+            unit = None
+        else:
+            unit = normalised(vector)
+        if unit is not None and kept_vectors:
+            scores = np.asarray(kept_vectors) @ unit
+            best = int(np.argmax(scores))
+            score = float(scores[best])
+            if score >= threshold:
+                collapsed.append(
+                    {
+                        **described(chunk_id),
+                        **described(kept[best], prefix="repeated_"),
+                        "collapsed_by": "same_meaning",
+                        "similarity": round(score, 6),
+                    }
+                )
+                continue
+        kept.append(chunk_id)
+        if words:
+            kept_words[words] = chunk_id
+        if unit is not None:
+            kept_vectors.append(unit)
+    return kept, collapsed
+
+
 class SearchWorkflow:
+    async def _collapse_repetitions(
+        self,
+        ordered_ids: list[str],
+        *,
+        generation_root: Path,
+        manifest: dict[str, Any],
+        lookup: ArtifactLookup,
+        chunks_by_id: dict[str, dict[str, Any]],
+        documents_by_id: dict[str, dict[str, Any]],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        """Return the ranked passages with near-repeats of them removed.
+
+        The vectors come from the generation's own portable matrix, read by
+        passage text through the sidecar that already maps a text to its row, so
+        the comparison costs one gather over the candidates this search holds and
+        touches nothing else in the collection. The matrix is mapped, not read, so
+        a large generation does not have to be resident to be searched.
+        """
+
+        if len(ordered_ids) < 2:
+            return ordered_ids, []
+        vectors_path = generation_root / str(
+            manifest.get("files", {}).get("portable_embeddings")
+            or "portable/embeddings.npy"
+        )
+
+        def resolve() -> dict[str, np.ndarray[Any, np.dtype[np.float32]]]:
+            if not vectors_path.is_file() or vectors_path.is_symlink():
+                return {}
+            matrix = np.load(vectors_path, allow_pickle=False, mmap_mode="r")
+            if matrix.ndim != 2 or not matrix.shape[0]:
+                return {}
+            texts = [_chunk_text(chunks_by_id[item]) for item in ordered_ids]
+            return VectorByContentsMapping(lookup, matrix).get_many(texts)
+
+        vectors = await asyncio.to_thread(resolve)
+        return _collapse_repetitions(
+            ordered_ids,
+            chunks_by_id=chunks_by_id,
+            documents_by_id=documents_by_id,
+            vectors=vectors,
+            threshold=float(self.config.settings.duplicate_cosine),
+        )
+
     async def _ensure_loaded(
         self,
         generation_root: Path,
@@ -871,6 +1020,18 @@ class SearchWorkflow:
                     )
             reranked_applied = bool(rerank_scores)
 
+            # A repeated passage is settled here, on the candidates this search
+            # already holds, rather than by dropping a chunk at build time. Two
+            # copies of one passage stay in the corpus and stay independently
+            # citable, and the answer shows one of them.
+            ordered_ids, collapsed = await self._collapse_repetitions(
+                ordered_ids,
+                generation_root=generation_root,
+                manifest=manifest,
+                lookup=lookup,
+                chunks_by_id=chunks_by_id,
+                documents_by_id=documents_by_id,
+            )
             candidate_count = len(ordered_ids)
             source_id_by_chunk = {
                 item: str(
@@ -925,6 +1086,26 @@ class SearchWorkflow:
 
             distinct_reference_count = len({str(hit["source_id"]) for hit in hits})
             relevance_limited = candidate_count < top_k
+            repetition_disclosure: dict[str, Any] = {}
+            if collapsed:
+                # A lean answer states the rule once rather than repeating it per
+                # passage, so this is a count, and the pairs are for the caller
+                # that asks for the full detail: the actionable part of an
+                # overlap is which two files it came from.
+                by_words = sum(
+                    1 for item in collapsed if item["collapsed_by"] == "same_words"
+                )
+                by_meaning = len(collapsed) - by_words
+                repetition_disclosure = {
+                    "repetitions_collapsed": len(collapsed),
+                    "collapsed_by_same_words": by_words,
+                    "collapsed_by_same_meaning": by_meaning,
+                    "note": (
+                        "One passage repeated another and only the better-ranked "
+                        "copy is shown. Both remain in the corpus and can be "
+                        "retrieved by name."
+                    ),
+                }
 
             if include_staleness:
                 # Walking the source tree is the only per-request work here that
@@ -1071,6 +1252,10 @@ class SearchWorkflow:
                     "flagged_passages_returned": sum(
                         1 for hit in hits if hit.get("text_notes")
                     ),
+                },
+                "collapsed_repetitions": {
+                    **repetition_disclosure,
+                    "pairs": collapsed,
                 },
                 "rejected_candidate_examples": {
                     "policy": "bounded_examples",

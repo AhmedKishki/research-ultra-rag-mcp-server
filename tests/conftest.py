@@ -64,18 +64,20 @@ def write_epub(path: Path, text: str, *, title: str = "Test EPUB") -> None:
 
 
 @pytest.fixture(autouse=True)
-def _no_near_duplicate_chunks_in_the_suite(
+def _no_collapsed_repetitions_in_the_suite(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Turn the near-duplicate check off for the whole suite.
+    """Declare that this suite's embedder cannot tell a repeat from a theme.
 
-    Every build here runs on a hand-written embedder, and that embedder cannot
-    tell a repeated passage from two passages about one subject: a test corpus of
-    two related sentences is a corpus the check would thin. The two tests that are
-    about the check pass their own threshold, which is a stronger layer than this.
+    Every build and every search here runs on a hand-written embedder, and that
+    embedder cannot tell a passage repeated from two passages about one subject:
+    a test corpus of two related sentences is a corpus the cosine would collapse
+    to one. A number no cosine can reach says exactly that — nothing is close
+    enough — and the tests about the rule pass their own threshold, which is a
+    stronger statement than this one.
     """
 
-    monkeypatch.setenv("RESEARCH_ULTRARAG_INGESTION_DUPLICATE_COSINE", "2.0")
+    monkeypatch.setenv("RESEARCH_ULTRARAG_RETRIEVAL_DUPLICATE_COSINE", "2.0")
 
 
 @pytest.fixture

@@ -122,6 +122,17 @@ def _selection_relevance(
     return relevance
 
 
+def _passage_equality_key(text: str) -> str:
+    """Return the words of a passage, so two copies of it read the same.
+
+    Case, punctuation and spacing are what two copies of one passage differ by —
+    one file's text extraction and another's do not agree on them — and none of
+    that is a difference in what the passage says.
+    """
+
+    return " ".join(_WORD.findall(str(text).casefold()))
+
+
 def _source_diverse_selection(
     ordered_ids: Sequence[str],
     *,

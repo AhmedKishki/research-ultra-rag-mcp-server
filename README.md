@@ -57,6 +57,8 @@ Nothing that decides an outcome is compiled in. `default.toml` ships inside the 
 | environment | `RESEARCH_ULTRARAG_*`, one per setting |
 | command line | `--set key=value`, repeatable |
 
+A search never answers the same question twice with two copies of one passage. Two sources can hold the same text, and both stay in the corpus and stay independently citable; the answer shows the better-ranked copy and reports the pair, with both sources, under `collapsed_repetitions`, so an overlap you can see is one you can retire a source over. `retrieval.duplicate_cosine` decides how alike two passages must be before they are one passage, and no setting turns the check off.
+
 Inspect the result instead of guessing: `research-ultra-rag-mcp --project-root <project> --print-config` prints every key, its effective value, and the layer that supplied it. A key that is not declared is refused in every layer, so a mistyped name is an error rather than a silent default, and a value outside its bounds is refused with the key and the bound named.
 
 The stack itself — the registry type, the merge, the coercion every layer shares, the provenance, and the three path helpers — is the pinned `config-ultra-rag-mcp` library, which the memory server uses too. This server keeps its own keys, its own `default.toml`, its own account and project directory names, and its own effective settings, so a change to one server's tunables never reaches the other.

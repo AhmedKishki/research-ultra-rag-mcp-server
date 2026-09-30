@@ -4,8 +4,10 @@ import asyncio
 import json
 import math
 import os
+import re
 import sys
 import time
+import zlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -4670,130 +4672,155 @@ def test_a_busy_project_is_reported_rather_than_waited_for(
     asyncio.run(exercise())
 
 
-def test_a_chunk_that_repeats_an_earlier_one_is_not_indexed(project: Path) -> None:
-    """Two sources can hold the same text, and a build keeps one of them.
+def _aliased_dense_backend() -> FakeDenseBackend:
+    """A dense backend whose vectors follow the words, so tests can aim them.
 
-    An essay on its own and the same essay inside a book are both wanted, so
-    excluding a source does not remove the overlap. The later chunk is not indexed
-    and the pair is reported, because a person who sees the same passage arriving
-    from two files is the only one who can say whether that means a source should
-    be retired.
+    The shared fake gives every passage the same vector, which is enough to say
+    "this matches" and not enough to say "these are nearly the same" — and a
+    near-duplicate threshold is about the second. This one hashes each word onto
+    an axis, so two passages of the same essay land close together and two
+    passages on one theme land further apart.
+    """
+
+    class AliasedDenseBackend(FakeDenseBackend):
+        def embed_texts(self, texts: list[str]) -> np.ndarray:
+            rows = []
+            for text in texts:
+                vector = np.zeros(384, dtype=np.float32)
+                for word in re.findall(r"[^\W_]+", str(text).casefold()):
+                    vector[zlib.crc32(word.encode("utf-8")) % 384] += 1.0
+                rows.append(vector)
+            return np.vstack(rows) if rows else np.zeros((0, 384), dtype=np.float32)
+
+    return AliasedDenseBackend()
+
+
+def test_a_repeated_passage_is_collapsed_from_the_answer(project: Path) -> None:
+    """Two copies of one passage in two files: the answer shows one, and says which.
+
+    The corpus keeps both — a person who wants the essay from the second file can
+    still ask for it by name, and excluding a source is not what a repetition
+    deserves — so the overlap is settled where it is seen, which is the answer.
     """
 
     from research_ultra_rag_mcp.config import resolve_config
-    from research_ultra_rag_mcp.ingestion import IngestionWorkflow
 
-    # The check is on here, at the default threshold, because that is what this
-    # test is about — the suite turns it off for everything else.
-    config = resolve_config(
-        project, settings_overrides=["ingestion.duplicate_cosine=0.99"]
-    )
-    service = IngestionWorkflow.__new__(IngestionWorkflow)
-    service.config = config
-    staging = project / "staging"
-    (staging / "portable").mkdir(parents=True)
-    (staging / "chunks").mkdir(parents=True)
-    np.save(
-        staging / "portable" / "embeddings.npy",
-        np.array(
-            [
-                [1.0, 0.0, 0.0, 0.0],  # the essay on its own
-                [0.0, 1.0, 0.0, 0.0],  # a different essay
-                [0.9999, 0.0141, 0.0, 0.0],  # the same essay, inside the book
-                [0.0, 0.0, 1.0, 0.0],  # unrelated
-                [0.0, 0.0, 0.0, 1.0],  # unrelated
-            ],
-            dtype=np.float32,
-        ),
-    )
-    rows = [
-        {
-            "chunk_id": "essay-1",
-            "source": "essays/entropy.pdf",
-            "contents": "the essay",
-        },
-        {"chunk_id": "essay-2", "source": "essays/waste.pdf", "contents": "another"},
-        {
-            "chunk_id": "book-3",
-            "source": "books/collected.pdf",
-            "contents": "the essay",
-        },
-        {"chunk_id": "notes-4", "source": "notes/one.md", "contents": "unrelated"},
-        {"chunk_id": "notes-5", "source": "notes/two.md", "contents": "unrelated"},
-    ]
-    (staging / "chunks" / "chunks.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
-    )
-    checkpoint = {"chunk_count": len(rows)}
+    async def exercise() -> tuple[dict[str, Any], list[str]]:
+        write_pdf(
+            project / "sources" / "essay.pdf",
+            ["Labour evidence from the cobalt mine in the north of the country."],
+        )
+        # The same essay from another file, with the punctuation and casing a
+        # second extractor produces, which is what two copies of one passage
+        # actually differ by.
+        write_pdf(
+            project / "sources" / "book.pdf",
+            ["LABOUR evidence, from the cobalt mine; in the north of the country."],
+        )
+        config = resolve_config(project, vanilla_executable=sys.executable)
+        service = ResearchService(
+            config, FakeUltraRAG(), dense=_aliased_dense_backend()
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+        answer = await service.search("cobalt mine", top_k=10, rerank=False)
+        listed = await service.list_sources()
+        return answer, [item["source_relative_path"] for item in listed["sources"]]
 
-    report = service._drop_near_duplicate_chunks(staging, checkpoint)
+    answer, sources = asyncio.run(exercise())
 
-    assert [entry["dropped_chunk_id"] for entry in report] == ["book-3"]
-    assert report[0]["repeated_chunk_id"] == "essay-1"
-    assert report[0]["dropped_source"] == "books/collected.pdf"
-    assert report[0]["repeated_source"] == "essays/entropy.pdf"
-    assert report[0]["similarity"] > 0.99
-    # The chunk is gone from the rows the index is built from and from the matrix
-    # the index is built from, and the count says so.
-    kept = [
-        json.loads(line)
-        for line in (staging / "chunks" / "chunks.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    assert [row["chunk_id"] for row in kept] == [
-        "essay-1",
-        "essay-2",
-        "notes-4",
-        "notes-5",
-    ]
-    assert np.load(staging / "portable" / "embeddings.npy").shape[0] == 4
-    assert checkpoint["chunk_count"] == 4
-    assert checkpoint["duplicate_chunk_count"] == 1
-    # And the pair is disclosed to whoever asks about the build.
-    assert service._duplicate_disclosure(checkpoint) == {
-        "duplicate_chunk_count": 1,
-        "duplicate_chunks": report,
+    # Both passages are in the corpus, and both files are still listed.
+    assert set(sources) == {"essay.pdf", "book.pdf"}
+    # One of them is in the answer, and the other is reported as the same thing.
+    assert len(answer["hits"]) == 1
+    disclosure = answer["collapsed_repetitions"]
+    assert disclosure["repetitions_collapsed"] == 1
+    assert disclosure["collapsed_by_same_words"] == 1
+    pair = disclosure["pairs"][0]
+    # The pair names the file each copy came from, because a person who sees one
+    # essay arriving from two files can retire a source.
+    assert {pair["source_relative_path"], pair["repeated_source_relative_path"]} == {
+        "essay.pdf",
+        "book.pdf",
     }
+    assert pair["repeated_chunk_id"] != pair["chunk_id"]
 
 
-def test_the_duplicate_check_can_be_turned_off(project: Path) -> None:
-    """Above 1 is unreachable for a cosine, and so nothing is ever a repetition."""
+def test_the_repetition_threshold_is_a_setting_and_the_words_are_not(
+    project: Path,
+) -> None:
+    """What counts as a repetition is a number in a config file, and it is read.
+
+    Three pairs at three thresholds. Words that are the same words are one
+    passage whatever the number, because no number is a claim about words; the
+    number decides the part cosine decides, and both directions of it are read
+    from the file. A number no cosine can reach decides that nothing is close
+    enough rather than switching the check off.
+    """
 
     from research_ultra_rag_mcp.config import resolve_config
-    from research_ultra_rag_mcp.ingestion import IngestionWorkflow
 
-    config = resolve_config(
-        project, settings_overrides=["ingestion.duplicate_cosine=2.0"]
+    async def search_with(overrides: list[str]) -> tuple[int, list[str]]:
+        # Each case its own project, so one case's generation is never the
+        # corpus the next case is asked about.
+        case = project / Path(overrides[0].split("=", 1)[1])
+        (case / "sources").mkdir(parents=True, exist_ok=True)
+        write_pdf(
+            case / "sources" / "one.pdf",
+            ["The committee reviewed the ledger and approved the second draft."],
+        )
+        write_pdf(
+            case / "sources" / "two.pdf",
+            ["The committee approved the second draft after reviewing the ledger."],
+        )
+        config = resolve_config(
+            case, vanilla_executable=sys.executable, settings_overrides=overrides
+        )
+        service = ResearchService(
+            config, FakeUltraRAG(), dense=_aliased_dense_backend()
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+        answer = await service.search("committee ledger", top_k=10, rerank=False)
+        return len(answer["hits"]), [
+            str(item["collapsed_by"])
+            for item in answer["collapsed_repetitions"]["pairs"]
+        ]
+
+    # The same two sentences, two orders: alike enough to be one passage at a
+    # threshold below how alike they are, and two passages at one above it.
+    assert asyncio.run(search_with(["retrieval.duplicate_cosine=0.8"])) == (
+        1,
+        ["same_meaning"],
     )
-    service = IngestionWorkflow.__new__(IngestionWorkflow)
-    service.config = config
-    staging = project / "staging"
-    (staging / "portable").mkdir(parents=True)
-    (staging / "chunks").mkdir(parents=True)
-    np.save(
-        staging / "portable" / "embeddings.npy",
-        np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32),
-    )
-    (staging / "chunks" / "chunks.jsonl").write_text(
-        '{"chunk_id": "a", "source": "one.md", "contents": "same"}\n'
-        '{"chunk_id": "b", "source": "two.md", "contents": "same"}\n',
-        encoding="utf-8",
-    )
-    checkpoint = {"chunk_count": 2}
-
-    assert service._drop_near_duplicate_chunks(staging, checkpoint) == []
-    assert checkpoint["chunk_count"] == 2
+    assert asyncio.run(search_with(["retrieval.duplicate_cosine=0.99"])) == (2, [])
+    # A number no cosine can reach collapses nothing, and says so by not claiming
+    # to: the check ran and found nothing close enough.
+    assert asyncio.run(search_with(["retrieval.duplicate_cosine=2.0"])) == (2, [])
 
 
-def test_two_chunks_on_one_theme_are_both_kept() -> None:
-    """The check is for a repeated passage, not for two passages on a subject."""
+def test_two_passages_on_one_theme_are_both_shown(project: Path) -> None:
+    """The rule is for a repeated passage, not for two passages on a subject."""
 
-    from research_ultra_rag_mcp.ingestion import _near_duplicate_positions
+    from research_ultra_rag_mcp.config import resolve_config
 
-    vectors = np.array(
-        [[1.0, 0.10, 0.0, 0.0], [0.85, 0.53, 0.0, 0.0]], dtype=np.float32
-    )
+    async def exercise() -> int:
+        write_pdf(
+            project / "sources" / "mining.pdf",
+            ["The cobalt mine employs four hundred people in the northern town."],
+        )
+        write_pdf(
+            project / "sources" / "ledger.pdf",
+            ["The quarterly ledger records the cobalt price the northern town paid."],
+        )
+        config = resolve_config(
+            project,
+            vanilla_executable=sys.executable,
+            settings_overrides=["retrieval.duplicate_cosine=0.99"],
+        )
+        service = ResearchService(
+            config, FakeUltraRAG(), dense=_aliased_dense_backend()
+        )
+        await service.ingest(chunk_size=50, chunk_overlap=10)
+        answer = await service.search("cobalt northern", top_k=10, rerank=False)
+        return len(answer["hits"])
 
-    assert _near_duplicate_positions(vectors, 0.99) == {}
-    assert list(_near_duplicate_positions(vectors, 0.80)) == [1]
+    assert asyncio.run(exercise()) == 2
