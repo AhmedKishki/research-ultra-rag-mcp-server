@@ -44,6 +44,7 @@ Issues = "https://github.com/AhmedKishki/research-ultra-rag-mcp-server/issues"
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.7.3",
 ]
 
@@ -62,6 +63,14 @@ testpaths = ["tests"]
 markers = [
     "integration: starts the real vanilla UltraRAG stdio gateway",
 ]
+# A hang has no diagnostic and blocks CI until the GitHub limit, and several
+# tests spawn real subprocesses. The thread method is deliberate: the signal
+# default misses a hang inside a C extension such as ONNX inference. It kills
+# the whole pytest process after dumping every thread's stack, which is what CI
+# wants and not what a developer's long local run wants, so a developer passes
+# `--timeout=0` to turn it off.
+timeout = 300
+timeout_method = "thread"
 
 [tool.ruff]
 # The default set (E4, E7, E9, F) stays selected; these are added on top of it.
