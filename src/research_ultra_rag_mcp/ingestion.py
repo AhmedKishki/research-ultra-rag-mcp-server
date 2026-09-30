@@ -792,7 +792,7 @@ class IngestionWorkflow:
         timings = checkpoint.setdefault("phase_timings_seconds", {})
         timings[phase] = float(timings.get(phase) or 0.0) + elapsed
 
-    async def _advance_ingestion(
+    async def _advance_ingestion(  # noqa: C901 — split is tracked in TODO.md:45
         self,
         *,
         staging_root: Path,

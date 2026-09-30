@@ -19,7 +19,7 @@ def test_every_supported_reranker_is_pinned_to_a_revision() -> None:
     for model, revision in RERANKER_MODELS.items():
         assert len(revision) == 40 and revision.isalnum(), model
     assert DEFAULT_RERANKER_MODEL in RERANKER_MODELS
-    assert RERANKER_MODEL_CHOICES == tuple(RERANKER_MODELS)
+    assert tuple(RERANKER_MODELS) == RERANKER_MODEL_CHOICES
 
 
 def test_resolve_returns_the_named_model_with_its_pinned_revision() -> None:

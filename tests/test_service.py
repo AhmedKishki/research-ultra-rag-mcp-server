@@ -4106,7 +4106,7 @@ def test_the_reranked_window_follows_its_settings(project: Path) -> None:
         # than assumed: with the setting ignored every value here would stay at
         # the default.
         default = await window([], top_k=1)
-        assert 3 <= default, default
+        assert default >= 3, default
         assert (
             await window(
                 [

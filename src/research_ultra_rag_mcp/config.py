@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import filecmp
 import json
 import os
@@ -330,10 +331,10 @@ def _migrate_legacy_runtime(
 
     legacy_parent = project / ".ultrarag"
     if legacy_parent.is_dir():
-        try:
+        # A non-empty legacy parent is the expected case: it can hold files this
+        # server never wrote, and leaving it is safe where removing it is not.
+        with contextlib.suppress(OSError):
             legacy_parent.rmdir()
-        except OSError:
-            pass
 
 
 def _write_project_descriptor(

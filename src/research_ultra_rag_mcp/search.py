@@ -119,10 +119,7 @@ def _collapse_repetitions(
             )
             continue
         vector = vectors.get(text)
-        if vector is None:
-            unit = None
-        else:
-            unit = normalised(vector)
+        unit = None if vector is None else normalised(vector)
         if unit is not None and kept_vectors:
             scores = np.asarray(kept_vectors) @ unit
             best = int(np.argmax(scores))
@@ -541,7 +538,7 @@ class SearchWorkflow:
         self._document_frequencies = (generation_id, stopwords, frequencies)
         return frequencies
 
-    async def search(
+    async def search(  # noqa: C901 — complexity 42; the threshold is not a refactor schedule
         self,
         query: str,
         *,
