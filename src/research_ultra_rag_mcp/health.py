@@ -431,6 +431,17 @@ def _code_currency_check() -> Check:
 
     running = version_module.SERVER_VERSION
     installed = version_module.installed_version()
+    drift = version_module.checkout_drift()
+    if drift is not None:
+        # Two checkouts of this package are the reported cause of a server that
+        # answers with metadata it could not have written, and a version
+        # comparison cannot see it: both copies report the same version.
+        return Check(
+            "code_currency",
+            WARN,
+            drift,
+            "Stop the servers, then start the checkout you mean.",
+        )
     if not version_module.restart_required():
         return Check(
             "code_currency",

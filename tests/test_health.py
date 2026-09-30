@@ -406,6 +406,43 @@ def test_a_server_older_than_the_installed_code_warns(
     assert "Restart the MCP client" in check.reason
 
 
+def test_a_server_answering_from_another_checkout_warns(
+    healthy: ResearchConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two checkouts report one version, so the paths are the only evidence."""
+
+    monkeypatch.setattr(
+        version_module,
+        "install_origin",
+        lambda: Path("/home/somebody/else/research-ultra-rag-mcp-server"),
+    )
+    monkeypatch.setattr(
+        version_module, "nearest_checkout", lambda: Path("/tmp/a-different-checkout")
+    )
+
+    report = _report(healthy)
+
+    check = report.named("code_currency")
+    assert check.state == "warn"
+    assert "/home/somebody/else/research-ultra-rag-mcp-server" in check.reason
+    assert "/tmp/a-different-checkout" in check.reason
+    assert check.remedy_command
+
+
+def test_one_checkout_is_not_reported_as_drift(
+    healthy: ResearchConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The common case must stay `ok`, or the warning stops being read."""
+
+    single = Path("/srv/research-ultra-rag-mcp-server")
+    monkeypatch.setattr(version_module, "install_origin", lambda: single)
+    monkeypatch.setattr(version_module, "nearest_checkout", lambda: single)
+
+    report = _report(healthy)
+
+    assert report.named("code_currency").state == "ok"
+
+
 def test_the_tree_is_read_once_per_marker(
     healthy: ResearchConfig,
     monkeypatch: pytest.MonkeyPatch,
