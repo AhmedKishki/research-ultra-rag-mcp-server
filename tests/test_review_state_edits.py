@@ -211,3 +211,66 @@ def test_an_unknown_metadata_field_is_refused(project: Path) -> None:
         assert load_metadata_overrides(service.config.metadata_path) == {}
 
     asyncio.run(exercise())
+
+
+def test_metadata_written_by_a_later_version_is_refused_by_cause(project: Path) -> None:
+    """The message must name the version gap, not each unknown field in turn.
+
+    A file whose writer understood a field this build does not is refused before
+    any entry is read, so the answer says which version is needed instead of
+    listing fields the caller never typed.
+    """
+
+    path = project / ".research-rag" / "source-metadata.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "written_with": {"metadata_fields": ["title", "language", "subject"]},
+                "sources": {"article.pdf": {"title": "Test PDF"}},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    from research_ultra_rag_mcp.storage import StorageError
+
+    with pytest.raises(StorageError) as raised:
+        load_metadata_overrides(path)
+
+    message = str(raised.value)
+    assert "subject" in message
+    assert "Update the server" in message
+    # The known field must not be named: it is the unknown one that blocks.
+    assert "title" not in message
+
+
+def test_metadata_written_before_the_record_existed_still_loads(project: Path) -> None:
+    """Existing projects carry no writer record and must keep working."""
+
+    (project / ".research-rag").mkdir(parents=True, exist_ok=True)
+    path = _write_metadata_file(project, {"article.pdf": {"title": "Test PDF"}})
+
+    assert load_metadata_overrides(path) == {"article.pdf": {"title": "Test PDF"}}
+
+
+def test_a_writer_record_of_the_known_fields_is_accepted(project: Path) -> None:
+    """The common case must not raise, or the record would break every project."""
+
+    async def exercise() -> None:
+        service, relative = await _service(project)
+        await service.set_source_metadata({"title": "Kept"}, source_path=relative)
+
+        written = json.loads(service.config.metadata_path.read_text(encoding="utf-8"))
+        assert "language" in written["written_with"]["metadata_fields"]
+        assert (
+            load_metadata_overrides(service.config.metadata_path)["article.pdf"][
+                "title"
+            ]
+            == "Kept"
+        )
+
+    asyncio.run(exercise())

@@ -187,6 +187,7 @@ def load_metadata_overrides(path: Path) -> dict[str, dict[str, Any]]:
     value = read_json(path)
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise StorageError(f"Unsupported metadata file: {path}")
+    _reject_unknown_metadata_version(path, value)
     sources = value.get("sources", {})
     if not isinstance(sources, dict) or any(
         not isinstance(key, str) or not isinstance(item, dict)
@@ -209,14 +210,60 @@ def load_metadata_overrides(path: Path) -> dict[str, dict[str, Any]]:
     return sources
 
 
+def _reject_unknown_metadata_version(path: Path, value: dict[str, Any]) -> None:
+    """Refuse metadata written for a later version of this package.
+
+    The file says `schema_version: 1`, which reads as "this shape is known". It
+    stopped meaning that the moment a field was added: `language` arrived, the
+    number stayed 1, and a server that predates the field rejected the whole
+    file with `Unsupported metadata fields: language`. Nothing in the file said
+    which version wrote it, so the error named a field rather than the cause.
+
+    A writer now records the fields it understood. A file without the key was
+    written before this, and is accepted: its contents are validated field by
+    field anyway, and refusing it would break every existing project.
+    """
+
+    written_with = value.get("written_with")
+    if written_with is None:
+        return
+    if not isinstance(written_with, dict):
+        raise StorageError(f"Invalid metadata writer record: {path}")
+    fields = written_with.get("metadata_fields")
+    if fields is None:
+        return
+    if not isinstance(fields, list) or any(
+        not isinstance(item, str) for item in fields
+    ):
+        raise StorageError(f"Invalid metadata writer field list: {path}")
+    # Import here because `sources` imports this module.
+    from .sources import METADATA_FIELDS
+
+    unknown = sorted(set(fields) - set(METADATA_FIELDS))
+    if unknown:
+        raise StorageError(
+            f"{path} was written by a version that understood metadata fields "
+            f"this one does not: {', '.join(unknown)}. Update the server that "
+            "reads this project before trusting its answers."
+        )
+
+
 def write_metadata_overrides(
     path: Path,
     overrides: dict[str, dict[str, Any]],
 ) -> None:
+    from .sources import METADATA_FIELDS
+
     atomic_write_json(
         path,
         {
             "schema_version": 1,
+            # The fields this writer understood. An older server that reads the
+            # file can then refuse it as too new, rather than rejecting each
+            # entry one unknown field at a time.
+            "written_with": {
+                "metadata_fields": sorted(METADATA_FIELDS),
+            },
             "sources": overrides,
         },
     )
