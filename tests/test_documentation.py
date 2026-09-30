@@ -176,7 +176,7 @@ def test_readme_is_a_chronological_standalone_user_manual() -> None:
         "status",
         "ingest",
         "search",
-        "list_sources",
+        "find_source",
         "get_passage",
         "set_source_inclusion",
     ):

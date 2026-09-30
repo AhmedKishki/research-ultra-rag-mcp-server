@@ -93,7 +93,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert set(tools) == {
             "get_passage",
             "ingest",
-            "list_sources",
+            "find_source",
             "search",
             "set_source_inclusion",
             "set_source_metadata",
@@ -116,7 +116,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
                 "source_ids",
                 "exclude_source_ids",
             },
-            "list_sources": set(),
+            "find_source": {"query", "limit"},
             "get_passage": {"chunk_id"},
             "set_source_inclusion": {"source_path", "included", "reason"},
         }
@@ -143,7 +143,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         ):
             assert retired not in tools["search"].inputSchema["properties"]
             assert retired not in tools["ingest"].inputSchema["properties"]
-            assert retired not in tools["list_sources"].inputSchema["properties"]
+            assert retired not in tools["find_source"].inputSchema["properties"]
             assert retired not in tools["get_passage"].inputSchema["properties"]
             assert (
                 retired not in tools["set_source_inclusion"].inputSchema["properties"]
@@ -151,8 +151,8 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
 
         initial = await client.call_tool("status", {})
         # There is nothing to serve yet, and that is the one readiness fact worth
-        # saying. The counts of what was found are the inventory list_sources
-        # returns, not something a readiness answer repeats.
+        # saying. The counts of what was found are the inventory the command line
+        # and the workspace read, not something a readiness answer repeats.
         assert initial.data["ready"] is False
         assert "selected_source_count" not in initial.data
         for key in LEAN_ONLY_ABSENT:
@@ -221,10 +221,13 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         assert ready.data["ui_url"] is None
         assert ready.data["ui_ready"] is False
         assert ready.data["ui_error"] is None
-        # What a prune would consider is the one inventory a lean answer keeps,
-        # because the agent guide has an agent answer a disk-use question from it.
-        assert ready.data["retained_generation_count"] >= 1
-        assert ready.data["retained_generation_bytes"] > 0
+        # The verdict is stated, and the disk inventory is not part of it: an
+        # agent that needs it is answered by the command line.
+        assert ready.data["ready"] is True
+        assert ready.data["stale"] is False
+        assert "requires" not in ready.data
+        assert "retained_generation_count" not in ready.data
+        assert "retained_generation_bytes" not in ready.data
 
         # A stale status counts what the corpus gained and reports only what a
         # researcher has to act on; it never enumerates the available sources.
@@ -232,6 +235,7 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         write_pdf(added_source, ["Amber marsh evidence added after the build."])
         added_status = await client.call_tool("status", {})
         assert added_status.data["stale"] is True
+        assert added_status.data["requires"] == ["ingest"]
         assert added_status.data["changes"] == {"added_source_count": 1}
         assert "added-later.pdf" not in json.dumps(added_status.data)
 
@@ -244,9 +248,11 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         removed_source.write_bytes(removed_bytes)
         added_source.unlink()
         settled_status = await client.call_tool("status", {})
-        # Settled is the ordinary case: the answer says the generation and the
-        # message and nothing about freshness.
-        assert "stale" not in settled_status.data
+        # Settled says so outright rather than by leaving the field out, and
+        # nothing is required of the caller.
+        assert settled_status.data["ready"] is True
+        assert settled_status.data["stale"] is False
+        assert "requires" not in settled_status.data
         assert "changes" not in settled_status.data
 
         result = await client.call_tool(
@@ -295,20 +301,23 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         ).read_bytes() == chunks_before_metadata
 
         metadata_status = await client.call_tool("status", {})
-        assert "stale" not in metadata_status.data
-        assert metadata_status.data["metadata_overlay_active"] is True
+        # A reviewed change is not staleness and needs no rebuild, so the verdict
+        # says so and the message carries the overlay.
+        assert metadata_status.data["stale"] is False
+        assert "requires" not in metadata_status.data
+        assert "metadata_overlay_active" not in metadata_status.data
         assert "immediately" in metadata_status.data["message"]
         # Change lists appear only when the generation is stale, so a
         # metadata-only overlay is reported as an overlay, not as churn.
         assert "changes" not in metadata_status.data
 
-        corrected_sources = await client.call_tool("list_sources", {})
-        # The list is the inventory, so no count travels beside it.
-        assert "source_count" not in corrected_sources.data
-        source_record = corrected_sources.data["sources"][0]
-        # The stable ID is the inventory's business, not a search answer's.
+        corrected_sources = await client.call_tool("find_source", {"query": "marsh"})
+        assert corrected_sources.data["match_count"] == 1
+        source_record = corrected_sources.data["matches"][0]
+        # The stable ID is the lookup's business, not a search answer's.
         assert source_record["source_id"].startswith("src_")
         assert source_record["title"] == "Reviewed Marsh Evidence"
+        assert source_record["indexed_in_current_generation"] is True
 
         corrected_result = await client.call_tool(
             "search",
@@ -469,10 +478,12 @@ async def _assert_real_stdio_research_flow(project: Path) -> None:
         status_payload = json.loads(status_resource[0].text)
         assert status_payload["ready"] is True
         assert status_payload["generation_id"] == offline_status.data["generation_id"]
-        sources_resource = await offline_client.read_resource("research://sources")
-        sources_payload = json.loads(sources_resource[0].text)
-        assert len(sources_payload["sources"]) == 1
-        assert sources_payload["sources"][0]["source_relative_path"] == "evidence.pdf"
+        # The surface serves one source lookup rather than the inventory, so a
+        # client asks about a name and learns whether that source is searchable.
+        found = await offline_client.call_tool("find_source", {"query": "evidence"})
+        assert found.data["match_count"] == 1
+        assert found.data["matches"][0]["source_relative_path"] == "evidence.pdf"
+        assert found.data["matches"][0]["indexed_in_current_generation"] is True
 
 
 @pytest.mark.integration
@@ -520,7 +531,7 @@ def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
             assert tools == {
                 "get_passage",
                 "ingest",
-                "list_sources",
+                "find_source",
                 "search",
                 "set_source_inclusion",
                 "set_source_metadata",
@@ -529,7 +540,7 @@ def test_the_handshake_does_not_wait_for_the_gateway(project: Path) -> None:
             # Resource metadata is static, so a client that probes resources finds
             # them before any gateway exists; only reading one needs the service.
             resources = {str(item.uri) for item in await client.list_resources()}
-            assert resources == {"research://status", "research://sources"}
+            assert resources == {"research://status"}
             with pytest.raises(Exception) as failure:
                 await client.call_tool("status", {})
         message = str(failure.value)
