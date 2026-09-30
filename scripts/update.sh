@@ -121,3 +121,18 @@ fi
 printf '\nThe MCP server itself still runs the version it started with. Restart it in your\n'
 printf 'client (MCP panel: toggle or restart the server, or reload the window), then check\n'
 printf 'status.version.restart_required — it should read false.\n'
+
+# A server started before this update keeps answering from the old code, and the
+# failure it produces reads like a data fault rather than a stale process: this
+# package was reached by a browser UI that rejected reviewed metadata it could
+# not have written. `doctor` already knows which processes serve this project and
+# only reports them, so it is asked rather than matched again here. `stop` is
+# not used for this: it would end the servers it is meant to report on.
+if [ -n "$PROJECT_ROOT" ]; then
+  running=$(cd "$REPO_ROOT" && uv run research-ultra-rag --project-root "$PROJECT_ROOT" doctor 2>/dev/null | grep 'server(s) are running' || true)
+  if [ -n "$running" ]; then
+    printf '\nupdate.sh: %s\n' "$running" >&2
+    printf 'Those keep answering from the code they started with. Restart them before\n' >&2
+    printf 'trusting an answer: research-ultra-rag --project-root %s stop --servers\n' "$PROJECT_ROOT" >&2
+  fi
+fi
